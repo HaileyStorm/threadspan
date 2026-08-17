@@ -227,7 +227,11 @@ async function runServe(config, logger) {
   process.stdout.write(`http://${formatHost(address.address)}:${address.port}\n`);
 
   await new Promise((resolveSignal) => {
-    const shutdown = () => resolveSignal();
+    const shutdown = () => {
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+      resolveSignal();
+    };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
   });

@@ -13,6 +13,8 @@ The Linux unit deliberately does not use `PrivateTmp`: Delegate workspace paths 
 
 Managed provider jobs reap residual POSIX process groups after their parent exits. The Linux unit also bounds final control-group cleanup to ten seconds so an imperfect third-party CLI cannot stall an update or restart for systemd's much longer default.
 
+The daemon removes both signal listeners on the first SIGINT or SIGTERM. Leaving the unused listener registered would keep Node alive after an otherwise clean shutdown.
+
 An installing agent should preview the exact files and commands, preserve any existing file as a rollback artifact, write atomically, activate the service, and verify `/health`, `/v1/models`, `/threadspan/state`, and restart durability. Do not claim one host from evidence gathered on the other.
 
 The user can stop or remove Threadspan without uninstalling or signing out of any provider app.
