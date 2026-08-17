@@ -3,15 +3,25 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { END_MARKER, installCodexConfigBlock, renderCodexConfigBlock, replaceManagedBlock, START_MARKER, uninstallCodexConfigBlock } from "../src/codex/config.mjs";
+import { END_MARKER, installCodexConfigBlock, installCodexProfileDocuments, renderCodexConfigBlock, renderCodexProfileDocuments, replaceManagedBlock, START_MARKER, uninstallCodexConfigBlock } from "../src/codex/config.mjs";
 
-test("Codex block uses Responses wire API, profiles, and Consult MCP", () => {
+test("Codex block uses Responses wire API and Consult MCP without legacy profiles", () => {
   const block = renderCodexConfigBlock({ cliPath: "/tmp/cli.mjs", bridgeConfigPath: "/tmp/config.jsonc" });
   assert.match(block, /wire_api = "responses"/);
-  assert.match(block, /\[profiles\.threadspan_consult\]/);
-  assert.match(block, /model = "consult\/cursor-ultra\/auto"/);
+  assert.doesNotMatch(block, /\[profiles\./);
   assert.match(block, /\[mcp_servers\.consult\]/);
   assert.doesNotMatch(block, /model_catalog_json/);
+});
+
+test("Codex profiles are standalone v2 documents installed beside config.toml", async (t) => {
+  const documents = renderCodexProfileDocuments();
+  assert.match(documents["threadspan_integrated.config.toml"], /model = "integrated\/nous\/deepseek\/deepseek-v4-flash-0731"/);
+  assert.doesNotMatch(JSON.stringify(documents), /\[profiles\./);
+  const root = await mkdtemp(join(tmpdir(), "codex-profile-test-"));
+  t.after(async () => { const { rm } = await import("node:fs/promises"); await rm(root, { recursive: true, force: true }); });
+  const installed = await installCodexProfileDocuments(join(root, "config.toml"), documents);
+  assert.equal(installed.length, 3);
+  assert.match(await readFile(join(root, "threadspan_consult.config.toml"), "utf8"), /model_provider = "threadspan_bridge"/);
 });
 
 test("managed Codex block replacement preserves unrelated TOML", () => {

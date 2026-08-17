@@ -3,6 +3,7 @@ export { RemoteBridgeService, normalizeBridgeBaseUrl } from "./bridge/remote-ser
 export { createHttpServer, listenHttpServer, closeHttpServer } from "./bridge/http-server.mjs";
 export { ResponsesAssembler } from "./bridge/responses.mjs";
 export { buildMergedModelCatalog, toCodexModelInfo } from "./codex/catalog.mjs";
+export { renderCodexProfileDocuments, installCodexProfileDocuments, uninstallCodexProfileDocuments } from "./codex/config.mjs";
 export { discoverNativeCodexCatalog, appServerModelToCatalog } from "./codex/app-server.mjs";
 export { loadConfig, resolveConfigPath, createExampleConfig, writeInitialConfig } from "./core/config.mjs";
 export { KeyedSerialQueue } from "./core/keyed-serial-queue.mjs";

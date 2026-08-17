@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 import { BridgeService } from "./bridge/service.mjs";
 import { closeHttpServer, createHttpServer, listenHttpServer } from "./bridge/http-server.mjs";
 import { RemoteBridgeService } from "./bridge/remote-service.mjs";
-import { installCodexConfigBlock, renderCodexConfigBlock, resolveCodexConfigPath, uninstallCodexConfigBlock } from "./codex/config.mjs";
+import { installCodexConfigBlock, installCodexProfileDocuments, renderCodexConfigBlock, renderCodexProfileDocuments, resolveCodexConfigPath, uninstallCodexConfigBlock, uninstallCodexProfileDocuments } from "./codex/config.mjs";
 import { buildMergedModelCatalog } from "./codex/catalog.mjs";
 import { discoverNativeCodexCatalog } from "./codex/app-server.mjs";
 import { installBridgeSkills, resolveCodexSkillsRoot } from "./codex/skill-install.mjs";
@@ -232,7 +232,9 @@ async function runServe(config, logger) {
 async function runCodexCommand(subcommand, options, bridgeConfigPath, config) {
   const codexConfigPath = resolve(valueOption(options.codexConfig) ?? resolveCodexConfigPath());
   if (subcommand === "uninstall") {
-    process.stdout.write(`${JSON.stringify(await uninstallCodexConfigBlock(codexConfigPath), null, 2)}\n`);
+    const block = await uninstallCodexConfigBlock(codexConfigPath);
+    const profiles = await uninstallCodexProfileDocuments(codexConfigPath);
+    process.stdout.write(`${JSON.stringify({ ...block, profiles }, null, 2)}\n`);
     return;
   }
   const bridgeUrl = valueOption(options.url) ?? `http://${config.server.host}:${config.server.port}/v1`;
@@ -248,14 +250,22 @@ async function runCodexCommand(subcommand, options, bridgeConfigPath, config) {
     integratedModel: valueOption(options.integratedModel) ?? findProviderForMode(config, "integrated")?.config.model ?? config.defaults.model,
     delegateProvider: valueOption(options.delegateProvider) ?? findProviderForMode(config, "delegate")?.id ?? config.defaults.provider,
     delegateModel: valueOption(options.delegateModel) ?? findProviderForMode(config, "delegate")?.config.model ?? config.defaults.model,
-    modelCatalogPath: valueOption(options.modelCatalog),
+  });
+  const profiles = renderCodexProfileDocuments({
+    defaultProvider: config.defaults.provider,
+    defaultModel: config.defaults.model,
+    integratedProvider: valueOption(options.integratedProvider) ?? findProviderForMode(config, "integrated")?.id ?? config.defaults.provider,
+    integratedModel: valueOption(options.integratedModel) ?? findProviderForMode(config, "integrated")?.config.model ?? config.defaults.model,
+    delegateProvider: valueOption(options.delegateProvider) ?? findProviderForMode(config, "delegate")?.id ?? config.defaults.provider,
+    delegateModel: valueOption(options.delegateModel) ?? findProviderForMode(config, "delegate")?.config.model ?? config.defaults.model,
   });
   if (subcommand === "snippet") {
     process.stdout.write(`${block}\n`);
     return;
   }
   const result = await installCodexConfigBlock(codexConfigPath, block, { backup: options.noBackup !== true });
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  const installedProfiles = await installCodexProfileDocuments(codexConfigPath, profiles, { backup: options.noBackup !== true });
+  process.stdout.write(`${JSON.stringify({ ...result, profiles: installedProfiles, nativeCatalogPreserved: true }, null, 2)}\n`);
 }
 
 /**
@@ -473,7 +483,7 @@ Usage:
   threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--json]
   threadspan delegate "task" --workspace PATH --allow-path PATH ... [--deny-path PATH ...] [--non-goal TEXT ...] [same routing options] [--acceptance-command CMD ...]
   threadspan codex snippet [--config PATH]
-  threadspan codex install [--config PATH] [--codex-config PATH] [--model-catalog PATH] [--embedded-mcp]
+  threadspan codex install [--config PATH] [--codex-config PATH] [--embedded-mcp]
   threadspan codex uninstall [--codex-config PATH]
   threadspan skill install [--skill consult|managed-worker|all] [--target SKILLS_ROOT] [--force]
 
