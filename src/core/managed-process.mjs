@@ -245,8 +245,26 @@ export async function runCapturedProcess(options) {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", abort);
     if (child.exitCode === null && child.signalCode === null) await terminateProcessTree(child, { killTree: options.killTree !== false }).catch(() => undefined);
+    else if (options.killTree !== false) await reapExitedProcessGroup(child).catch(() => undefined);
     await Promise.allSettled([stdoutTask, stderrTask]);
   }
+}
+
+/** Reap descendants that outlive an exited detached POSIX group leader. */
+async function reapExitedProcessGroup(child, options = {}) {
+  if (process.platform === "win32" || !child.pid) return;
+  if (!processGroupExists(child.pid)) return;
+  try { process.kill(-child.pid, "SIGTERM"); } catch { return; }
+  const deadline = Date.now() + (options.graceMs ?? 500);
+  while (Date.now() < deadline) {
+    if (!processGroupExists(child.pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  try { process.kill(-child.pid, "SIGKILL"); } catch {}
+}
+
+function processGroupExists(pid) {
+  try { process.kill(-pid, 0); return true; } catch { return false; }
 }
 
 /** Read a stream with either a hard limit or a retained-tail limit. */

@@ -16,7 +16,7 @@ function linuxPlan(options) {
   const node = resolve(options.nodePath);
   const cli = resolve(options.cliPath);
   const config = resolve(options.configPath);
-  const unit = `[Unit]\nDescription=Threadspan shared model-routing daemon\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=${systemdQuote(node)} ${systemdQuote(cli)} serve --config ${systemdQuote(config)}\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPassEnvironment=${PASSED_ENVIRONMENT.join(" ")}\n\n[Install]\nWantedBy=default.target\n`;
+  const unit = `[Unit]\nDescription=Threadspan shared model-routing daemon\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=${systemdQuote(node)} ${systemdQuote(cli)} serve --config ${systemdQuote(config)}\nRestart=on-failure\nRestartSec=3\nKillMode=control-group\nTimeoutStopSec=10s\nNoNewPrivileges=true\nPassEnvironment=${PASSED_ENVIRONMENT.join(" ")}\n\n[Install]\nWantedBy=default.target\n`;
   return {
     supported: true,
     files: [{ path: "~/.config/systemd/user/threadspan.service", content: unit, mode: 0o600 }],

@@ -7,6 +7,7 @@ test("Linux service plan is user-scoped and keeps provider keys out of files", (
   assert.equal(plan.supported, true);
   assert.match(plan.files[0].content, /PassEnvironment=THREADSPAN_TOKEN NOUS_API_KEY/);
   assert.doesNotMatch(plan.files[0].content, /PrivateTmp/);
+  assert.match(plan.files[0].content, /KillMode=control-group\nTimeoutStopSec=10s/);
   assert.doesNotMatch(plan.files[0].content, /sk-|Bearer /);
   assert.deepEqual(plan.activate[1], ["systemctl", "--user", "enable", "--now", "threadspan.service"]);
   assert.match(plan.digest, /^[a-f0-9]{64}$/);
