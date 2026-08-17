@@ -18,6 +18,7 @@ import { applyInstallerPlan, createInstallerPlan, previewInstallerPlan } from ".
 import { runMcpServer } from "./mcp/server.mjs";
 import { inspectGrokBuildInstallation } from "./providers/grok-build.mjs";
 import { DesktopCompatibilityWatch } from "./maintenance/desktop-update.mjs";
+import { GitHubCompatibilityIntake } from "./maintenance/github-intake.mjs";
 
 const SOURCE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(SOURCE_DIRECTORY, "..");
@@ -79,6 +80,11 @@ export async function main(argv = process.argv.slice(2)) {
       const watch = new DesktopCompatibilityWatch({ ...config.compatibilityWatch, enabled: true });
       const report = parsed.options.afterUpdate === true ? await watch.doctorAfterUpdate() : await watch.doctor();
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      return;
+    }
+    if (command === "compatibility" && subcommand === "intake") {
+      const intake = new GitHubCompatibilityIntake({ repository: valueOption(parsed.options.repository) ?? "HaileyStorm/threadspan", statePath: valueOption(parsed.options.state) });
+      process.stdout.write(`${JSON.stringify(await intake.poll(), null, 2)}\n`);
       return;
     }
 
@@ -488,6 +494,7 @@ Usage:
   threadspan providers [--config PATH]
   threadspan models [--config PATH]
   threadspan compatibility doctor [--config PATH] [--after-update]
+  threadspan compatibility intake [--config PATH] [--repository OWNER/NAME] [--state PATH]
   threadspan catalog build --output PATH [--native PATH|--codex PATH] [--favorite ROUTE ...] [--show-free]
   threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--json]
   threadspan delegate "task" --workspace PATH --allow-path PATH ... [--deny-path PATH ...] [--non-goal TEXT ...] [same routing options] [--acceptance-command CMD ...]

@@ -1,0 +1,40 @@
+name: Compatibility report
+description: Report an app, CLI, provider, or platform change that affects Threadspan.
+title: "[compatibility] "
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include API keys, cookies, account details, private prompts, private source, or raw credential-bearing logs."
+  - type: input
+    id: platform
+    attributes: { label: Platform, placeholder: "Windows 11 24H2 or Ubuntu 24.04" }
+    validations: { required: true }
+  - type: textarea
+    id: versions
+    attributes: { label: Product versions, description: "Threadspan, Codex/Desktop, Cursor, Grok Build, Node, and affected provider versions." }
+    validations: { required: true }
+  - type: textarea
+    id: observed
+    attributes: { label: Observed behavior, description: "What happened, with sanitized bounded evidence and its evidence class." }
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes: { label: Expected behavior }
+    validations: { required: true }
+  - type: textarea
+    id: reproduction
+    attributes: { label: Minimal reproduction, description: "Use a disposable workspace and omit private data." }
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes: { label: Proposed change, description: "Include scope, rollback, tests, and any host-specific residual gaps." }
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: "I removed credentials, account details, private prompts/source, and unrelated logs."
+          required: true
+        - label: "I understand this report does not authorize code execution, merge, rollout, or sunset."
+          required: true
