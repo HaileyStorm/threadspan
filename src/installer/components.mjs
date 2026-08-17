@@ -8,6 +8,7 @@ export const COMPONENT_IDS = Object.freeze([
   "daemon",
   "cursor",
   "grok-build",
+  "claude-code",
   "nous",
   "openrouter",
   "codex-native",
@@ -51,12 +52,12 @@ const COMPONENTS = Object.freeze({
     {
       bind: "127.0.0.1",
       port: 8743,
-      authentication: { source: "environment", variable: "THREADSPAN_DAEMON_TOKEN" },
+      authentication: { source: "environment", variable: "THREADSPAN_TOKEN" },
       storesCredentialValues: false,
     },
     [
       permission("Bind a loopback port and write product-local daemon state"),
-      environmentAuth("THREADSPAN_DAEMON_TOKEN"),
+      environmentAuth("THREADSPAN_TOKEN"),
     ],
   ),
   cursor: component(
@@ -77,6 +78,19 @@ const COMPONENTS = Object.freeze({
       storesCredentialValues: false,
     },
     [manualAuth("Install and sign in with Grok Build before live use")],
+  ),
+  "claude-code": component(
+    "threadspan/components/claude-code.json",
+    {
+      mode: "consult-and-delegate",
+      adapter: "managed-cli",
+      command: "claude",
+      authentication: { source: "existing-cli-session", product: "Claude Code" },
+      enabledByDefault: false,
+      communityUntested: true,
+      storesCredentialValues: false,
+    },
+    [manualAuth("Optional and untested: install and sign in with Claude Code, then run the capability probe before enabling")],
   ),
   nous: component(
     "threadspan/components/nous.json",
@@ -99,9 +113,9 @@ const COMPONENTS = Object.freeze({
   "codex-native": component(
     "threadspan/components/codex-native.json",
     {
-      picker: "native",
-      catalog: "native",
-      replaceModelCatalog: false,
+      picker: "native-plus-threadspan-sidecar",
+      catalog: "merge-native-and-live-threadspan-routes",
+      replaceModelCatalogOnlyAfterMerge: true,
       profileDirectory: ".",
       compatibilityWatch: "threadspan/components/compatibility-watch.json",
       storesCredentialValues: false,

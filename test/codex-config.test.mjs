@@ -8,7 +8,7 @@ import { END_MARKER, installCodexConfigBlock, renderCodexConfigBlock, replaceMan
 test("Codex block uses Responses wire API, profiles, and Consult MCP", () => {
   const block = renderCodexConfigBlock({ cliPath: "/tmp/cli.mjs", bridgeConfigPath: "/tmp/config.jsonc" });
   assert.match(block, /wire_api = "responses"/);
-  assert.match(block, /\[profiles\.bridge_consult\]/);
+  assert.match(block, /\[profiles\.threadspan_consult\]/);
   assert.match(block, /model = "consult\/cursor-ultra\/auto"/);
   assert.match(block, /\[mcp_servers\.consult\]/);
   assert.doesNotMatch(block, /model_catalog_json/);

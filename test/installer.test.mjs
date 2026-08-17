@@ -33,7 +33,8 @@ test("one-pass planning includes every component and reveals no credential value
   assert.equal(plan.credentialPolicy, "names-and-prerequisite-state-only");
   assert.equal(plan.prerequisites.find((item) => item.name === "NOUS_API_KEY").state, "available");
   assert.equal(plan.prerequisites.find((item) => item.name === "OPENROUTER_API_KEY").state, "available");
-  assert.equal(plan.prerequisites.find((item) => item.name === "THREADSPAN_DAEMON_TOKEN").state, "missing");
+  assert.equal(plan.prerequisites.find((item) => item.name === "THREADSPAN_TOKEN").state, "missing");
+  assert.equal(JSON.parse(plan.operations.find((item) => item.component === "claude-code").content).communityUntested, true);
   assert.doesNotMatch(JSON.stringify(plan), /nous-secret-value|router-secret-value/);
   const continuity = JSON.parse(plan.operations.find((item) => item.component === "continuity").content);
   assert.deepEqual(continuity.excludes, ["memory", "multi-host-sync", "cross-host-communications"]);

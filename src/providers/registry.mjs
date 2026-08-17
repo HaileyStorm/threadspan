@@ -1,5 +1,6 @@
 import { ConfigError, RequestError } from "../core/errors.mjs";
 import { CursorSdkProvider } from "./cursor-sdk.mjs";
+import { CursorCliProvider } from "./cursor-cli.mjs";
 import { DeepSeekProvider } from "./deepseek.mjs";
 import { MockProvider } from "./mock.mjs";
 import { GrokBuildProvider } from "./grok-build.mjs";
@@ -11,6 +12,7 @@ import { CommandProvider } from "./command.mjs";
 /** @type {Map<string, new (id: string, config: Record<string, any>, context: {logger: any}) => any>} */
 const ADAPTERS = new Map([
   ["cursor-sdk", CursorSdkProvider],
+  ["cursor-cli", CursorCliProvider],
   ["openai-chat", OpenAiChatProvider],
   ["openrouter", OpenRouterProvider],
   ["deepseek", DeepSeekProvider],
@@ -181,6 +183,10 @@ export class ProviderRegistry {
               catalog_degraded: degraded,
               configured_fallback: model.configuredFallback === true,
               ...(model.free === true ? { free: true } : {}),
+              ...(model.contextWindow ?? model.context_window ? { context_window: model.contextWindow ?? model.context_window } : {}),
+              ...(model.supported_reasoning_levels ? { supported_reasoning_levels: model.supported_reasoning_levels } : {}),
+              ...(model.default_reasoning_level ? { default_reasoning_level: model.default_reasoning_level } : {}),
+              ...(capabilities.images === true ? { images: true } : {}),
             },
           });
         }

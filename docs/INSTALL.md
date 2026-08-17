@@ -10,7 +10,7 @@ That is the single README-facing prompt intended for use after the repository ha
 
 ## Setup styles
 
-Broad-permission one-pass setup selects every component in one noninteractive plan. It is useful when the operator already intends to install the daemon, Cursor, Grok Build, Nous, OpenRouter, native Codex integration, monitoring/fallback, sidecar UI, context profiles, product-local Continuity, and Compatibility Watch. The plan still surfaces filesystem, local-port, executable, and authentication prerequisites before approval. Broad permission does not allow Threadspan to collect or store credentials.
+Broad-permission one-pass setup selects every component in one noninteractive plan. It is useful when the operator already intends to install the daemon, Cursor, Grok Build, optional Claude Code, Nous, OpenRouter, native Codex integration, monitoring/fallback, sidecar UI, context profiles, product-local Continuity, and Compatibility Watch. The plan still surfaces filesystem, local-port, executable, and authentication prerequisites before approval. Broad permission does not allow Threadspan to collect or store credentials.
 
 Prompted setup builds incremental plans from an explicit component list. Apply one reviewed plan, then create another when the operator chooses the next component. This keeps permission and authentication decisions close to the integration that needs them.
 
@@ -66,6 +66,7 @@ The install root must already exist. Use `CODEX_HOME` as the root when the gener
 | daemon | loopback daemon configuration | local port and state permission |
 | Cursor | Consult/Delegate integration descriptor | existing Cursor sign-in |
 | Grok Build | bounded-worker integration descriptor | installed, signed-in CLI |
+| Claude Code | optional managed-worker descriptor | untested; install, sign in, then pass the local capability probe |
 | Nous | OpenAI-compatible provider descriptor | `NOUS_API_KEY` in runtime environment |
 | OpenRouter | OpenAI-compatible provider descriptor | `OPENROUTER_API_KEY` in runtime environment |
 | native Codex | native picker/catalog descriptor | existing Codex sign-in |

@@ -2,6 +2,7 @@ export { BridgeService } from "./bridge/service.mjs";
 export { RemoteBridgeService, normalizeBridgeBaseUrl } from "./bridge/remote-service.mjs";
 export { createHttpServer, listenHttpServer, closeHttpServer } from "./bridge/http-server.mjs";
 export { ResponsesAssembler } from "./bridge/responses.mjs";
+export { buildMergedModelCatalog, toCodexModelInfo } from "./codex/catalog.mjs";
 export { loadConfig, resolveConfigPath, createExampleConfig, writeInitialConfig } from "./core/config.mjs";
 export { KeyedSerialQueue } from "./core/keyed-serial-queue.mjs";
 export { WeightedAdmissionController, StartAdmissionController } from "./core/admission-controller.mjs";
@@ -18,6 +19,9 @@ export { resolveExecutablePath, expandHomePath, sha256File, readExecutableVersio
 export { spawnManagedChild, terminateProcessTree, runCapturedProcess, ManagedProcessError } from "./core/managed-process.mjs";
 export { ProviderAdapter, BRIDGE_MODES } from "./providers/base.mjs";
 export { ProviderRegistry, registerProviderAdapter } from "./providers/registry.mjs";
+export { CursorCliProvider, parseCursorModels } from "./providers/cursor-cli.mjs";
+export { OpenRouterProvider } from "./providers/openrouter.mjs";
+export * from "./installer/index.mjs";
 export {
   GrokBuildProvider,
   inspectGrokBuildInstallation,

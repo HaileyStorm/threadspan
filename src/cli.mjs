@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -7,11 +7,13 @@ import { BridgeService } from "./bridge/service.mjs";
 import { closeHttpServer, createHttpServer, listenHttpServer } from "./bridge/http-server.mjs";
 import { RemoteBridgeService } from "./bridge/remote-service.mjs";
 import { installCodexConfigBlock, renderCodexConfigBlock, resolveCodexConfigPath, uninstallCodexConfigBlock } from "./codex/config.mjs";
+import { buildMergedModelCatalog } from "./codex/catalog.mjs";
 import { installBridgeSkills, resolveCodexSkillsRoot } from "./codex/skill-install.mjs";
 import { createExampleConfig, loadConfig, resolveConfigPath, writeInitialConfig } from "./core/config.mjs";
 import { asBridgeError } from "./core/errors.mjs";
 import { resolveExecutablePath } from "./core/executable.mjs";
 import { Logger } from "./core/logger.mjs";
+import { applyInstallerPlan, createInstallerPlan, previewInstallerPlan } from "./installer/index.mjs";
 import { runMcpServer } from "./mcp/server.mjs";
 import { inspectGrokBuildInstallation } from "./providers/grok-build.mjs";
 
@@ -35,6 +37,35 @@ export async function main(argv = process.argv.slice(2)) {
     if (command === "config" && subcommand === "init") {
       const path = writeInitialConfig(parsed.options.config, createExampleConfig(), { force: parsed.options.force === true });
       process.stdout.write(`${path}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "plan") {
+      const installRoot = valueOption(parsed.options.root);
+      const outputPath = valueOption(parsed.options.output);
+      if (!installRoot || !outputPath) throw new Error("install plan requires --root PATH and --output PLAN.json");
+      const components = arrayOption(parsed.options.component);
+      const longContext = valueOption(parsed.options.longContext);
+      const plan = createInstallerPlan({
+        installRoot,
+        selection: parsed.options.all === true || components.length === 0 ? "all" : components,
+        longContextProfiles: longContext === "all" ? "all" : arrayOption(parsed.options.longContext),
+        planId: valueOption(parsed.options.planId),
+      });
+      const destination = resolve(outputPath);
+      await mkdir(dirname(destination), { recursive: true });
+      const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
+      await writeFile(temporary, `${JSON.stringify(plan, null, 2)}\n`, { mode: 0o600 });
+      await rename(temporary, destination);
+      process.stdout.write(previewInstallerPlan(plan).text);
+      process.stdout.write(`Plan file: ${destination}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "apply") {
+      const planPath = valueOption(parsed.options.plan);
+      const approvedDigest = valueOption(parsed.options.approveDigest);
+      if (!planPath || !approvedDigest) throw new Error("install apply requires --plan PLAN.json and --approve-digest SHA256");
+      const plan = JSON.parse(await readFile(resolve(planPath), "utf8"));
+      process.stdout.write(`${JSON.stringify(await applyInstallerPlan(plan, { approvedDigest }), null, 2)}\n`);
       return;
     }
 
@@ -75,6 +106,30 @@ export async function main(argv = process.argv.slice(2)) {
       try {
         const result = command === "providers" ? await service.describeProviders() : await service.listModels();
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      } finally {
+        await service.close();
+      }
+      return;
+    }
+    if (command === "catalog" && subcommand === "build") {
+      const nativePath = valueOption(parsed.options.native);
+      const outputPath = valueOption(parsed.options.output);
+      if (!nativePath || !outputPath) throw new Error("catalog build requires --native PATH and --output PATH");
+      const nativeCatalog = JSON.parse(await readFile(resolve(nativePath), "utf8"));
+      const service = new BridgeService(config, { logger });
+      try {
+        const catalog = buildMergedModelCatalog(
+          nativeCatalog,
+          await service.listModels(),
+          await service.describeProviders(),
+          { favorites: arrayOption(parsed.options.favorite), showFree: parsed.options.showFree === true },
+        );
+        const destination = resolve(outputPath);
+        await mkdir(dirname(destination), { recursive: true });
+        const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
+        await writeFile(temporary, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o600 });
+        await rename(temporary, destination);
+        process.stdout.write(`${JSON.stringify({ path: destination, models: catalog.models.length }, null, 2)}\n`);
       } finally {
         await service.close();
       }
@@ -189,6 +244,7 @@ async function runCodexCommand(subcommand, options, bridgeConfigPath, config) {
     integratedModel: valueOption(options.integratedModel) ?? findProviderForMode(config, "integrated")?.config.model ?? config.defaults.model,
     delegateProvider: valueOption(options.delegateProvider) ?? findProviderForMode(config, "delegate")?.id ?? config.defaults.provider,
     delegateModel: valueOption(options.delegateModel) ?? findProviderForMode(config, "delegate")?.config.model ?? config.defaults.model,
+    modelCatalogPath: valueOption(options.modelCatalog),
   });
   if (subcommand === "snippet") {
     process.stdout.write(`${block}\n`);
@@ -401,16 +457,19 @@ function printHelp() {
   process.stdout.write(`threadspan — one task across every model
 
 Usage:
+  threadspan install plan --root PATH --output PLAN.json [--all|--component ID ...] [--long-context all|NAME ...]
+  threadspan install apply --plan PLAN.json --approve-digest SHA256
   threadspan config init [--config PATH] [--force]
   threadspan serve [--config PATH]
   threadspan mcp [--config PATH] [--remote URL|--embedded]
   threadspan doctor [--config PATH] [--live]
   threadspan providers [--config PATH]
   threadspan models [--config PATH]
+  threadspan catalog build --native PATH --output PATH [--favorite ROUTE ...] [--show-free]
   threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--json]
   threadspan delegate "task" --workspace PATH [same routing options] [--acceptance-command CMD ...]
   threadspan codex snippet [--config PATH]
-  threadspan codex install [--config PATH] [--codex-config PATH] [--embedded-mcp]
+  threadspan codex install [--config PATH] [--codex-config PATH] [--model-catalog PATH] [--embedded-mcp]
   threadspan codex uninstall [--codex-config PATH]
   threadspan skill install [--skill consult|managed-worker|all] [--target SKILLS_ROOT] [--force]
 

@@ -18,7 +18,7 @@ const DEFAULT_CONFIG = Object.freeze({
   logging: { level: "info", logBodies: false },
   sessions: { ttlMs: 24 * 60 * 60 * 1000, maxEntries: 500 },
   routing: { providerOrder: {} },
-  defaults: { provider: "cursor-ultra", mode: "consult", model: "auto" },
+  defaults: { provider: "cursor", mode: "consult", model: "auto" },
   providers: {},
 });
 
@@ -640,14 +640,38 @@ export function createExampleConfig() {
     sessions: { ttlMs: 86400000, maxEntries: 500 },
     routing: {
       providerOrder: {
-        consult: ["cursor-ultra", "grok-build", "nous", "openrouter"],
+        consult: ["cursor", "cursor-ultra", "grok-build", "nous", "openrouter"],
         integrated: ["nous", "openrouter", "xai-api"],
-        delegate: ["grok-build", "cursor-ultra"],
+        delegate: ["grok-build", "cursor", "cursor-ultra"],
       },
     },
-    defaults: { provider: "cursor-ultra", mode: "consult", model: "auto" },
+    defaults: { provider: "cursor", mode: "consult", model: "auto" },
     providers: {
+      cursor: {
+        adapter: "cursor-cli",
+        command: "cursor-agent",
+        model: "auto",
+        capabilities: ["consult", "delegate"],
+        maxPromptChars: 24000,
+        sandbox: "disabled",
+        consult: {
+          workspaceStrategy: "snapshot",
+          agentMode: "plan",
+          snapshotMaxBytes: 536870912,
+          snapshotMaxFiles: 100000,
+          copyInternalSymlinks: false,
+          exclude: [".git", "node_modules", ".venv", "venv", "dist", "build", ".next", "target", "coverage", ".cache"],
+        },
+        delegate: {
+          requireGit: true,
+          requireLinkedWorktree: true,
+          requireCleanStart: true,
+          denyBranches: ["main", "master", "trunk"],
+          force: false,
+        },
+      },
       "cursor-ultra": {
+        enabled: false,
         adapter: "cursor-sdk",
         apiKeyEnv: "CURSOR_API_KEY",
         model: "auto",
