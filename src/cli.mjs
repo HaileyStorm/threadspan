@@ -8,6 +8,7 @@ import { closeHttpServer, createHttpServer, listenHttpServer } from "./bridge/ht
 import { RemoteBridgeService } from "./bridge/remote-service.mjs";
 import { installCodexConfigBlock, renderCodexConfigBlock, resolveCodexConfigPath, uninstallCodexConfigBlock } from "./codex/config.mjs";
 import { buildMergedModelCatalog } from "./codex/catalog.mjs";
+import { discoverNativeCodexCatalog } from "./codex/app-server.mjs";
 import { installBridgeSkills, resolveCodexSkillsRoot } from "./codex/skill-install.mjs";
 import { createExampleConfig, loadConfig, resolveConfigPath, writeInitialConfig } from "./core/config.mjs";
 import { asBridgeError } from "./core/errors.mjs";
@@ -114,8 +115,10 @@ export async function main(argv = process.argv.slice(2)) {
     if (command === "catalog" && subcommand === "build") {
       const nativePath = valueOption(parsed.options.native);
       const outputPath = valueOption(parsed.options.output);
-      if (!nativePath || !outputPath) throw new Error("catalog build requires --native PATH and --output PATH");
-      const nativeCatalog = JSON.parse(await readFile(resolve(nativePath), "utf8"));
+      if (!outputPath) throw new Error("catalog build requires --output PATH");
+      const nativeCatalog = nativePath
+        ? JSON.parse(await readFile(resolve(nativePath), "utf8"))
+        : await discoverNativeCodexCatalog({ command: valueOption(parsed.options.codex) ?? "codex" });
       const service = new BridgeService(config, { logger });
       try {
         const catalog = buildMergedModelCatalog(
@@ -465,7 +468,7 @@ Usage:
   threadspan doctor [--config PATH] [--live]
   threadspan providers [--config PATH]
   threadspan models [--config PATH]
-  threadspan catalog build --native PATH --output PATH [--favorite ROUTE ...] [--show-free]
+  threadspan catalog build --output PATH [--native PATH|--codex PATH] [--favorite ROUTE ...] [--show-free]
   threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--json]
   threadspan delegate "task" --workspace PATH [same routing options] [--acceptance-command CMD ...]
   threadspan codex snippet [--config PATH]
