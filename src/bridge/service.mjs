@@ -331,6 +331,11 @@ export class BridgeService {
           ...(Array.isArray(input.acceptanceCommands) && input.acceptanceCommands.length > 0
             ? { bridge_acceptance_commands: input.acceptanceCommands.map(String) }
             : {}),
+          ...(input.scope && typeof input.scope === "object"
+            ? { bridge_scope: input.scope }
+            : Array.isArray(input.allowedPaths)
+              ? { bridge_scope: { allowed: input.allowedPaths.map(String), denied: Array.isArray(input.deniedPaths) ? input.deniedPaths.map(String) : [], nonGoals: Array.isArray(input.nonGoals) ? input.nonGoals.map(String) : [] } }
+              : {}),
           bridge_mode: mode,
           bridge_provider: provider,
           bridge_thread_id: threadId,

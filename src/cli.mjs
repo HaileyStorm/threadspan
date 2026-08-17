@@ -163,6 +163,7 @@ export async function main(argv = process.argv.slice(2)) {
           ...(valueOption(parsed.options.coordinatorId) ? { coordinatorId: valueOption(parsed.options.coordinatorId) } : {}),
           ...(valueOption(parsed.options.workerGroup) ? { workerGroup: valueOption(parsed.options.workerGroup) } : {}),
           ...(arrayOption(parsed.options.acceptanceCommand).length > 0 ? { acceptanceCommands: arrayOption(parsed.options.acceptanceCommand) } : {}),
+          ...(arrayOption(parsed.options.allowPath).length > 0 ? { allowedPaths: arrayOption(parsed.options.allowPath), deniedPaths: arrayOption(parsed.options.denyPath), nonGoals: arrayOption(parsed.options.nonGoal) } : {}),
         };
         const result = command === "consult" ? await service.consult(input) : await service.delegate(input);
         writeConvenienceResult(result, { json: parsed.options.json === true });
@@ -470,7 +471,7 @@ Usage:
   threadspan models [--config PATH]
   threadspan catalog build --output PATH [--native PATH|--codex PATH] [--favorite ROUTE ...] [--show-free]
   threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--json]
-  threadspan delegate "task" --workspace PATH [same routing options] [--acceptance-command CMD ...]
+  threadspan delegate "task" --workspace PATH --allow-path PATH ... [--deny-path PATH ...] [--non-goal TEXT ...] [same routing options] [--acceptance-command CMD ...]
   threadspan codex snippet [--config PATH]
   threadspan codex install [--config PATH] [--codex-config PATH] [--model-catalog PATH] [--embedded-mcp]
   threadspan codex uninstall [--codex-config PATH]
