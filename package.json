@@ -1,0 +1,58 @@
+{
+  "name": "cursor-codex-bridge",
+  "version": "0.2.1",
+  "description": "Local Responses API and MCP bridge for Consult, Integrated, and Delegate workflows across Cursor, Grok Build/xAI, Nous Portal, DeepSeek, and compatible providers.",
+  "type": "module",
+  "bin": {
+    "cursor-bridge": "./src/cli.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "src",
+    "skills",
+    "prompts",
+    "config",
+    "docs",
+    "examples",
+    "scripts/check.mjs",
+    "test",
+    "README.md",
+    "DELIVERY.md",
+    "LICENSE",
+    "NOTICE.md",
+    "AGENTS.md",
+    "STATUS.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "check": "node ./scripts/check.mjs",
+    "test": "node --test --test-reporter=spec test/*.test.mjs",
+    "test:watch": "node --test --watch test/*.test.mjs",
+    "verify": "npm run check && npm test",
+    "pack:check": "npm pack --dry-run"
+  },
+  "optionalDependencies": {
+    "@cursor/sdk": "1.0.23"
+  },
+  "keywords": [
+    "cursor",
+    "codex",
+    "mcp",
+    "responses-api",
+    "deepseek",
+    "nous-portal",
+    "agent-bridge",
+    "grok-build",
+    "xai",
+    "managed-worker",
+    "worktree",
+    "grok"
+  ],
+  "license": "MIT"
+}

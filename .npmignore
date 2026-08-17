@@ -1,0 +1,7 @@
+coverage/
+.cursor-bridge/
+*.log
+.DS_Store
+Thumbs.db
+.env
+config.local.jsonc

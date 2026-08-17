@@ -1,0 +1,12 @@
+---
+description: Select and use Consult, Integrated, and Delegate without confusing advisory and execution authority.
+alwaysApply: true
+---
+
+- Use Consult for a secondary advisory opinion. The current Cursor agent remains responsible for judgment, edits, tools, validation, and the final response.
+- Use the `consult` MCP tool selectively for difficult, uncertain, high-risk, or disputed questions. Send a compact packet: exact question, current approach, evidence, constraints, and relevant artifacts.
+- Reuse the returned `threadId` as `thread_id` for follow-ups on the same consultation topic.
+- Verify consultant claims against the workspace, tests, and authoritative documentation. Do not present the consultant as having edited the live workspace.
+- Use Delegate only when the secondary provider-owned agent should execute a bounded task. Give every writable worker a dedicated clean worktree, finite scope/turn/time budget, and exact acceptance commands. Inspect the full diff and independently rerun validation afterward.
+- Integrated means a raw external model is active while the host client owns tools. Do not label Cursor SDK or Grok Build as Integrated; use direct raw APIs for that mode.
+- Respect provider/user privacy and cost constraints. Do not send workspace content to an external provider when the user has declined or when the content should not leave the current environment.

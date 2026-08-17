@@ -1,0 +1,109 @@
+{
+  "providers": {
+    "grok-build": {
+      "enabled": false,
+      "adapter": "grok-build",
+      "command": "~/.grok/bin/grok",
+      "requireAbsoluteCommand": true,
+      "versionPattern": "^grok\\s",
+      "pin": { "recordSha256": true },
+      "model": "grok-4.6",
+      "discoverModels": true,
+      "strictModelList": true,
+      "capabilities": ["consult", "delegate"],
+      "allowedEfforts": ["low", "medium", "high"],
+      "maxTurnsCeiling": 24,
+      "permissionMode": "dontAsk",
+      "sandbox": "strict",
+      "noAutoUpdate": true,
+      "allowSubagents": true,
+      "noMemory": true,
+      "allowWebSearch": true,
+      "inheritEnv": false,
+      "envAllowlist": [
+        "HOME", "USER", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+        "PATH", "PATHEXT", "SystemRoot", "ComSpec", "TEMP", "TMP", "TMPDIR"
+      ],
+      "admission": {
+        "maxActive": 6,
+        "minStartIntervalMs": 1400,
+        "maxUnitsPerWindow": 18,
+        "windowMs": 60000
+      },
+      "ledger": { "enabled": true, "includeOutput": false },
+      "consult": {
+        "workspaceStrategy": "snapshot",
+        "profile": "diagnose",
+        "maxTurns": 8,
+        "expectedTurns": 2,
+        "allow": [],
+        "deny": []
+      },
+      "delegate": {
+        "profile": "balanced",
+        "maxTurns": 16,
+        "expectedTurns": 4,
+        "requireGit": true,
+        "requireLinkedWorktree": true,
+        "requireCleanStart": true,
+        "denyBranches": ["main", "master", "trunk"],
+        "allow": [],
+        "deny": []
+      }
+    },
+
+    "xai-api": {
+      "enabled": false,
+      "adapter": "openai-chat",
+      "baseUrl": "https://api.x.ai/v1",
+      "apiKeyEnv": "XAI_API_KEY",
+      "model": "grok-4.6",
+      "models": ["grok-4.6"],
+      "capabilities": ["consult", "integrated"],
+      "extraBody": { "reasoning_effort": "high" },
+      "retryWithoutStreaming": false
+    },
+
+    "local-openai-compatible": {
+      "adapter": "openai-chat",
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "apiKeyEnv": "LOCAL_MODEL_API_KEY",
+      "model": "served-model-id",
+      "models": ["served-model-id"],
+      "capabilities": ["consult", "integrated"],
+      "streaming": true,
+      "retryWithoutStreaming": true,
+      "discoverModels": false,
+      "developerAsSystem": false,
+      "images": false,
+      "headers": {},
+      "extraBody": {}
+    },
+
+    "command-consultant": {
+      "adapter": "command",
+      "command": "secondary-agent",
+      "args": [
+        "--mode", "{mode}",
+        "--model", "{model}",
+        "--workspace", "{workspace}",
+        "--thread", "{threadId}"
+      ],
+      "cwd": "workspace",
+      "stdin": true,
+      "outputFormat": "jsonl",
+      "timeoutMs": 1800000,
+      "maxOutputBytes": 16777216,
+      "shell": false,
+      "killTree": true,
+      "inheritEnv": false,
+      "envAllowlist": ["HOME", "USERPROFILE", "PATH", "PATHEXT", "SystemRoot", "TEMP", "TMP"],
+      "durableThreads": true,
+      "tools": true,
+      "capabilities": ["consult", "delegate"],
+      "env": {
+        "SECONDARY_AGENT_PROFILE": "bridge-{mode}"
+      }
+    }
+  }
+}

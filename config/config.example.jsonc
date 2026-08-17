@@ -1,0 +1,227 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8743,
+    "authTokenEnv": "CURSOR_BRIDGE_TOKEN",
+    "allowUnauthenticatedLoopback": true,
+    "maxBodyBytes": 8388608,
+    "requestTimeoutMs": 1800000,
+    "maxConcurrentRequests": 4,
+    "allowedOrigins": []
+  },
+  "responses": {
+    "exposeReasoning": false
+  },
+  "logging": {
+    "level": "info",
+    "logBodies": false
+  },
+  "sessions": {
+    "ttlMs": 86400000,
+    "maxEntries": 500
+  },
+  "defaults": {
+    "provider": "cursor-ultra",
+    "mode": "consult",
+    "model": "auto"
+  },
+  "providers": {
+    "cursor-ultra": {
+      "adapter": "cursor-sdk",
+      "apiKeyEnv": "CURSOR_API_KEY",
+      "model": "auto",
+      "capabilities": [
+        "consult",
+        "delegate"
+      ],
+      "consult": {
+        "workspaceStrategy": "snapshot",
+        "agentMode": "plan",
+        "snapshotMaxBytes": 536870912,
+        "snapshotMaxFiles": 100000,
+        "copyInternalSymlinks": false,
+        "exclude": [
+          ".git",
+          "node_modules",
+          ".venv",
+          "venv",
+          "dist",
+          "build",
+          ".next",
+          "target",
+          "coverage",
+          ".cache"
+        ]
+      },
+      "delegate": {
+        "agentMode": "agent",
+        "agentTtlMs": 1800000,
+        "maxAgents": 8,
+        "includeToolStatus": false
+      },
+      "local": {
+        "settingSources": [],
+        "sandboxEnabled": true,
+        "autoReview": false
+      }
+    },
+    "grok-build": {
+      "enabled": false,
+      "adapter": "grok-build",
+      "command": "~/.grok/bin/grok",
+      "requireAbsoluteCommand": true,
+      "versionPattern": "^grok\\s",
+      "pin": {
+        "recordSha256": true
+      },
+      "model": "grok-4.6",
+      "discoverModels": true,
+      "strictModelList": true,
+      "capabilities": [
+        "consult",
+        "delegate"
+      ],
+      "allowedEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "maxTurnsCeiling": 24,
+      "noAutoUpdate": true,
+      "allowSubagents": true,
+      "noMemory": true,
+      "allowWebSearch": true,
+      "inheritEnv": false,
+      "envAllowlist": [
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "ComSpec",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL"
+      ],
+      "permissionMode": "dontAsk",
+      "sandbox": "strict",
+      "admission": {
+        "maxActive": 6,
+        "minStartIntervalMs": 1400,
+        "windowMs": 60000,
+        "maxUnitsPerWindow": 18,
+        "maxQueue": 100
+      },
+      "ledger": {
+        "enabled": true,
+        "required": false,
+        "includeOutput": false
+      },
+      "consult": {
+        "workspaceStrategy": "snapshot",
+        "profile": "diagnose",
+        "reasoningEffort": "medium",
+        "maxTurns": 8,
+        "expectedTurns": 2,
+        "noPlan": true,
+        "useJsonSchema": false,
+        "allow": [],
+        "deny": [],
+        "snapshotMaxBytes": 536870912,
+        "snapshotMaxFiles": 100000,
+        "copyInternalSymlinks": false,
+        "exclude": [
+          ".git",
+          "node_modules",
+          ".venv",
+          "venv",
+          "dist",
+          "build",
+          ".next",
+          "target",
+          "coverage",
+          ".cache"
+        ]
+      },
+      "delegate": {
+        "profile": "balanced",
+        "reasoningEffort": "medium",
+        "maxTurns": 16,
+        "expectedTurns": 4,
+        "requireGit": true,
+        "requireLinkedWorktree": true,
+        "requireCleanStart": true,
+        "denyBranches": [
+          "main",
+          "master",
+          "trunk"
+        ],
+        "useJsonSchema": false,
+        "allow": [],
+        "deny": []
+      }
+    },
+    "xai-api": {
+      "enabled": false,
+      "adapter": "openai-chat",
+      "baseUrl": "https://api.x.ai/v1",
+      "apiKeyEnv": "XAI_API_KEY",
+      "model": "grok-4.6",
+      "models": [
+        "grok-4.6"
+      ],
+      "extraBody": {
+        "reasoning_effort": "high"
+      },
+      "retryWithoutStreaming": false,
+      "capabilities": [
+        "consult",
+        "integrated"
+      ]
+    },
+    "nous": {
+      "adapter": "nous",
+      "baseUrl": "http://127.0.0.1:8645/v1",
+      "apiKey": "unused-proxy-attaches-real-creds",
+      "model": "Hermes-4-70B",
+      "models": [
+        "Hermes-4-70B",
+        "Hermes-4.3-36B",
+        "Hermes-4-405B"
+      ],
+      "capabilities": [
+        "consult",
+        "integrated"
+      ]
+    },
+    "deepseek": {
+      "adapter": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-pro",
+      "models": [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash"
+      ],
+      "thinking": {
+        "type": "enabled"
+      },
+      "reasoningEffort": "high",
+      "capabilities": [
+        "consult",
+        "integrated"
+      ]
+    }
+  }
+}
