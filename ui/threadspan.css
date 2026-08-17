@@ -437,6 +437,37 @@ a {
   margin-bottom: 0.4rem;
 }
 
+.route-map-disclosure > summary {
+  cursor: pointer;
+  min-height: 2.5rem;
+  display: flex;
+  align-items: center;
+  font-weight: 650;
+}
+
+.route-map {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.route-node {
+  padding: 0.55rem;
+  border: 1px solid var(--line);
+  background: var(--paper-2);
+}
+
+.route-node[data-availability="unavailable"] { opacity: 0.58; }
+
+.route-node__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.route-node__modes { margin: 0.35rem 0 0; }
+
 .muted {
   color: var(--muted);
 }
@@ -448,6 +479,7 @@ a {
 
 .route-bar__toggle:hover,
 .history-disclosure > summary:hover,
+.route-map-disclosure > summary:hover,
 .filter-row label:hover {
   background: var(--paper-2);
 }

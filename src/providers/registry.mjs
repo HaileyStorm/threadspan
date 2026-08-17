@@ -204,6 +204,35 @@ export class ProviderRegistry {
     }]));
   }
 
+  /** Return a privacy-minimized provider/model graph for the local operator UI. */
+  async routeMap(descriptions) {
+    const providers = descriptions ?? await this.describe();
+    const nodes = providers.map((item) => {
+      const profile = this.config.routing?.providerProfiles?.[item.id] ?? {};
+      const usage = this.usage.get(item.id) ?? emptyUsage();
+      return {
+        id: item.id,
+        adapter: item.adapter,
+        label: profile.label ?? item.id,
+        intelligence: boundedWeight(profile.intelligence, defaultIntelligence(item.adapter)),
+        specialties: Array.isArray(profile.specialties) ? profile.specialties.map(String).slice(0, 6) : defaultSpecialties(item.adapter),
+        modes: Object.entries(item.capabilities?.modes ?? {}).filter(([, entry]) => entry?.supported).map(([mode]) => mode),
+        availability: item.health?.status ?? "unknown",
+        models: (item.models ?? []).map((model) => model.id).filter(Boolean).slice(0, 12),
+        usage,
+      };
+    });
+    const edges = [];
+    for (const mode of ["consult", "integrated", "delegate"]) {
+      const eligible = this.#eligibleProviders(mode);
+      eligible.forEach(([id], index) => {
+        const node = nodes.find((candidate) => candidate.id === id);
+        edges.push({ mode, provider: id, priority: index + 1, weight: this.#routeScore(id, mode, index), intelligence: node?.intelligence ?? 50 });
+      });
+    }
+    return { nodes, edges };
+  }
+
   /** Record a successful provider turn for live routing and utilization displays. */
   recordSuccess(route, usage = {}) {
     const id = route.providerId;
@@ -245,7 +274,19 @@ export class ProviderRegistry {
     const rank = new Map(preferred.map((id, index) => [id, index]));
     return [...this.providers.entries()]
       .filter(([id, provider]) => provider.capabilities().modes?.[mode]?.supported && this.#health(id).status !== "unavailable")
-      .sort(([left], [right]) => (rank.get(left) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right) ?? Number.MAX_SAFE_INTEGER));
+      .sort(([left], [right]) => this.#routeScore(left, mode, rank.get(left)) - this.#routeScore(right, mode, rank.get(right)));
+  }
+
+  #routeScore(id, mode, preferredRank) {
+    const profile = this.config.routing?.providerProfiles?.[id] ?? {};
+    const usage = this.usage.get(id) ?? emptyUsage();
+    const health = this.#health(id).status;
+    const preference = Number.isSafeInteger(preferredRank) ? preferredRank * 100 : 10_000;
+    const healthPenalty = health === "available" ? 0 : health === "unknown" ? 15 : 40;
+    const failurePenalty = usage.requests > 0 ? Math.round((usage.failures / usage.requests) * 60) : 0;
+    const balancePenalty = Math.min(50, Math.floor(usage.requests / 4));
+    const modeBias = Number(profile.modeWeights?.[mode] ?? 0);
+    return preference + healthPenalty + failurePenalty + balancePenalty - (Number.isFinite(modeBias) ? modeBias : 0);
   }
 
   #markCatalog(id, available, error) {
@@ -274,4 +315,26 @@ function emptyUsage() {
 function numberOrZero(value) {
   const number = Number(value ?? 0);
   return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function boundedWeight(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(1, Math.min(100, Math.round(numeric))) : fallback;
+}
+
+function defaultIntelligence(adapter) {
+  return ({ "grok-build": 92, "cursor-cli": 90, "cursor-sdk": 90, nous: 86, "openai-chat": 88, openrouter: 78, deepseek: 84, command: 70 })[adapter] ?? 65;
+}
+
+function defaultSpecialties(adapter) {
+  return ({
+    "grok-build": ["coding", "research", "delegation"],
+    "cursor-cli": ["coding", "repository", "delegation"],
+    "cursor-sdk": ["coding", "repository", "delegation"],
+    nous: ["reasoning", "coding", "integrated"],
+    "openai-chat": ["reasoning", "analysis", "integrated"],
+    openrouter: ["breadth", "free-models", "integrated"],
+    deepseek: ["reasoning", "coding", "integrated"],
+    command: ["custom"],
+  })[adapter] ?? ["general"];
 }

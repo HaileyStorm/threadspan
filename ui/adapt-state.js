@@ -113,6 +113,18 @@
       mode: "delegate",
       verifiedOnly: true,
     },
+    routeMap: {
+      nodes: [
+        { id: "grok", label: "Grok Build", intelligence: 92, availability: "available", modes: ["consult", "delegate"], specialties: ["coding", "research", "delegation"], usage: { requests: 8, failures: 0 } },
+        { id: "cursor", label: "Cursor", intelligence: 90, availability: "available", modes: ["consult", "delegate"], specialties: ["repository", "coding", "delegation"], usage: { requests: 6, failures: 0 } },
+        { id: "nous", label: "Nous", intelligence: 86, availability: "available", modes: ["consult", "integrated"], specialties: ["reasoning", "coding", "integrated"], usage: { requests: 4, failures: 0 } },
+      ],
+      edges: [
+        { mode: "consult", provider: "cursor", priority: 1, weight: 0 },
+        { mode: "integrated", provider: "nous", priority: 1, weight: 0 },
+        { mode: "delegate", provider: "grok", priority: 1, weight: 0 },
+      ],
+    },
   };
 
   /**
@@ -233,6 +245,7 @@
         verifiedOnly: filters.verifiedOnly === true,
       },
       modeNote: MODE_NOTES[route.mode] || "Mode authority is unspecified.",
+      routeMap: adaptRouteMap(raw.routeMap),
     };
   }
 
@@ -408,6 +421,7 @@
       reroute: null,
       filters: { mode: "all", verifiedOnly: false },
       modeNote: "",
+      routeMap: { nodes: [], edges: [] },
     };
   }
 
@@ -418,6 +432,29 @@
     const model = emptyModel(message);
     model.status = "error";
     return model;
+  }
+
+  function adaptRouteMap(raw) {
+    if (!isObject(raw)) return { nodes: [], edges: [] };
+    const nodes = Array.isArray(raw.nodes) ? raw.nodes.map((node) => {
+      if (!isObject(node) || !text(node.id)) return null;
+      return {
+        id: text(node.id),
+        label: text(node.label) || text(node.id),
+        intelligence: Math.max(1, Math.min(100, finiteNumber(node.intelligence, 50))),
+        availability: text(node.availability) || "unknown",
+        modes: Array.isArray(node.modes) ? node.modes.map((mode) => text(mode).toLowerCase()).filter((mode) => MODES.includes(mode)) : [],
+        specialties: Array.isArray(node.specialties) ? node.specialties.map(text).filter(Boolean).slice(0, 6) : [],
+        usage: isObject(node.usage) ? { requests: finiteNumber(node.usage.requests, 0), failures: finiteNumber(node.usage.failures, 0) } : { requests: 0, failures: 0 },
+      };
+    }).filter(Boolean) : [];
+    const edges = Array.isArray(raw.edges) ? raw.edges.map((edge) => {
+      if (!isObject(edge) || !text(edge.provider)) return null;
+      const mode = text(edge.mode).toLowerCase();
+      if (!MODES.includes(mode)) return null;
+      return { mode, provider: text(edge.provider), priority: finiteNumber(edge.priority, 0), weight: finiteNumber(edge.weight, 0) };
+    }).filter(Boolean) : [];
+    return { nodes, edges };
   }
 
   /**

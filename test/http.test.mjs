@@ -16,6 +16,14 @@ test("HTTP surface serves health, models, buffered Responses, and SSE", async (t
   assert.equal(health.status, "ok");
   const models = await fetch(`${base}/v1/models`).then((response) => response.json());
   assert.ok(models.data.some((model) => model.id === "consult/mock/mock-model"));
+  const sidecar = await fetch(`${base}/threadspan/`);
+  assert.equal(sidecar.status, 200);
+  assert.match(sidecar.headers.get("content-type"), /text\/html/);
+  assert.match(await sidecar.text(), /One task\. Every model\./);
+  const sidecarState = await fetch(`${base}/threadspan/state`).then((response) => response.json());
+  assert.equal(sidecarState.product.name, "Threadspan");
+  assert.ok(sidecarState.routeMap.nodes.some((node) => node.id === "mock"));
+  assert.equal("thread" in sidecarState, false);
 
   const bufferedResponse = await fetch(`${base}/v1/responses`, {
     method: "POST", headers: { "content-type": "application/json" },

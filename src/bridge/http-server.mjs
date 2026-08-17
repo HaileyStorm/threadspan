@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { URL } from "node:url";
 import { asBridgeError, BridgeError, RequestError } from "../core/errors.mjs";
 
@@ -31,6 +32,14 @@ export function createHttpServer(service, config) {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
       if (request.method === "OPTIONS") {
         writeOptionsResponse(request, response, config);
+        return;
+      }
+      if (request.method === "GET" && (url.pathname === "/threadspan" || url.pathname.startsWith("/threadspan/"))) {
+        if (!isLoopbackAddress(request.socket.remoteAddress ?? "")) {
+          writeJson(response, 403, errorEnvelope("loopback_required", "Threadspan UI is available only from the local host"));
+          return;
+        }
+        await handleThreadspanUiRequest(service, url.pathname, response);
         return;
       }
       enforceRequestAuthentication(request, config);
@@ -76,6 +85,36 @@ export function createHttpServer(service, config) {
       request.off("aborted", onDisconnect);
     }
   });
+}
+
+const THREADSPAN_ASSETS = new Map([
+  ["/threadspan/", ["index.html", "text/html; charset=utf-8"]],
+  ["/threadspan/index.html", ["index.html", "text/html; charset=utf-8"]],
+  ["/threadspan/threadspan.css", ["threadspan.css", "text/css; charset=utf-8"]],
+  ["/threadspan/threadspan.js", ["threadspan.js", "text/javascript; charset=utf-8"]],
+  ["/threadspan/adapt-state.js", ["adapt-state.js", "text/javascript; charset=utf-8"]],
+  ["/threadspan/mark.svg", ["mark.svg", "image/svg+xml"]],
+]);
+
+async function handleThreadspanUiRequest(service, pathname, response) {
+  if (pathname === "/threadspan") {
+    response.writeHead(302, { location: "/threadspan/", "cache-control": "no-store" });
+    response.end();
+    return;
+  }
+  if (pathname === "/threadspan/state") {
+    writeJson(response, 200, await service.threadspanState());
+    return;
+  }
+  const asset = THREADSPAN_ASSETS.get(pathname);
+  if (!asset) {
+    writeJson(response, 404, errorEnvelope("not_found", `No Threadspan UI asset for ${pathname}`));
+    return;
+  }
+  const [name, contentType] = asset;
+  const body = await readFile(new URL(`../../ui/${name}`, import.meta.url));
+  response.writeHead(200, { "content-type": contentType, "content-length": body.byteLength, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+  response.end(body);
 }
 
 /**

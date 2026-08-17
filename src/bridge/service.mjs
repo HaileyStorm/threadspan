@@ -220,6 +220,52 @@ export class BridgeService {
     return this.registry.listRoutedModels();
   }
 
+  /** Return sanitized live state for the loopback-only Threadspan sidecar. */
+  async threadspanState() {
+    this.#assertOpen();
+    const providers = await this.registry.describe();
+    const routeMap = await this.registry.routeMap(providers);
+    const mode = this.config.defaults?.mode ?? "consult";
+    const requestedProvider = this.config.defaults?.provider ?? "threadspan";
+    const route = this.registry.resolveRoute({ mode, providerId: requestedProvider, model: this.config.defaults?.model ?? "auto" });
+    const selected = providers.find((item) => item.id === route.providerId);
+    const candidates = routeMap.edges.filter((edge) => edge.mode === mode && edge.provider !== route.providerId).slice(0, 2);
+    const runtime = this.registry.runtimeStats();
+    const utilization = Object.entries(runtime).flatMap(([id, item]) => {
+      const active = Number(item.active ?? item.activeJobs ?? item.retained ?? NaN);
+      const limit = Number(item.maxActive ?? item.capacity ?? item.maxRetained ?? NaN);
+      if (!Number.isFinite(active) || !Number.isFinite(limit) || limit <= 0) return [];
+      return [{ id, label: `${id} active`, used: active, limit, note: "Daemon-local utilization; not a provider entitlement guarantee." }];
+    });
+    return {
+      status: "ready",
+      product: { name: "Threadspan", tagline: "One task. Every model." },
+      hud: { assumedInjection: false, placeholder: "Local route control beneath the host agent HUD when the host supports it." },
+      route: {
+        id: `${mode}/${route.providerId}/${route.model}`,
+        mode,
+        provider: route.providerId,
+        model: route.model,
+        verified: selected?.health?.status === "available",
+        verifiedAt: selected?.health?.catalogCheckedAt ? new Date(selected.health.catalogCheckedAt).toISOString() : "",
+        verificationSource: selected?.modelError ? "Configured fallback; live catalog unavailable." : "Live daemon catalog and capability check.",
+      },
+      quota: null,
+      context: null,
+      fallbacks: candidates.map((edge) => {
+        const node = routeMap.nodes.find((candidate) => candidate.id === edge.provider);
+        const model = node?.models?.[0] ?? "auto";
+        return { id: `${mode}/${edge.provider}/${model}`, mode, provider: edge.provider, model, qualified: node?.availability !== "unavailable", reason: `Priority ${edge.priority}; weight ${edge.weight}; ${node?.specialties?.join(", ") ?? "general"}.` };
+      }),
+      checkpoint: null,
+      utilization,
+      history: [],
+      reroute: null,
+      filters: { mode: "all", verifiedOnly: false },
+      routeMap,
+    };
+  }
+
   /** Return count-only service diagnostics. */
   stats() {
     return {

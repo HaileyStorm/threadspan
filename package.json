@@ -19,6 +19,7 @@
     "examples",
     "scripts/check.mjs",
     "test",
+    "ui",
     "README.md",
     "DELIVERY.md",
     "LICENSE",

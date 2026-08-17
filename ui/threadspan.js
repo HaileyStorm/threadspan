@@ -168,6 +168,7 @@
     renderUtilization(next.utilization);
     renderReroute(next.reroute);
     renderHistory(next.history);
+    renderRouteMap(next.routeMap);
     syncFilterControls(next.filters);
   }
 
@@ -326,6 +327,38 @@
     }
   }
 
+  function renderRouteMap(routeMap) {
+    const el = root.querySelector("[data-field='route-map']");
+    if (!el) return;
+    el.replaceChildren();
+    if (!routeMap?.nodes?.length) {
+      el.append(noteEl("No provider hierarchy is published."));
+      return;
+    }
+    const byProvider = new Map(routeMap.edges.map((edge) => [`${edge.mode}:${edge.provider}`, edge]));
+    for (const node of routeMap.nodes) {
+      const card = document.createElement("article");
+      card.className = "route-node";
+      card.dataset.availability = node.availability;
+      const head = document.createElement("div");
+      head.className = "route-node__head";
+      const name = document.createElement("strong");
+      name.textContent = node.label;
+      const score = document.createElement("span");
+      score.className = "mono";
+      score.textContent = `I${node.intelligence}`;
+      head.append(name, score);
+      const modes = document.createElement("p");
+      modes.className = "route-node__modes";
+      modes.textContent = node.modes.map((mode) => {
+        const edge = byProvider.get(`${mode}:${node.id}`);
+        return edge ? `${titleMode(mode)} #${edge.priority}` : titleMode(mode);
+      }).join(" · ");
+      card.append(head, modes, noteEl(`${node.availability} · ${node.specialties.join(", ") || "general"} · ${node.usage.requests} uses / ${node.usage.failures} failures`));
+      el.appendChild(card);
+    }
+  }
+
   /**
    * @param {{mode: string, verifiedOnly: boolean}} filters
    */
@@ -365,7 +398,8 @@
 
   root.querySelector("[data-field='filters']")?.addEventListener("change", applyCurrentFilters);
 
-  const requested = safeStateUrl(new URLSearchParams(location.search).get("state") || "");
+  const explicitState = new URLSearchParams(location.search).get("state") || "";
+  const requested = safeStateUrl(explicitState || (location.pathname.startsWith("/threadspan/") ? "./state" : ""));
   if (!requested) {
     show(sourceModel);
     return;

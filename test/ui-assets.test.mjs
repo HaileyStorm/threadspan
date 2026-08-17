@@ -59,6 +59,7 @@ test("HTML carries route-bar semantics, landmarks, and HUD non-injection copy", 
     "checkpoint",
     "utilization",
     "history",
+    "route-map",
     "filters",
     "reroute",
   ]) {
