@@ -86,6 +86,8 @@ test("Codex Worker argv selects a shared-daemon profile and Integrated route wit
   assert.equal(args[args.indexOf("--cd") + 1], "/tmp/linked worker");
   assert.ok(args.includes("model_providers.threadspan_bridge.request_max_retries=0"));
   assert.ok(args.includes("model_providers.threadspan_bridge.stream_max_retries=0"));
+  assert.ok(args.includes('approval_policy="never"'));
+  assert.equal(args.includes("--ask-for-approval"), false);
   assert.equal(args.at(-1), "-");
   assert.equal(args.some((arg) => arg.includes("Implement the bounded change")), false);
 });

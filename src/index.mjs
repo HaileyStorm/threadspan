@@ -21,7 +21,9 @@ export { spawnManagedChild, terminateProcessTree, runCapturedProcess, ManagedPro
 export { ProviderAdapter, BRIDGE_MODES } from "./providers/base.mjs";
 export { ProviderRegistry, registerProviderAdapter } from "./providers/registry.mjs";
 export { CursorCliProvider, parseCursorModels } from "./providers/cursor-cli.mjs";
+export { CodexWorkerProvider, buildCodexWorkerArguments, parseCodexWorkerJsonl } from "./providers/codex-worker.mjs";
 export { OpenRouterProvider } from "./providers/openrouter.mjs";
+export { UsageLedger, aggregateUsageEvents, normalizeUsageEvent, resolveUsageLedgerPath } from "./core/usage-ledger.mjs";
 export * from "./installer/index.mjs";
 export {
   GrokBuildProvider,

@@ -7,6 +7,7 @@ import { Logger } from "../core/logger.mjs";
 import { boundedRedactedJson } from "../core/redact.mjs";
 import { SessionStore } from "../core/session-store.mjs";
 import { ProviderRegistry } from "../providers/registry.mjs";
+import { UsageLedger } from "../core/usage-ledger.mjs";
 import { ResponsesAssembler } from "./responses.mjs";
 
 /**
@@ -21,7 +22,8 @@ export class BridgeService {
     this.config = config;
     this.logger = dependencies.logger ?? new Logger({ level: config.logging?.level ?? "info" });
     this.sessions = dependencies.sessions ?? new SessionStore(config.sessions);
-    this.registry = dependencies.registry ?? new ProviderRegistry(config, { logger: this.logger });
+    this.usageLedger = dependencies.usageLedger ?? new UsageLedger({ ...(config.usageLedger ?? {}), enabled: config.usageLedger?.enabled === true });
+    this.registry = dependencies.registry ?? new ProviderRegistry(config, { logger: this.logger, usageLedger: this.usageLedger });
     this.convenienceThreads = dependencies.convenienceThreads ?? new KeyedSerialQueue();
     this.closed = false;
   }
@@ -40,6 +42,7 @@ export class BridgeService {
     this.#assertOpen();
     validateResponseRequest(request);
     const traceId = createTraceId();
+    const startedAt = Date.now();
     const previousRecord = request.previous_response_id ? this.sessions.getResponse(request.previous_response_id) : undefined;
     if (request.previous_response_id && !previousRecord) {
       throw new RequestError(`Unknown or expired previous_response_id '${request.previous_response_id}'`);
@@ -108,7 +111,7 @@ export class BridgeService {
         await emitAll(assembler.accept(providerEvent), options.onEvent);
       }
       await emitAll(assembler.finish(terminal), options.onEvent);
-      this.registry.recordSuccess(route, assembler.usage);
+      await this.registry.recordSuccess(route, assembler.usage, { durationMs: Date.now() - startedAt, ...usageEvidence(assembler.response.bridge_provider_metadata) });
 
       const assistant = assembler.assistantMessage();
       const storedMessages = [...messages, assistant];
@@ -153,7 +156,7 @@ export class BridgeService {
     } catch (error) {
       const bridgeError = asBridgeError(error);
       if (!options.signal?.aborted && (bridgeError.code === "provider_error" || bridgeError.status >= 500)) {
-        this.registry.recordFailure(route, bridgeError);
+        await this.registry.recordFailure(route, bridgeError, { durationMs: Date.now() - startedAt, partial: assembler.response?.output?.length > 0 });
       }
       await emitAll(assembler.fail({ code: bridgeError.code, message: bridgeError.message }), options.onEvent).catch(() => undefined);
       this.logger.error("Response failed", {
@@ -225,6 +228,7 @@ export class BridgeService {
     this.#assertOpen();
     const providers = await this.registry.describe();
     const routeMap = await this.registry.routeMap(providers);
+    const usageSummary = await this.registry.usageSummary({ recentLimit: 50 });
     const mode = this.config.defaults?.mode ?? "consult";
     const requestedProvider = this.config.defaults?.provider ?? "threadspan";
     const route = this.registry.resolveRoute({ mode, providerId: requestedProvider, model: this.config.defaults?.model ?? "auto" });
@@ -259,7 +263,7 @@ export class BridgeService {
       }),
       checkpoint: null,
       utilization,
-      history: [],
+      history: usageSummary.recentEvents.map((event) => ({ at: event.timestamp, route: `${event.mode}/${event.provider}/${event.model}`, mode: event.mode, event: event.status, verified: event.evidenceClass === "live-provider" })),
       reroute: null,
       filters: { mode: "all", verifiedOnly: false },
       routeMap,
@@ -282,6 +286,7 @@ export class BridgeService {
     if (this.closed) return;
     this.closed = true;
     await this.registry.close();
+    await this.usageLedger.flush();
   }
 
   /**
@@ -354,6 +359,23 @@ export class BridgeService {
   #assertOpen() {
     if (this.closed) throw new Error("BridgeService is closed");
   }
+}
+
+function usageEvidence(metadata) {
+  const grok = metadata?.grokBuild ?? {};
+  const worker = metadata?.codexWorker ?? {};
+  const upstream = metadata?.upstream ?? {};
+  const costTicks = Number.isSafeInteger(grok.totalCostUsdTicks)
+    ? grok.totalCostUsdTicks
+    : Number.isFinite(upstream.cost) && upstream.cost >= 0
+      ? Math.round(upstream.cost * 10_000_000_000)
+      : undefined;
+  return {
+    evidenceClass: "live-provider",
+    ...(costTicks === undefined ? {} : { costTicks }),
+    ...(worker.process ? { processCount: 1 } : {}),
+    ...(Number.isSafeInteger(grok.actualTurns) ? { turnCount: grok.actualTurns } : {}),
+  };
 }
 
 function continuationRouteChange(previousRecord, route) {

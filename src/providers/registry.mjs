@@ -8,6 +8,7 @@ import { NousProvider } from "./nous.mjs";
 import { OpenAiChatProvider } from "./openai-chat.mjs";
 import { OpenRouterProvider } from "./openrouter.mjs";
 import { CommandProvider } from "./command.mjs";
+import { CodexWorkerProvider } from "./codex-worker.mjs";
 
 /** @type {Map<string, new (id: string, config: Record<string, any>, context: {logger: any}) => any>} */
 const ADAPTERS = new Map([
@@ -18,6 +19,7 @@ const ADAPTERS = new Map([
   ["deepseek", DeepSeekProvider],
   ["nous", NousProvider],
   ["command", CommandProvider],
+  ["codex-worker", CodexWorkerProvider],
   ["grok-build", GrokBuildProvider],
   ["mock", MockProvider],
 ]);
@@ -43,7 +45,7 @@ export function registerProviderAdapter(name, Adapter, options = {}) {
 export class ProviderRegistry {
   /**
    * @param {Record<string, any>} config Bridge configuration.
-   * @param {{logger: any, adapters?: Record<string, any>}} context Registry context.
+   * @param {{logger: any, adapters?: Record<string, any>, usageLedger?: any}} context Registry context.
    */
   constructor(config, context) {
     this.config = config;
@@ -56,6 +58,7 @@ export class ProviderRegistry {
     this.health = new Map();
     /** @type {Map<string, Record<string, number>>} */
     this.usage = new Map();
+    this.usageLedger = context.usageLedger;
     this.#initialize();
   }
 
@@ -207,9 +210,12 @@ export class ProviderRegistry {
   /** Return a privacy-minimized provider/model graph for the local operator UI. */
   async routeMap(descriptions) {
     const providers = descriptions ?? await this.describe();
+    const persisted = await this.usageSummary();
     const nodes = providers.map((item) => {
       const profile = this.config.routing?.providerProfiles?.[item.id] ?? {};
-      const usage = this.usage.get(item.id) ?? emptyUsage();
+      const live = this.usage.get(item.id) ?? emptyUsage();
+      const historical = persisted.providers?.[item.id];
+      const usage = historical ? { ...live, requests: historical.eventCount, failures: historical.statuses?.failed ?? live.failures, inputTokens: historical.inputTokens, outputTokens: historical.outputTokens, totalTokens: historical.inputTokens + historical.outputTokens } : live;
       return {
         id: item.id,
         adapter: item.adapter,
@@ -234,7 +240,7 @@ export class ProviderRegistry {
   }
 
   /** Record a successful provider turn for live routing and utilization displays. */
-  recordSuccess(route, usage = {}) {
+  async recordSuccess(route, usage = {}, details = {}) {
     const id = route.providerId;
     this.health.set(id, { ...this.#health(id), status: "available", lastSuccessAt: Date.now(), lastError: undefined });
     const current = this.usage.get(id) ?? emptyUsage();
@@ -245,10 +251,11 @@ export class ProviderRegistry {
       outputTokens: current.outputTokens + numberOrZero(usage.outputTokens),
       totalTokens: current.totalTokens + numberOrZero(usage.totalTokens),
     });
+    await this.usageLedger?.append({ provider: id, model: route.model, mode: route.mode, status: "completed", durationMs: details.durationMs ?? 0, usage, evidenceClass: details.evidenceClass ?? "live-provider", costTicks: details.costTicks, processCount: details.processCount, turnCount: details.turnCount });
   }
 
   /** Record a provider failure without silently retrying an explicit route. */
-  recordFailure(route, error) {
+  async recordFailure(route, error, details = {}) {
     const id = route.providerId;
     const current = this.usage.get(id) ?? emptyUsage();
     this.usage.set(id, { ...current, requests: current.requests + 1, failures: current.failures + 1 });
@@ -258,6 +265,11 @@ export class ProviderRegistry {
       lastFailureAt: Date.now(),
       lastError: error instanceof Error ? error.message : String(error),
     });
+    await this.usageLedger?.append({ provider: id, model: route.model, mode: route.mode, status: details.partial === true ? "partial" : "failed", durationMs: details.durationMs ?? 0, usage: details.usage ?? {}, evidenceClass: details.evidenceClass ?? "live-provider" });
+  }
+
+  async usageSummary(options = {}) {
+    return this.usageLedger?.summarize(options) ?? { daily: {}, weekly: {}, providers: {}, models: {}, recentEvents: [], scannedEvents: 0, truncated: false, malformedLines: 0 };
   }
 
   #selectSmartRoute(mode, requestedModel) {

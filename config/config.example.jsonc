@@ -3,7 +3,7 @@
     "host": "127.0.0.1",
     "port": 8743,
     "authTokenEnv": "THREADSPAN_TOKEN",
-    "allowUnauthenticatedLoopback": true,
+    "allowUnauthenticatedLoopback": false,
     "maxBodyBytes": 8388608,
     "requestTimeoutMs": 1800000,
     "maxConcurrentRequests": 4,
@@ -20,11 +20,14 @@
     "ttlMs": 86400000,
     "maxEntries": 500
   },
+  "usageLedger": {
+    "enabled": true
+  },
   "routing": {
     "providerOrder": {
       "consult": ["cursor", "cursor-ultra", "grok-build", "nous", "openrouter"],
       "integrated": ["nous", "openrouter", "xai-api"],
-      "delegate": ["grok-build", "cursor", "cursor-ultra"]
+      "delegate": ["grok-build", "cursor", "cursor-ultra", "nous-worker"]
     }
   },
   "defaults": {
@@ -234,6 +237,23 @@
         "integrated"
       ]
     },
+    "nous-worker": {
+      "enabled": false,
+      "adapter": "codex-worker",
+      "command": "codex",
+      "profile": "threadspan_integrated",
+      "modelProvider": "threadspan_bridge",
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "integratedRoute": "integrated/nous/deepseek/deepseek-v4-flash-0731",
+      "capabilities": ["delegate"],
+      "sandbox": "workspace-write",
+      "approvalPolicy": "never",
+      "disableGoals": true,
+      "delegate": {
+        "requireCleanStart": true,
+        "denyBranches": ["main", "master", "trunk"]
+      }
+    },
     "openrouter": {
       "enabled": false,
       "adapter": "openrouter",
@@ -252,6 +272,7 @@
       }
     },
     "deepseek": {
+      "enabled": false,
       "adapter": "deepseek",
       "baseUrl": "https://api.deepseek.com",
       "apiKeyEnv": "DEEPSEEK_API_KEY",

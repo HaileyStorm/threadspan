@@ -8,7 +8,7 @@ const DEFAULT_CONFIG = Object.freeze({
     host: "127.0.0.1",
     port: 8743,
     authTokenEnv: "THREADSPAN_TOKEN",
-    allowUnauthenticatedLoopback: true,
+    allowUnauthenticatedLoopback: false,
     maxBodyBytes: 8 * 1024 * 1024,
     requestTimeoutMs: 30 * 60 * 1000,
     maxConcurrentRequests: 4,
@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = Object.freeze({
   responses: { exposeReasoning: false },
   logging: { level: "info", logBodies: false },
   sessions: { ttlMs: 24 * 60 * 60 * 1000, maxEntries: 500 },
+  usageLedger: { enabled: true },
   routing: { providerOrder: {} },
   defaults: { provider: "cursor", mode: "consult", model: "auto" },
   providers: {},
@@ -181,6 +182,7 @@ export function writeInitialConfig(path, config, options = {}) {
 export function validateConfig(config, configPath = "<memory>") {
   if (!isPlainObject(config)) throw new ConfigError("Configuration root must be an object");
   if (config.routing === undefined) config = { ...config, routing: { providerOrder: {} } };
+  if (config.usageLedger === undefined) config = { ...config, usageLedger: { enabled: false } };
   if (!isPlainObject(config.server)) throw new ConfigError("server must be an object");
   if (typeof config.server.host !== "string" || config.server.host.length === 0) throw new ConfigError("server.host must be a non-empty string");
   if (!Number.isInteger(config.server.port) || config.server.port < 1 || config.server.port > 65535) throw new ConfigError("server.port must be an integer from 1 to 65535");
@@ -206,6 +208,8 @@ export function validateConfig(config, configPath = "<memory>") {
   if (!isPlainObject(config.sessions)) throw new ConfigError("sessions must be an object");
   assertInteger(config.sessions.ttlMs, "sessions.ttlMs", { minimum: 1 });
   assertInteger(config.sessions.maxEntries, "sessions.maxEntries", { minimum: 1 });
+  if (!isPlainObject(config.usageLedger)) throw new ConfigError("usageLedger must be an object");
+  if (typeof config.usageLedger.enabled !== "boolean") throw new ConfigError("usageLedger.enabled must be boolean");
 
   if (!isPlainObject(config.providers)) throw new ConfigError("providers must be an object");
   if (!isPlainObject(config.routing)) throw new ConfigError("routing must be an object");
@@ -629,7 +633,7 @@ export function createExampleConfig() {
       host: "127.0.0.1",
       port: 8743,
       authTokenEnv: "THREADSPAN_TOKEN",
-      allowUnauthenticatedLoopback: true,
+      allowUnauthenticatedLoopback: false,
       maxBodyBytes: 8388608,
       requestTimeoutMs: 1800000,
       maxConcurrentRequests: 4,
@@ -638,11 +642,12 @@ export function createExampleConfig() {
     responses: { exposeReasoning: false },
     logging: { level: "info", logBodies: false },
     sessions: { ttlMs: 86400000, maxEntries: 500 },
+    usageLedger: { enabled: true },
     routing: {
       providerOrder: {
         consult: ["cursor", "cursor-ultra", "grok-build", "nous", "openrouter"],
         integrated: ["nous", "openrouter", "xai-api"],
-        delegate: ["grok-build", "cursor", "cursor-ultra"],
+        delegate: ["grok-build", "cursor", "cursor-ultra", "nous-worker"],
       },
     },
     defaults: { provider: "cursor", mode: "consult", model: "auto" },
@@ -786,6 +791,20 @@ export function createExampleConfig() {
         retryWithoutStreaming: false,
         capabilities: ["consult", "integrated"],
       },
+      "nous-worker": {
+        enabled: false,
+        adapter: "codex-worker",
+        command: "codex",
+        profile: "threadspan_integrated",
+        modelProvider: "threadspan_bridge",
+        model: "deepseek/deepseek-v4-flash-0731",
+        integratedRoute: "integrated/nous/deepseek/deepseek-v4-flash-0731",
+        capabilities: ["delegate"],
+        sandbox: "workspace-write",
+        approvalPolicy: "never",
+        disableGoals: true,
+        delegate: { requireCleanStart: true, denyBranches: ["main", "master", "trunk"] },
+      },
       openrouter: {
         enabled: false,
         adapter: "openrouter",
@@ -798,6 +817,7 @@ export function createExampleConfig() {
         headers: { "HTTP-Referer": "https://github.com/HaileyStorm/threadspan", "X-Title": "Threadspan" },
       },
       deepseek: {
+        enabled: false,
         adapter: "deepseek",
         baseUrl: "https://api.deepseek.com",
         apiKeyEnv: "DEEPSEEK_API_KEY",

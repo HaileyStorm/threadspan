@@ -34,7 +34,7 @@ export function createHttpServer(service, config) {
         writeOptionsResponse(request, response, config);
         return;
       }
-      if (request.method === "GET" && (url.pathname === "/threadspan" || url.pathname.startsWith("/threadspan/"))) {
+      if (request.method === "GET" && (url.pathname === "/threadspan" || (url.pathname.startsWith("/threadspan/") && url.pathname !== "/threadspan/state"))) {
         if (!isLoopbackAddress(request.socket.remoteAddress ?? "")) {
           writeJson(response, 403, errorEnvelope("loopback_required", "Threadspan UI is available only from the local host"));
           return;
@@ -55,6 +55,10 @@ export function createHttpServer(service, config) {
       }
       if (request.method === "GET" && url.pathname === "/v1/bridge/providers") {
         writeJson(response, 200, { object: "list", data: await service.describeProviders() });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/threadspan/state") {
+        writeJson(response, 200, await service.threadspanState());
         return;
       }
 
@@ -100,10 +104,6 @@ async function handleThreadspanUiRequest(service, pathname, response) {
   if (pathname === "/threadspan") {
     response.writeHead(302, { location: "/threadspan/", "cache-control": "no-store" });
     response.end();
-    return;
-  }
-  if (pathname === "/threadspan/state") {
-    writeJson(response, 200, await service.threadspanState());
     return;
   }
   const asset = THREADSPAN_ASSETS.get(pathname);

@@ -407,7 +407,14 @@
   }
 
   show(api.adaptThreadspanState({ status: "loading" }));
-  fetch(requested, { credentials: "same-origin" })
+  const fragment = new URLSearchParams(location.hash.replace(/^#/, ""));
+  if (fragment.get("token")) {
+    try { sessionStorage.setItem("threadspan-token", fragment.get("token")); } catch {}
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+  }
+  let localToken = "";
+  try { localToken = sessionStorage.getItem("threadspan-token") || ""; } catch {}
+  fetch(requested, { credentials: "same-origin", headers: localToken ? { authorization: `Bearer ${localToken}` } : {} })
     .then((response) => {
       if (!response.ok) throw new Error("State request failed.");
       return response.json();

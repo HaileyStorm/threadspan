@@ -188,7 +188,7 @@ export function buildCodexWorkerArguments(config, request, resolved = {}) {
     "--ephemeral",
     "--color", "never",
     "--sandbox", config.sandbox ?? "workspace-write",
-    "--ask-for-approval", config.approvalPolicy ?? "never",
+    "--config", `approval_policy=${JSON.stringify(resolveApprovalPolicy(config.approvalPolicy))}`,
     "--cd", workspace,
     "--profile", profile,
     "--model", route,
@@ -197,6 +197,14 @@ export function buildCodexWorkerArguments(config, request, resolved = {}) {
     ...(config.disableGoals === false ? [] : ["--disable", "goals"]),
     "-",
   ];
+}
+
+function resolveApprovalPolicy(value) {
+  const policy = value ?? "never";
+  if (!["never", "on-request", "on-failure", "untrusted"].includes(policy)) {
+    throw new RequestError(`Codex Worker approvalPolicy '${policy}' is unsupported`);
+  }
+  return policy;
 }
 
 /** Render the authoritative workspace, scope, acceptance, and authority packet. */
@@ -319,7 +327,7 @@ function resolveCodexProfile(config, request) {
 }
 
 function resolveIntegratedRoute(config, request) {
-  const route = request.metadata?.bridge_model_route ?? request.model ?? config.model;
+  const route = request.metadata?.bridge_model_route ?? config.integratedRoute ?? request.model ?? config.model;
   if (typeof route !== "string" || !/^integrated\/[^/]+\/.+/.test(route)) {
     throw new RequestError("Codex Worker model must be a full Integrated route such as integrated/nous/deepseek/deepseek-v4-flash-0731");
   }

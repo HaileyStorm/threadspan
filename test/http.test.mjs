@@ -49,7 +49,7 @@ test("HTTP surface rejects unapproved browser origins without a valid token", as
     if (original === undefined) delete process.env.CURSOR_BRIDGE_TEST_TOKEN;
     else process.env.CURSOR_BRIDGE_TEST_TOKEN = original;
   });
-  const config = createTestConfig();
+  const config = createTestConfig({ server: { allowUnauthenticatedLoopback: false } });
   const service = new BridgeService(config, { logger: silentLogger() });
   const server = createHttpServer(service, config);
   const address = await listenHttpServer(server, { host: "127.0.0.1", port: 0 });
@@ -60,6 +60,10 @@ test("HTTP surface rejects unapproved browser origins without a valid token", as
     headers: { origin: "https://evil.example", authorization: "Bearer token" },
   });
   assert.equal(authorized.status, 200);
+  const stateWithoutToken = await fetch(`http://127.0.0.1:${address.port}/threadspan/state`);
+  assert.equal(stateWithoutToken.status, 401);
+  const stateWithToken = await fetch(`http://127.0.0.1:${address.port}/threadspan/state`, { headers: { authorization: "Bearer token" } });
+  assert.equal(stateWithToken.status, 200);
 });
 
 test("HTTP surface permits bearerless CORS preflight for an explicitly allowed origin", async (t) => {
