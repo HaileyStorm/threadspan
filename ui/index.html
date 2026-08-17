@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Threadspan — One task. Every model.</title>
+  <link rel="stylesheet" href="./threadspan.css">
+  <link rel="icon" href="./mark.svg" type="image/svg+xml">
+</head>
+<body data-threadspan-ui="sidecar">
+  <a class="skip-link" href="#threadspan-bar">Skip to route bar</a>
+
+  <aside class="host-hud" data-hud-injection="not-assumed" aria-label="Host agent status placeholder">
+    <span class="host-hud__pulse" aria-hidden="true"></span>
+    <p data-field="hud">
+      Host agent status — documented Desktop HUD injection is not assumed.
+      This sidecar can sit beneath a Codex/ChatGPT HUD when the host provides one,
+      be served by the local daemon, opened independently, or hosted through a
+      supported plugin or MCP UI surface.
+    </p>
+  </aside>
+
+  <header id="threadspan-bar" class="route-bar">
+    <h1 class="visually-hidden">Threadspan</h1>
+    <button
+      class="route-bar__toggle"
+      type="button"
+      id="route-toggle"
+      aria-expanded="false"
+      aria-controls="threadspan-drawer"
+    >
+      <span class="route-bar__brand">
+        <img class="route-bar__mark" src="./mark.svg" alt="" width="24" height="24">
+        <span class="route-bar__name">
+          <span class="route-bar__wordmark">Threadspan</span>
+          <span class="route-bar__tagline">One task. Every model.</span>
+        </span>
+      </span>
+      <span class="route-bar__filament">
+        <svg class="route-bar__braid" viewBox="0 0 120 18" aria-hidden="true" focusable="false">
+          <path fill="none" stroke="#1B1814" stroke-width="1.8" stroke-linecap="round" d="M2 9c8-6 12-6 20 0s12 6 20 0 12-6 20 0 12 6 20 0 12-6 18 0"/>
+          <path fill="none" stroke="#8A3F24" stroke-width="1.8" stroke-linecap="round" d="M2 9c8 6 12 6 20 0s12-6 20 0 12 6 20 0 12-6 20 0 12 6 18 0"/>
+          <path fill="none" stroke="#165E66" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="3 2" d="M2 5h116M2 13h116"/>
+        </svg>
+        <span class="route-bar__route mono" data-field="route">delegate / grok-build / grok-4.6</span>
+      </span>
+      <span class="route-bar__facts">
+        <span class="mode" data-field="mode" data-mode="delegate"><span class="kicker">Mode</span> Delegate</span>
+        <span class="pill pill--ok" data-field="availability"><span class="kicker">Availability</span> verified</span>
+        <span class="pill" data-field="quota"><span class="kicker">Quota</span> 62% week</span>
+        <span class="pill" data-field="context"><span class="kicker">Context</span> 41%</span>
+      </span>
+      <span class="route-bar__chevron" aria-hidden="true">▾</span>
+    </button>
+  </header>
+
+  <p id="state-banner" class="banner" data-field="banner" hidden></p>
+
+  <main id="threadspan-drawer" class="drawer" hidden>
+    <div class="drawer__layout">
+      <div class="drawer__spine" aria-hidden="true">
+        <svg viewBox="0 0 18 200" focusable="false">
+          <path fill="none" stroke="#1B1814" stroke-width="2" stroke-linecap="round" d="M5 6c.2 18 8 18 8 36s-8 18-8 36 8 18 8 36-8 18-8 36 8 18 8 36"/>
+          <path fill="none" stroke="#8A3F24" stroke-width="2" stroke-linecap="round" d="M13 6c-.2 18-8 18-8 36s8 18 8 36-8 18-8 36 8 18 8 36-8 18-8 36"/>
+          <path fill="none" stroke="#165E66" stroke-width="2" stroke-linecap="round" stroke-dasharray="4 3" d="M9 6v188"/>
+        </svg>
+      </div>
+      <div class="drawer__body">
+        <section class="panel" aria-labelledby="route-heading">
+          <h2 id="route-heading">Current route</h2>
+          <dl class="stack">
+            <div class="field">
+              <dt>Route</dt>
+              <dd class="mono" data-field="route-detail">delegate/grok-build/grok-4.6</dd>
+            </div>
+            <div class="field">
+              <dt>Mode</dt>
+              <dd>
+                <span class="mode" data-field="mode-detail" data-mode="delegate">Delegate</span>
+                <p class="note" data-field="mode-note">The secondary provider's agent owns a bounded execution task.</p>
+              </dd>
+            </div>
+            <div class="field">
+              <dt>Verified availability</dt>
+              <dd>
+                <span data-field="availability-detail">verified · 2026-08-17 20:00 UTC</span>
+                <p class="note" data-field="availability-note">offline capability matrix, not live entitlement</p>
+              </dd>
+            </div>
+            <div class="field">
+              <dt>Two qualified fallbacks</dt>
+              <dd>
+                <ul class="fallback-list" data-field="fallbacks">
+                  <li class="fallback">
+                    <div class="fallback__head">
+                      <span class="mono">consult/cursor-ultra/auto</span>
+                      <span class="mode" data-mode="consult">Consult</span>
+                    </div>
+                    <p class="note">Advisory second opinion on a disposable snapshot. Not a Delegate substitute.</p>
+                  </li>
+                  <li class="fallback">
+                    <div class="fallback__head">
+                      <span class="mono">integrated/deepseek/deepseek-v4-pro</span>
+                      <span class="mode" data-mode="integrated">Integrated</span>
+                    </div>
+                    <p class="note">Caller-owned tools with a raw model. Cursor SDK and Grok Build cannot be Integrated.</p>
+                  </li>
+                </ul>
+              </dd>
+            </div>
+            <div class="field">
+              <dt>Checkpoint</dt>
+              <dd>
+                <span class="mono" data-field="checkpoint">ckpt_18f2 · 2026-08-17 19:58 UTC</span>
+                <p class="note" data-field="checkpoint-note">Admission reserved; worker not started.</p>
+              </dd>
+            </div>
+          </dl>
+        </section>
+        <section class="panel" aria-labelledby="capacity-heading">
+          <h2 id="capacity-heading">Capacity and history</h2>
+          <div class="stack">
+            <dl class="stack">
+              <div class="field">
+                <dt>Quota</dt>
+                <dd data-field="quota-detail">
+                  Consumer week remaining · 62%
+                  <span class="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="62" aria-label="Quota remaining"><span style="width:62%"></span></span>
+                  <p class="note">Manual meter. Local token telemetry cannot reconstruct provider weekly usage.</p>
+                </dd>
+              </div>
+              <div class="field">
+                <dt>Context</dt>
+                <dd data-field="context-detail">
+                  52428 / 128000 · 41% used
+                  <span class="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="41" aria-label="Context used"><span style="width:41%"></span></span>
+                </dd>
+              </div>
+            </dl>
+            <div>
+              <h3 class="kicker">Provider utilization</h3>
+              <ul class="util-list" data-field="utilization">
+                <li class="util">
+                  <div class="util__head">
+                    <span>Grok outer workers</span>
+                    <span class="mono">3 / 6</span>
+                  </div>
+                  <span class="meter" role="meter" aria-valuemin="0" aria-valuemax="6" aria-valuenow="3" aria-label="Grok outer workers"><span style="width:50%"></span></span>
+                  <p class="note">Configurable fleet canary, not a provider guarantee.</p>
+                </li>
+                <li class="util">
+                  <div class="util__head">
+                    <span>Retained Cursor agents</span>
+                    <span class="mono">2 / 4</span>
+                  </div>
+                  <span class="meter" role="meter" aria-valuemin="0" aria-valuemax="4" aria-valuenow="2" aria-label="Retained Cursor agents"><span style="width:50%"></span></span>
+                  <p class="note">Daemon-keyed local agents, not an official Cloud Agent pool.</p>
+                </li>
+              </ul>
+            </div>
+            <div data-field="reroute" class="reroute" role="status">
+              <span class="kicker">Reroute event</span>
+              <p class="mono">2026-08-17 20:02 UTC · operator · delegate/grok-build/grok-4.6 → delegate/cursor-ultra/auto</p>
+              <p class="note">Quota policy. Threadspan does not apply automatic failover.</p>
+            </div>
+            <details class="history-disclosure" data-field="history">
+              <summary>History</summary>
+              <ul class="history-list">
+                <li><span class="mono">2026-08-17 19:40 UTC</span> · consult-complete · consult/cursor-ultra/auto</li>
+                <li><span class="mono">2026-08-17 19:51 UTC</span> · delegate-admit · delegate/grok-build/grok-4.6</li>
+              </ul>
+            </details>
+            <fieldset class="filters" data-field="filters">
+              <legend>Filters</legend>
+              <div class="filter-row" role="radiogroup" aria-label="Mode filter">
+                <label><input type="radio" name="mode-filter" value="all"> <span>All modes</span></label>
+                <label><input type="radio" name="mode-filter" value="consult"> <span>Consult</span></label>
+                <label><input type="radio" name="mode-filter" value="integrated"> <span>Integrated</span></label>
+                <label><input type="radio" name="mode-filter" value="delegate" checked> <span>Delegate</span></label>
+              </div>
+              <div class="filter-row">
+                <label><input type="checkbox" name="verified-only" checked> <span>Verified or qualified only</span></label>
+              </div>
+            </fieldset>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script src="./adapt-state.js"></script>
+  <script src="./threadspan.js"></script>
+</body>
+</html>

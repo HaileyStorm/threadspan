@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-labelledby="mark-title mark-desc">
+  <title id="mark-title">Threadspan</title>
+  <desc id="mark-desc">Three strands braided into one route. Edit the labeled paths to restyle the mark.</desc>
+  <g id="loom" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path id="strand-ink" stroke="#1B1814" stroke-width="2.4" d="M9 3c.2 3.4 7.2 3.6 7.2 7.4S9.2 14.2 9.2 18s7 3.6 7 7.6c0 2.2-1.6 3.4-3.2 3.4"/>
+    <path id="strand-copper" stroke="#8A3F24" stroke-width="2.4" stroke-dasharray="5 0" d="M16 3c0 3.2-7 4-7 7.6s7 3.4 7 7.2-7 3.8-7 7.6c0 2.4 2.2 3.6 4.8 3.6"/>
+    <path id="strand-teal" stroke="#165E66" stroke-width="2.4" stroke-dasharray="2.5 1.8" d="M23 3c-.2 3.4-7 3.8-7 7.4s7 3.6 7 7.4-7 3.6-7 7.6c0 2.2 1.8 3.6 4 3.6"/>
+  </g>
+</svg>
