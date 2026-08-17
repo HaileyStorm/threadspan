@@ -60,6 +60,7 @@ test("HTML carries route-bar semantics, landmarks, and HUD non-injection copy", 
     "utilization",
     "history",
     "route-map",
+    "appearance",
     "filters",
     "reroute",
   ]) {
@@ -84,6 +85,8 @@ test("CSS is local, high-contrast, reduced-motion aware, and not glass or purple
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(css, /prefers-contrast:\s*more/);
   assert.match(css, /forced-colors:\s*active/);
+  assert.match(css, /Threadspan alone owns this copper\/teal accent pair/);
+  assert.match(css, /appearance-disclosure/);
   assert.match(css, /:focus-visible/);
   assert.match(css, /"Segoe UI"/);
   assert.match(css, /Ubuntu/);

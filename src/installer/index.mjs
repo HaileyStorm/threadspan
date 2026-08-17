@@ -7,3 +7,4 @@ export {
   validateContextProfile,
 } from "./components.mjs";
 export { applyInstallerPlan, boundedPath, previewInstallerPlan } from "./apply.mjs";
+export { createDaemonServicePlan } from "./service.mjs";

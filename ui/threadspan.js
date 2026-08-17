@@ -397,6 +397,7 @@
   });
 
   root.querySelector("[data-field='filters']")?.addEventListener("change", applyCurrentFilters);
+  bindAppearance();
 
   const explicitState = new URLSearchParams(location.search).get("state") || "";
   const requested = safeStateUrl(explicitState || (location.pathname.startsWith("/threadspan/") ? "./state" : ""));
@@ -420,4 +421,27 @@
         message: "Live JSON state could not be read. Synthetic demo was not substituted automatically.",
       }));
     });
+
+  function bindAppearance() {
+    const defaults = { copper: "#8a3f24", teal: "#165e66" };
+    const copper = root.querySelector("input[name='accent-copper']");
+    const teal = root.querySelector("input[name='accent-teal']");
+    const reset = root.querySelector("[data-action='reset-accents']");
+    if (!copper || !teal || !reset) return;
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem("threadspan-accents") || "{}"); } catch { saved = {}; }
+    const valid = (value, fallback) => /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+    const apply = (next) => {
+      const colors = { copper: valid(next.copper, defaults.copper), teal: valid(next.teal, defaults.teal) };
+      document.documentElement.style.setProperty("--copper", colors.copper);
+      document.documentElement.style.setProperty("--teal", colors.teal);
+      copper.value = colors.copper;
+      teal.value = colors.teal;
+      try { localStorage.setItem("threadspan-accents", JSON.stringify(colors)); } catch {}
+    };
+    apply(saved);
+    copper.addEventListener("input", () => apply({ copper: copper.value, teal: teal.value }));
+    teal.addEventListener("input", () => apply({ copper: copper.value, teal: teal.value }));
+    reset.addEventListener("click", () => apply(defaults));
+  }
 })();

@@ -4,6 +4,10 @@
 
 Threadspan is the operator-facing route surface for this bridge: **one task, every model**, without collapsing Consult, Integrated, and Delegate into a single “use another model” switch.
 
+The host HUD is deliberately neutral. Threadspan owns a restrained copper-and-teal braid and boundary accent, keeping the sidecar visually related but clearly distinct without competing for attention.
+
+Accent colors can be changed under the collapsed **Appearance** disclosure. The choice is browser-local, never changes the host HUD, and can be reset to the shipped pair.
+
 ## What this is
 
 `ui/` is a dependency-free HTML/CSS/JS/SVG sidecar:

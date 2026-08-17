@@ -17,6 +17,19 @@
   color-scheme: light;
 }
 
+/* The host HUD stays neutral; Threadspan alone owns this copper/teal accent pair. */
+.route-bar,
+.drawer {
+  border-left-color: var(--copper);
+}
+
+.route-bar::after {
+  content: "";
+  display: block;
+  height: 2px;
+  background: linear-gradient(90deg, var(--copper), var(--teal));
+}
+
 *,
 *::before,
 *::after {
@@ -445,6 +458,25 @@ a {
   font-weight: 650;
 }
 
+.appearance-disclosure > summary {
+  cursor: pointer;
+  min-height: 2.5rem;
+  display: flex;
+  align-items: center;
+  font-weight: 650;
+}
+
+.appearance-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 1rem;
+}
+
+.appearance-controls label { display: inline-flex; align-items: center; gap: 0.35rem; }
+.appearance-controls input[type="color"] { width: 2rem; height: 2rem; padding: 0; border: 1px solid var(--line); background: transparent; }
+.appearance-controls button { min-height: 2rem; border: 1px solid var(--line); background: var(--paper); padding: 0.2rem 0.6rem; }
+
 .route-map {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
@@ -480,6 +512,7 @@ a {
 .route-bar__toggle:hover,
 .history-disclosure > summary:hover,
 .route-map-disclosure > summary:hover,
+.appearance-disclosure > summary:hover,
 .filter-row label:hover {
   background: var(--paper-2);
 }
