@@ -77,7 +77,10 @@ const COMPONENTS = Object.freeze({
       authentication: { source: "existing-cli-session", product: "Grok Build" },
       storesCredentialValues: false,
     },
-    [manualAuth("Install and sign in with Grok Build before live use")],
+    [
+      manualAuth("Install and sign in with Grok Build before live use"),
+      permission("Approve Grok Delegate's bypassPermissions mode only inside isolated linked worktrees; Consult remains non-mutating"),
+    ],
   ),
   "claude-code": component(
     "threadspan/components/claude-code.json",

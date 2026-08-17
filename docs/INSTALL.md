@@ -74,6 +74,8 @@ The install root must already exist. Use `CODEX_HOME` as the root when the gener
 | sidecar UI | loopback, read-only-default UI descriptor | local UI port permission |
 | context profiles | named Codex profile files | profile-directory write permission |
 | Continuity | checkpoint/rollover descriptor | product-local state permission |
+
+Grok Delegate is a separately disclosed high-authority lane: current Grok Build requires `bypassPermissions` for unattended tools. Threadspan applies it only inside an isolated linked worktree, keeps Grok's strict sandbox, denies integration authority, and requires independent acceptance. Grok Consult does not receive that permission mode.
 | Compatibility Watch | report-only compatibility policy | version reads; separate approval for live checks |
 
 Continuity is optional because it appears only when selected (or as part of explicit `selection: "all"`). Its scope is product-local checkpoints and rollover metadata. It explicitly excludes memory, multi-host synchronization, and cross-host communications.

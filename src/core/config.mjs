@@ -761,6 +761,8 @@ export function createExampleConfig() {
           reasoningEffort: "medium",
           maxTurns: 16,
           expectedTurns: 4,
+          noPlan: true,
+          permissionMode: "bypassPermissions",
           requireGit: true,
           requireLinkedWorktree: true,
           requireCleanStart: true,
