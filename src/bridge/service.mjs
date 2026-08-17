@@ -50,6 +50,12 @@ export class BridgeService {
       mode: request.metadata?.bridge_mode,
       providerId: request.metadata?.bridge_provider,
     });
+    const routeChange = previousRecord ? continuationRouteChange(previousRecord, route) : undefined;
+    if (routeChange && !metadataBoolean(request.metadata?.bridge_continuity_handoff)) {
+      throw new RequestError(
+        `previous_response_id is bound to ${routeChange.from}; set bridge_continuity_handoff=true to continue through ${routeChange.to}`,
+      );
+    }
     const threadId = String(request.metadata?.bridge_thread_id ?? previousRecord?.threadId ?? createId("thread"));
     const suppressDefaultWorkspace = metadataBoolean(request.metadata?.bridge_no_default_workspace);
     const workspace = request.metadata?.bridge_workspace ?? request.metadata?.cwd ?? (suppressDefaultWorkspace ? undefined : process.cwd());
@@ -102,6 +108,7 @@ export class BridgeService {
         await emitAll(assembler.accept(providerEvent), options.onEvent);
       }
       await emitAll(assembler.finish(terminal), options.onEvent);
+      this.registry.recordSuccess(route, assembler.usage);
 
       const assistant = assembler.assistantMessage();
       const storedMessages = [...messages, assistant];
@@ -145,6 +152,9 @@ export class BridgeService {
       return assembler.response;
     } catch (error) {
       const bridgeError = asBridgeError(error);
+      if (!options.signal?.aborted && (bridgeError.code === "provider_error" || bridgeError.status >= 500)) {
+        this.registry.recordFailure(route, bridgeError);
+      }
       await emitAll(assembler.fail({ code: bridgeError.code, message: bridgeError.message }), options.onEvent).catch(() => undefined);
       this.logger.error("Response failed", {
         traceId,
@@ -298,6 +308,13 @@ export class BridgeService {
   #assertOpen() {
     if (this.closed) throw new Error("BridgeService is closed");
   }
+}
+
+function continuationRouteChange(previousRecord, route) {
+  const previous = [previousRecord.mode, previousRecord.providerId, previousRecord.model].map((value) => String(value ?? ""));
+  const next = [route.mode, route.providerId, route.model].map((value) => String(value ?? ""));
+  if (previous.every((value, index) => value === next[index])) return undefined;
+  return { from: previous.join("/"), to: next.join("/") };
 }
 
 /**

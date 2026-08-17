@@ -5,12 +5,14 @@ import { MockProvider } from "./mock.mjs";
 import { GrokBuildProvider } from "./grok-build.mjs";
 import { NousProvider } from "./nous.mjs";
 import { OpenAiChatProvider } from "./openai-chat.mjs";
+import { OpenRouterProvider } from "./openrouter.mjs";
 import { CommandProvider } from "./command.mjs";
 
 /** @type {Map<string, new (id: string, config: Record<string, any>, context: {logger: any}) => any>} */
 const ADAPTERS = new Map([
   ["cursor-sdk", CursorSdkProvider],
   ["openai-chat", OpenAiChatProvider],
+  ["openrouter", OpenRouterProvider],
   ["deepseek", DeepSeekProvider],
   ["nous", NousProvider],
   ["command", CommandProvider],
@@ -48,6 +50,10 @@ export class ProviderRegistry {
     for (const [name, Adapter] of Object.entries(context.adapters ?? {})) this.adapters.set(name, Adapter);
     /** @type {Map<string, any>} */
     this.providers = new Map();
+    /** @type {Map<string, Record<string, any>>} */
+    this.health = new Map();
+    /** @type {Map<string, Record<string, number>>} */
+    this.usage = new Map();
     this.#initialize();
   }
 
@@ -98,10 +104,13 @@ export class ProviderRegistry {
     resolvedMode ??= this.config.defaults?.mode ?? "consult";
     resolvedProvider ??= this.config.defaults?.provider;
     if (!resolvedProvider) throw new RequestError("No provider selected and no defaults.provider configured");
+    if (["threadspan", "auto"].includes(resolvedProvider)) {
+      return this.#selectSmartRoute(resolvedMode, resolvedModel);
+    }
     const provider = this.get(resolvedProvider);
     resolvedModel ||= provider.config.model ?? this.config.defaults?.model ?? "auto";
     provider.assertMode(resolvedMode);
-    return { provider, providerId: resolvedProvider, mode: resolvedMode, model: resolvedModel };
+    return { provider, providerId: resolvedProvider, mode: resolvedMode, model: resolvedModel, smart: false };
   }
 
   /**
@@ -115,10 +124,12 @@ export class ProviderRegistry {
       let modelError;
       try {
         models = await provider.listModels();
+        this.#markCatalog(id, true);
       } catch (error) {
         modelError = error instanceof Error ? error.message : String(error);
+        this.#markCatalog(id, false, modelError);
       }
-      items.push({ id, adapter: provider.config.adapter, capabilities: provider.capabilities(), models, ...(modelError ? { modelError } : {}) });
+      items.push({ id, adapter: provider.config.adapter, capabilities: provider.capabilities(), models, health: this.#health(id), ...(modelError ? { modelError } : {}) });
     }
     return items;
   }
@@ -128,9 +139,31 @@ export class ProviderRegistry {
    * @returns {Promise<Array<Record<string, any>>>}
    */
   async listRoutedModels() {
-    const output = [];
+    const output = ["consult", "integrated", "delegate"]
+      .filter((mode) => this.#eligibleProviders(mode).length > 0)
+      .map((mode) => ({
+        id: `${mode}/threadspan/auto`,
+        object: "model",
+        created: 0,
+        owned_by: "threadspan",
+        metadata: {
+          bridge_mode: mode,
+          provider: "threadspan",
+          upstream_model: "auto",
+          threadspan_smart: true,
+          eligible_providers: this.#eligibleProviders(mode).map(([id]) => id),
+        },
+      }));
     for (const [providerId, provider] of this.providers.entries()) {
-      const models = await provider.listModels().catch(() => [{ id: provider.config.model ?? "auto" }]);
+      let degraded = false;
+      const models = await provider.listModels().then((items) => {
+        this.#markCatalog(providerId, true);
+        return items;
+      }).catch((error) => {
+        degraded = true;
+        this.#markCatalog(providerId, false, error instanceof Error ? error.message : String(error));
+        return [{ id: provider.config.model ?? "auto", configuredFallback: true }];
+      });
       const capabilities = provider.capabilities();
       for (const [mode, entry] of Object.entries(capabilities.modes)) {
         if (!entry.supported) continue;
@@ -140,7 +173,15 @@ export class ProviderRegistry {
             object: "model",
             created: 0,
             owned_by: providerId,
-            metadata: { bridge_mode: mode, provider: providerId, upstream_model: model.id },
+            metadata: {
+              bridge_mode: mode,
+              provider: providerId,
+              upstream_model: model.id,
+              availability: this.#health(providerId).status,
+              catalog_degraded: degraded,
+              configured_fallback: model.configuredFallback === true,
+              ...(model.free === true ? { free: true } : {}),
+            },
           });
         }
       }
@@ -150,11 +191,81 @@ export class ProviderRegistry {
 
   /** Return count-only runtime diagnostics for all configured providers. */
   runtimeStats() {
-    return Object.fromEntries([...this.providers.entries()].map(([id, provider]) => [id, provider.runtimeStats?.() ?? { kind: provider.config.adapter }]));
+    return Object.fromEntries([...this.providers.entries()].map(([id, provider]) => [id, {
+      ...(provider.runtimeStats?.() ?? { kind: provider.config.adapter }),
+      health: this.#health(id),
+      usage: this.usage.get(id) ?? emptyUsage(),
+    }]));
+  }
+
+  /** Record a successful provider turn for live routing and utilization displays. */
+  recordSuccess(route, usage = {}) {
+    const id = route.providerId;
+    this.health.set(id, { ...this.#health(id), status: "available", lastSuccessAt: Date.now(), lastError: undefined });
+    const current = this.usage.get(id) ?? emptyUsage();
+    this.usage.set(id, {
+      requests: current.requests + 1,
+      failures: current.failures,
+      inputTokens: current.inputTokens + numberOrZero(usage.inputTokens),
+      outputTokens: current.outputTokens + numberOrZero(usage.outputTokens),
+      totalTokens: current.totalTokens + numberOrZero(usage.totalTokens),
+    });
+  }
+
+  /** Record a provider failure without silently retrying an explicit route. */
+  recordFailure(route, error) {
+    const id = route.providerId;
+    const current = this.usage.get(id) ?? emptyUsage();
+    this.usage.set(id, { ...current, requests: current.requests + 1, failures: current.failures + 1 });
+    this.health.set(id, {
+      ...this.#health(id),
+      status: "unavailable",
+      lastFailureAt: Date.now(),
+      lastError: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  #selectSmartRoute(mode, requestedModel) {
+    const candidates = this.#eligibleProviders(mode);
+    if (candidates.length === 0) throw new RequestError(`No currently eligible Threadspan provider supports '${mode}' mode`);
+    const [providerId, provider] = candidates[0];
+    const model = !requestedModel || requestedModel === "auto" ? provider.config.model ?? "auto" : requestedModel;
+    provider.assertMode(mode);
+    return { provider, providerId, mode, model, smart: true, requestedProviderId: "threadspan" };
+  }
+
+  #eligibleProviders(mode) {
+    const preferred = this.config.routing?.providerOrder?.[mode] ?? [];
+    const rank = new Map(preferred.map((id, index) => [id, index]));
+    return [...this.providers.entries()]
+      .filter(([id, provider]) => provider.capabilities().modes?.[mode]?.supported && this.#health(id).status !== "unavailable")
+      .sort(([left], [right]) => (rank.get(left) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right) ?? Number.MAX_SAFE_INTEGER));
+  }
+
+  #markCatalog(id, available, error) {
+    this.health.set(id, {
+      ...this.#health(id),
+      status: available ? "available" : "degraded",
+      catalogCheckedAt: Date.now(),
+      ...(error ? { catalogError: error } : { catalogError: undefined }),
+    });
+  }
+
+  #health(id) {
+    return this.health.get(id) ?? { status: "unknown" };
   }
 
   /** Dispose all adapters. */
   async close() {
     await Promise.allSettled([...this.providers.values()].map((provider) => provider.close()));
   }
+}
+
+function emptyUsage() {
+  return { requests: 0, failures: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+}
+
+function numberOrZero(value) {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) && number > 0 ? number : 0;
 }

@@ -49,7 +49,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (command === "mcp") {
       const remoteUrl = parsed.options.embedded === true
         ? undefined
-        : valueOption(parsed.options.remote) ?? process.env.CURSOR_BRIDGE_MCP_URL;
+        : valueOption(parsed.options.remote) ?? process.env.THREADSPAN_MCP_URL ?? process.env.CURSOR_BRIDGE_MCP_URL;
       const service = remoteUrl
         ? new RemoteBridgeService({
             baseUrl: remoteUrl,
@@ -133,7 +133,7 @@ export async function main(argv = process.argv.slice(2)) {
   } catch (error) {
     const bridgeError = asBridgeError(error);
     process.stderr.write(`${bridgeError.code}: ${bridgeError.message}\n`);
-    if (bridgeError.details && process.env.CURSOR_BRIDGE_DEBUG === "1") {
+    if (bridgeError.details && (process.env.THREADSPAN_DEBUG === "1" || process.env.CURSOR_BRIDGE_DEBUG === "1")) {
       process.stderr.write(`${JSON.stringify(bridgeError.details, null, 2)}\n`);
     }
     process.exitCode = 1;
@@ -213,7 +213,7 @@ async function runDoctor(config, options) {
     name: "bridge-auth-token",
     ok: tokenConfigured || config.server.allowUnauthenticatedLoopback === true,
     warning: !tokenConfigured && config.server.allowUnauthenticatedLoopback === true,
-    detail: tokenConfigured ? `${tokenEnv} is set` : `${tokenEnv ?? "CURSOR_BRIDGE_TOKEN"} is not set; loopback-only unauthenticated access is enabled`,
+    detail: tokenConfigured ? `${tokenEnv} is set` : `${tokenEnv ?? "THREADSPAN_TOKEN"} is not set; loopback-only unauthenticated access is enabled`,
   });
 
   for (const [id, provider] of Object.entries(config.providers)) {
@@ -319,7 +319,7 @@ export function writeConvenienceResult(result, options = {}) {
     result?.threadId ? `threadId=${result.threadId}` : undefined,
     result?.responseId ? `responseId=${result.responseId}` : undefined,
   ].filter(Boolean);
-  if (identifiers.length > 0) stderr.write(`[cursor-bridge] ${identifiers.join(" ")}\n`);
+  if (identifiers.length > 0) stderr.write(`[threadspan] ${identifiers.join(" ")}\n`);
 }
 
 /**
@@ -398,21 +398,21 @@ function formatHost(host) {
 
 /** Print CLI usage. */
 function printHelp() {
-  process.stdout.write(`cursor-bridge — Consult / Integrated / Delegate provider bridge
+  process.stdout.write(`threadspan — one task across every model
 
 Usage:
-  cursor-bridge config init [--config PATH] [--force]
-  cursor-bridge serve [--config PATH]
-  cursor-bridge mcp [--config PATH] [--remote URL|--embedded]
-  cursor-bridge doctor [--config PATH] [--live]
-  cursor-bridge providers [--config PATH]
-  cursor-bridge models [--config PATH]
-  cursor-bridge consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--json]
-  cursor-bridge delegate "task" --workspace PATH [same routing options] [--acceptance-command CMD ...]
-  cursor-bridge codex snippet [--config PATH]
-  cursor-bridge codex install [--config PATH] [--codex-config PATH] [--embedded-mcp]
-  cursor-bridge codex uninstall [--codex-config PATH]
-  cursor-bridge skill install [--skill consult|managed-worker|all] [--target SKILLS_ROOT] [--force]
+  threadspan config init [--config PATH] [--force]
+  threadspan serve [--config PATH]
+  threadspan mcp [--config PATH] [--remote URL|--embedded]
+  threadspan doctor [--config PATH] [--live]
+  threadspan providers [--config PATH]
+  threadspan models [--config PATH]
+  threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--json]
+  threadspan delegate "task" --workspace PATH [same routing options] [--acceptance-command CMD ...]
+  threadspan codex snippet [--config PATH]
+  threadspan codex install [--config PATH] [--codex-config PATH] [--embedded-mcp]
+  threadspan codex uninstall [--codex-config PATH]
+  threadspan skill install [--skill consult|managed-worker|all] [--target SKILLS_ROOT] [--force]
 
 Modes:
   Consult     Advisory second opinion. Cursor uses a disposable workspace snapshot.

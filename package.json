@@ -1,9 +1,10 @@
 {
-  "name": "cursor-codex-bridge",
-  "version": "0.2.1",
-  "description": "Local Responses API and MCP bridge for Consult, Integrated, and Delegate workflows across Cursor, Grok Build/xAI, Nous Portal, DeepSeek, and compatible providers.",
+  "name": "threadspan",
+  "version": "0.3.0",
+  "description": "One task across OpenAI Codex, Cursor, Grok Build, Nous Portal, OpenRouter, and compatible providers.",
   "type": "module",
   "bin": {
+    "threadspan": "./src/cli.mjs",
     "cursor-bridge": "./src/cli.mjs"
   },
   "exports": {
@@ -52,7 +53,11 @@
     "xai",
     "managed-worker",
     "worktree",
-    "grok"
+    "grok",
+    "openrouter",
+    "model-router",
+    "continuity",
+    "model-picker"
   ],
   "license": "MIT"
 }

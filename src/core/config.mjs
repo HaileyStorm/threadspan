@@ -7,7 +7,7 @@ const DEFAULT_CONFIG = Object.freeze({
   server: {
     host: "127.0.0.1",
     port: 8743,
-    authTokenEnv: "CURSOR_BRIDGE_TOKEN",
+    authTokenEnv: "THREADSPAN_TOKEN",
     allowUnauthenticatedLoopback: true,
     maxBodyBytes: 8 * 1024 * 1024,
     requestTimeoutMs: 30 * 60 * 1000,
@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = Object.freeze({
   responses: { exposeReasoning: false },
   logging: { level: "info", logBodies: false },
   sessions: { ttlMs: 24 * 60 * 60 * 1000, maxEntries: 500 },
+  routing: { providerOrder: {} },
   defaults: { provider: "cursor-ultra", mode: "consult", model: "auto" },
   providers: {},
 });
@@ -26,7 +27,7 @@ const VALID_LOG_LEVELS = new Set(["debug", "info", "warn", "error", "silent"]);
 
 /** Resolve the bridge config path from an explicit value, environment, or user home. */
 export function resolveConfigPath(explicitPath) {
-  return resolve(explicitPath ?? process.env.CURSOR_BRIDGE_CONFIG ?? `${homedir()}/.cursor-codex-bridge/config.jsonc`);
+  return resolve(explicitPath ?? process.env.THREADSPAN_CONFIG ?? process.env.CURSOR_BRIDGE_CONFIG ?? `${homedir()}/.threadspan/config.jsonc`);
 }
 
 /**
@@ -179,6 +180,7 @@ export function writeInitialConfig(path, config, options = {}) {
 /** Validate configuration invariants required before startup. */
 export function validateConfig(config, configPath = "<memory>") {
   if (!isPlainObject(config)) throw new ConfigError("Configuration root must be an object");
+  if (config.routing === undefined) config = { ...config, routing: { providerOrder: {} } };
   if (!isPlainObject(config.server)) throw new ConfigError("server must be an object");
   if (typeof config.server.host !== "string" || config.server.host.length === 0) throw new ConfigError("server.host must be a non-empty string");
   if (!Number.isInteger(config.server.port) || config.server.port < 1 || config.server.port > 65535) throw new ConfigError("server.port must be an integer from 1 to 65535");
@@ -206,6 +208,12 @@ export function validateConfig(config, configPath = "<memory>") {
   assertInteger(config.sessions.maxEntries, "sessions.maxEntries", { minimum: 1 });
 
   if (!isPlainObject(config.providers)) throw new ConfigError("providers must be an object");
+  if (!isPlainObject(config.routing)) throw new ConfigError("routing must be an object");
+  if (!isPlainObject(config.routing.providerOrder)) throw new ConfigError("routing.providerOrder must be an object");
+  for (const [mode, order] of Object.entries(config.routing.providerOrder)) {
+    if (!VALID_MODES.has(mode)) throw new ConfigError(`routing.providerOrder contains unsupported mode '${mode}'`);
+    assertStringArray(order, `routing.providerOrder.${mode}`, { unique: true });
+  }
   if (!isPlainObject(config.defaults)) throw new ConfigError("defaults must be an object");
   assertOptionalString(config.defaults.provider, "defaults.provider");
   assertOptionalString(config.defaults.model, "defaults.model");
@@ -238,7 +246,7 @@ export function validateConfig(config, configPath = "<memory>") {
     validateProviderCommonOptions(providerId, provider);
     if (provider.adapter === "command" && provider.enabled !== false) validateCommandProvider(providerId, provider);
     if (provider.adapter === "grok-build" && provider.enabled !== false) validateGrokBuildProvider(providerId, provider);
-    if (["openai-chat", "deepseek", "nous"].includes(provider.adapter) && provider.enabled !== false) {
+    if (["openai-chat", "deepseek", "nous", "openrouter"].includes(provider.adapter) && provider.enabled !== false) {
       if (provider.adapter === "openai-chat" && (typeof provider.baseUrl !== "string" || provider.baseUrl.length === 0)) {
         throw new ConfigError(`Provider '${providerId}' using adapter 'openai-chat' requires baseUrl`);
       }
@@ -248,7 +256,7 @@ export function validateConfig(config, configPath = "<memory>") {
     validateCursorStyleOptions(providerId, provider);
   }
 
-  if (config.defaults.provider) {
+  if (config.defaults.provider && !["threadspan", "auto"].includes(config.defaults.provider)) {
     const defaultProvider = config.providers[config.defaults.provider];
     if (!defaultProvider || defaultProvider.enabled === false) {
       throw new ConfigError(`defaults.provider references unknown or disabled provider '${config.defaults.provider}'`);
@@ -620,7 +628,7 @@ export function createExampleConfig() {
     server: {
       host: "127.0.0.1",
       port: 8743,
-      authTokenEnv: "CURSOR_BRIDGE_TOKEN",
+      authTokenEnv: "THREADSPAN_TOKEN",
       allowUnauthenticatedLoopback: true,
       maxBodyBytes: 8388608,
       requestTimeoutMs: 1800000,
@@ -630,6 +638,13 @@ export function createExampleConfig() {
     responses: { exposeReasoning: false },
     logging: { level: "info", logBodies: false },
     sessions: { ttlMs: 86400000, maxEntries: 500 },
+    routing: {
+      providerOrder: {
+        consult: ["cursor-ultra", "grok-build", "nous", "openrouter"],
+        integrated: ["nous", "openrouter", "xai-api"],
+        delegate: ["grok-build", "cursor-ultra"],
+      },
+    },
     defaults: { provider: "cursor-ultra", mode: "consult", model: "auto" },
     providers: {
       "cursor-ultra": {
@@ -739,11 +754,24 @@ export function createExampleConfig() {
       },
       nous: {
         adapter: "nous",
-        baseUrl: "http://127.0.0.1:8645/v1",
-        apiKey: "unused-proxy-attaches-real-creds",
-        model: "Hermes-4-70B",
-        models: ["Hermes-4-70B", "Hermes-4.3-36B", "Hermes-4-405B"],
+        enabled: false,
+        baseUrl: "https://inference-api.nousresearch.com/v1",
+        apiKeyEnv: "NOUS_API_KEY",
+        model: "deepseek/deepseek-v4-flash-0731",
+        discoverModels: true,
+        retryWithoutStreaming: false,
         capabilities: ["consult", "integrated"],
+      },
+      openrouter: {
+        enabled: false,
+        adapter: "openrouter",
+        baseUrl: "https://openrouter.ai/api/v1",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        model: "auto",
+        discoverModels: true,
+        retryWithoutStreaming: false,
+        capabilities: ["consult", "integrated"],
+        headers: { "HTTP-Referer": "https://github.com/HaileyStorm/threadspan", "X-Title": "Threadspan" },
       },
       deepseek: {
         adapter: "deepseek",

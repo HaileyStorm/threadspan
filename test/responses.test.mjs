@@ -60,6 +60,31 @@ test("BridgeService executes mock Responses requests and links previous response
   }
 });
 
+test("previous responses cannot cross provider routes without an explicit Continuity handoff", async () => {
+  const service = new BridgeService(createTestConfig({
+    providers: {
+      other: { adapter: "mock", model: "mock-model", capabilities: ["consult"] },
+    },
+  }), { logger: silentLogger() });
+  try {
+    const first = await service.executeResponse({ model: "consult/mock/mock-model", input: "first" });
+    await assert.rejects(() => service.executeResponse({
+      model: "consult/other/mock-model",
+      previous_response_id: first.id,
+      input: "second",
+    }), /bridge_continuity_handoff=true/);
+    const handedOff = await service.executeResponse({
+      model: "consult/other/mock-model",
+      previous_response_id: first.id,
+      metadata: { bridge_continuity_handoff: true },
+      input: "second",
+    });
+    assert.equal(handedOff.metadata.bridge_provider, "other");
+  } finally {
+    await service.close();
+  }
+});
+
 test("BridgeService streams tool calls for Integrated mode", async () => {
   const service = new BridgeService(createTestConfig(), { logger: silentLogger() });
   const events = [];

@@ -97,13 +97,13 @@ export class RunLedger {
 /** Resolve an explicit, home-relative, or default ledger path. */
 export function resolveLedgerPath(configuredPath, providerId) {
   if (typeof configuredPath === "string" && configuredPath.length > 0) return resolve(expandHomePath(configuredPath));
-  return join(homedir(), ".cursor-codex-bridge", "ledgers", `${providerId}.jsonl`);
+  return join(homedir(), ".threadspan", "ledgers", `${providerId}.jsonl`);
 }
 
 /** Resolve an explicit or default raw-evidence directory. */
 export function resolveEvidenceDirectory(configuredPath, providerId) {
   if (typeof configuredPath === "string" && configuredPath.length > 0) return resolve(expandHomePath(configuredPath));
-  return join(homedir(), ".cursor-codex-bridge", "evidence", providerId);
+  return join(homedir(), ".threadspan", "evidence", providerId);
 }
 
 /** Return a non-reversible short identity for a workspace path without storing the path itself. */

@@ -2,7 +2,7 @@
   "server": {
     "host": "127.0.0.1",
     "port": 8743,
-    "authTokenEnv": "CURSOR_BRIDGE_TOKEN",
+    "authTokenEnv": "THREADSPAN_TOKEN",
     "allowUnauthenticatedLoopback": true,
     "maxBodyBytes": 8388608,
     "requestTimeoutMs": 1800000,
@@ -19,6 +19,13 @@
   "sessions": {
     "ttlMs": 86400000,
     "maxEntries": 500
+  },
+  "routing": {
+    "providerOrder": {
+      "consult": ["cursor-ultra", "grok-build", "nous", "openrouter"],
+      "integrated": ["nous", "openrouter", "xai-api"],
+      "delegate": ["grok-build", "cursor-ultra"]
+    }
   },
   "defaults": {
     "provider": "cursor-ultra",
@@ -191,19 +198,34 @@
       ]
     },
     "nous": {
+      "enabled": false,
       "adapter": "nous",
-      "baseUrl": "http://127.0.0.1:8645/v1",
-      "apiKey": "unused-proxy-attaches-real-creds",
-      "model": "Hermes-4-70B",
-      "models": [
-        "Hermes-4-70B",
-        "Hermes-4.3-36B",
-        "Hermes-4-405B"
-      ],
+      "baseUrl": "https://inference-api.nousresearch.com/v1",
+      "apiKeyEnv": "NOUS_API_KEY",
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "discoverModels": true,
+      "retryWithoutStreaming": false,
       "capabilities": [
         "consult",
         "integrated"
       ]
+    },
+    "openrouter": {
+      "enabled": false,
+      "adapter": "openrouter",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "model": "auto",
+      "discoverModels": true,
+      "retryWithoutStreaming": false,
+      "capabilities": [
+        "consult",
+        "integrated"
+      ],
+      "headers": {
+        "HTTP-Referer": "https://github.com/HaileyStorm/threadspan",
+        "X-Title": "Threadspan"
+      }
     },
     "deepseek": {
       "adapter": "deepseek",

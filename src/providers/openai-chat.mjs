@@ -15,8 +15,8 @@ export class OpenAiChatProvider extends ProviderAdapter {
   }
 
   async listModels() {
-    if (Array.isArray(this.config.models) || this.config.model) return super.listModels();
-    if (this.config.discoverModels !== true) return [{ id: "auto" }];
+    if (Array.isArray(this.config.models)) return super.listModels();
+    if (this.config.discoverModels !== true) return this.config.model ? super.listModels() : [{ id: "auto" }];
     const baseUrl = normalizeBaseUrl(this.config.baseUrl);
     const headers = this.#headers();
     const response = await fetch(`${baseUrl}/models`, { headers });
@@ -243,11 +243,14 @@ function normalizeUsage(usage) {
 function extractProviderMetadata(payload) {
   if (!payload || typeof payload !== "object") return undefined;
   const costInUsdTicks = payload.cost_in_usd_ticks ?? payload.usage?.cost_in_usd_ticks;
+  const cost = payload.cost ?? payload.usage?.cost;
   const upstream = {
     ...(payload.id ? { id: String(payload.id) } : {}),
     ...(payload.model ? { model: String(payload.model) } : {}),
     ...(payload.system_fingerprint ? { systemFingerprint: String(payload.system_fingerprint) } : {}),
     ...(costInUsdTicks !== undefined ? { costInUsdTicks: finiteNumber(costInUsdTicks) ?? String(costInUsdTicks) } : {}),
+    ...(cost !== undefined ? { cost: finiteNumber(cost) ?? String(cost) } : {}),
+    ...(payload.usage?.is_byok !== undefined ? { isByok: payload.usage.is_byok === true } : {}),
   };
   return Object.keys(upstream).length > 0 ? { upstream } : undefined;
 }

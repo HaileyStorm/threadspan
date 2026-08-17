@@ -28,9 +28,26 @@ test("routed model list contains one id per supported mode", async () => {
   const ids = (await registry.listRoutedModels()).map((entry) => entry.id).sort();
   assert.deepEqual(ids, [
     "consult/mock/mock-model",
+    "consult/threadspan/auto",
     "delegate/mock/mock-model",
+    "delegate/threadspan/auto",
     "integrated/mock/mock-model",
+    "integrated/threadspan/auto",
   ]);
+});
+
+test("threadspan smart routes honor mode-specific provider order", () => {
+  const config = createTestConfig({
+    routing: { providerOrder: { consult: ["second", "mock"] } },
+    providers: {
+      second: { adapter: "mock", model: "second-model", capabilities: ["consult"] },
+    },
+  });
+  const registry = new ProviderRegistry(config, { logger: silentLogger() });
+  const route = registry.resolveRoute({ model: "consult/threadspan/auto" });
+  assert.equal(route.smart, true);
+  assert.equal(route.providerId, "second");
+  assert.equal(route.model, "second-model");
 });
 
 test("registry accepts an embedding-application adapter without core edits", async () => {
@@ -64,6 +81,9 @@ test("registry runtime stats aggregate provider-local count-only diagnostics", (
   });
   const registry = new ProviderRegistry(config, { logger: silentLogger(), adapters: { external: ExternalAdapter } });
   const stats = registry.runtimeStats();
-  assert.deepEqual(stats.external, { kind: "external", active: 3 });
+  assert.equal(stats.external.kind, "external");
+  assert.equal(stats.external.active, 3);
+  assert.equal(stats.external.health.status, "unknown");
+  assert.equal(stats.external.usage.requests, 0);
   assert.equal(stats.mock.kind, "mock");
 });
