@@ -169,6 +169,7 @@
     renderReroute(next.reroute);
     renderHistory(next.history);
     renderRouteMap(next.routeMap);
+    renderCompatibility(next.compatibility);
     syncFilterControls(next.filters);
   }
 
@@ -356,6 +357,21 @@
       }).join(" · ");
       card.append(head, modes, noteEl(`${node.availability} · ${node.specialties.join(", ") || "general"} · ${node.usage.requests} uses / ${node.usage.failures} failures`));
       el.appendChild(card);
+    }
+  }
+
+  function renderCompatibility(compatibility) {
+    const summary = root.querySelector("[data-field='compatibility-summary']");
+    const list = root.querySelector("[data-field='compatibility-products']");
+    if (!summary || !list) return;
+    summary.textContent = compatibility.status === "disabled"
+      ? "Watch disabled. Run compatibility doctor after an app update."
+      : `${compatibility.status}${compatibility.changed ? " · changes need review" : " · no reported drift"}${compatibility.observedAt ? ` · ${formatUtc(compatibility.observedAt)}` : ""}`;
+    list.replaceChildren();
+    for (const product of compatibility.products) {
+      const item = document.createElement("li");
+      item.textContent = `${product.label} · ${product.status}${product.version ? ` · ${product.version}` : ""}`;
+      list.appendChild(item);
     }
   }
 

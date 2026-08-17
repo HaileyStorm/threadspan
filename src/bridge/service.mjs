@@ -8,6 +8,7 @@ import { boundedRedactedJson } from "../core/redact.mjs";
 import { SessionStore } from "../core/session-store.mjs";
 import { ProviderRegistry } from "../providers/registry.mjs";
 import { UsageLedger } from "../core/usage-ledger.mjs";
+import { DesktopCompatibilityWatch } from "../maintenance/desktop-update.mjs";
 import { ResponsesAssembler } from "./responses.mjs";
 
 /**
@@ -24,6 +25,15 @@ export class BridgeService {
     this.sessions = dependencies.sessions ?? new SessionStore(config.sessions);
     this.usageLedger = dependencies.usageLedger ?? new UsageLedger({ ...(config.usageLedger ?? {}), enabled: config.usageLedger?.enabled === true });
     this.registry = dependencies.registry ?? new ProviderRegistry(config, { logger: this.logger, usageLedger: this.usageLedger });
+    this.compatibilityWatch = dependencies.compatibilityWatch ?? new DesktopCompatibilityWatch(config.compatibilityWatch ?? {});
+    this.compatibilityReport = undefined;
+    this.compatibilityPolling = undefined;
+    if (config.compatibilityWatch?.enabled === true && config.compatibilityWatch?.pollingEnabled === true) {
+      this.compatibilityPolling = this.compatibilityWatch.startPolling(
+        (report) => { this.compatibilityReport = report; },
+        { runImmediately: true, onError: (report) => { this.compatibilityReport = report; } },
+      );
+    }
     this.convenienceThreads = dependencies.convenienceThreads ?? new KeyedSerialQueue();
     this.closed = false;
   }
@@ -267,6 +277,7 @@ export class BridgeService {
       reroute: null,
       filters: { mode: "all", verifiedOnly: false },
       routeMap,
+      compatibility: summarizeCompatibility(this.config.compatibilityWatch, this.compatibilityReport),
     };
   }
 
@@ -285,6 +296,7 @@ export class BridgeService {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.compatibilityPolling?.stop();
     await this.registry.close();
     await this.usageLedger.flush();
   }
@@ -380,6 +392,18 @@ function usageEvidence(metadata) {
     ...(costTicks === undefined ? {} : { costTicks }),
     ...(worker.process ? { processCount: 1 } : {}),
     ...(Number.isSafeInteger(grok.actualTurns) ? { turnCount: grok.actualTurns } : {}),
+  };
+}
+
+function summarizeCompatibility(config, report) {
+  if (config?.enabled !== true) return { status: "disabled", changed: false, products: [], changes: [] };
+  if (!report) return { status: "loading", changed: false, products: [], changes: [] };
+  return {
+    status: report.status ?? "unknown",
+    changed: report.changed === true,
+    observedAt: report.observedAt,
+    products: (report.products ?? []).map((product) => ({ id: product.id, label: product.label, status: product.status, version: product.version })),
+    changes: (report.changes ?? []).slice(0, 20),
   };
 }
 

@@ -17,6 +17,7 @@ import { Logger } from "./core/logger.mjs";
 import { applyInstallerPlan, createInstallerPlan, previewInstallerPlan } from "./installer/index.mjs";
 import { runMcpServer } from "./mcp/server.mjs";
 import { inspectGrokBuildInstallation } from "./providers/grok-build.mjs";
+import { DesktopCompatibilityWatch } from "./maintenance/desktop-update.mjs";
 
 const SOURCE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(SOURCE_DIRECTORY, "..");
@@ -73,6 +74,13 @@ export async function main(argv = process.argv.slice(2)) {
     const configPath = resolveConfigPath(valueOption(parsed.options.config));
     const config = loadConfig(configPath);
     const logger = new Logger({ level: valueOption(parsed.options.logLevel) ?? config.logging?.level ?? "info" });
+
+    if (command === "compatibility" && subcommand === "doctor") {
+      const watch = new DesktopCompatibilityWatch({ ...config.compatibilityWatch, enabled: true });
+      const report = parsed.options.afterUpdate === true ? await watch.doctorAfterUpdate() : await watch.doctor();
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      return;
+    }
 
     if (command === "serve") {
       await runServe(config, logger);
@@ -479,6 +487,7 @@ Usage:
   threadspan doctor [--config PATH] [--live]
   threadspan providers [--config PATH]
   threadspan models [--config PATH]
+  threadspan compatibility doctor [--config PATH] [--after-update]
   threadspan catalog build --output PATH [--native PATH|--codex PATH] [--favorite ROUTE ...] [--show-free]
   threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--json]
   threadspan delegate "task" --workspace PATH --allow-path PATH ... [--deny-path PATH ...] [--non-goal TEXT ...] [same routing options] [--acceptance-command CMD ...]

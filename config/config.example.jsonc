@@ -23,6 +23,13 @@
   "usageLedger": {
     "enabled": true
   },
+  "compatibilityWatch": {
+    "enabled": false,
+    "readOnly": true,
+    "applyEnabled": false,
+    "pollingEnabled": false,
+    "pollIntervalMs": 900000
+  },
   "routing": {
     "providerOrder": {
       "consult": ["cursor", "cursor-ultra", "grok-build", "nous", "openrouter"],

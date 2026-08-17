@@ -466,6 +466,16 @@ a {
   font-weight: 650;
 }
 
+.compatibility-disclosure > summary {
+  cursor: pointer;
+  min-height: 2.5rem;
+  display: flex;
+  align-items: center;
+  font-weight: 650;
+}
+
+.compatibility-list { margin: 0.35rem 0 0; padding-left: 1.2rem; }
+
 .appearance-controls {
   display: flex;
   flex-wrap: wrap;
@@ -513,6 +523,7 @@ a {
 .history-disclosure > summary:hover,
 .route-map-disclosure > summary:hover,
 .appearance-disclosure > summary:hover,
+.compatibility-disclosure > summary:hover,
 .filter-row label:hover {
   background: var(--paper-2);
 }

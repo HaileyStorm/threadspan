@@ -25,6 +25,7 @@ export { CursorCliProvider, parseCursorModels } from "./providers/cursor-cli.mjs
 export { CodexWorkerProvider, buildCodexWorkerArguments, parseCodexWorkerJsonl } from "./providers/codex-worker.mjs";
 export { OpenRouterProvider } from "./providers/openrouter.mjs";
 export { UsageLedger, aggregateUsageEvents, normalizeUsageEvent, resolveUsageLedgerPath } from "./core/usage-ledger.mjs";
+export { DesktopCompatibilityWatch, assessNativeDesktopMigration, computeRepairPlanDigest } from "./maintenance/desktop-update.mjs";
 export * from "./installer/index.mjs";
 export {
   GrokBuildProvider,

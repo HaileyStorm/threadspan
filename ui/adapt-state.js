@@ -125,6 +125,7 @@
         { mode: "delegate", provider: "grok", priority: 1, weight: 0 },
       ],
     },
+    compatibility: { status: "ok", changed: false, observedAt: "2026-08-17T20:00:00Z", products: [{ id: "codex-cli", label: "Codex CLI", status: "detected", version: "0.147.0" }], changes: [] },
   };
 
   /**
@@ -246,6 +247,7 @@
       },
       modeNote: MODE_NOTES[route.mode] || "Mode authority is unspecified.",
       routeMap: adaptRouteMap(raw.routeMap),
+      compatibility: adaptCompatibility(raw.compatibility),
     };
   }
 
@@ -422,6 +424,7 @@
       filters: { mode: "all", verifiedOnly: false },
       modeNote: "",
       routeMap: { nodes: [], edges: [] },
+      compatibility: { status: "disabled", changed: false, products: [], changes: [] },
     };
   }
 
@@ -455,6 +458,17 @@
       return { mode, provider: text(edge.provider), priority: finiteNumber(edge.priority, 0), weight: finiteNumber(edge.weight, 0) };
     }).filter(Boolean) : [];
     return { nodes, edges };
+  }
+
+  function adaptCompatibility(raw) {
+    if (!isObject(raw)) return { status: "disabled", changed: false, products: [], changes: [] };
+    return {
+      status: text(raw.status) || "unknown",
+      changed: raw.changed === true,
+      observedAt: text(raw.observedAt),
+      products: Array.isArray(raw.products) ? raw.products.map((product) => isObject(product) && text(product.id) ? { id: text(product.id), label: text(product.label) || text(product.id), status: text(product.status) || "unknown", version: text(product.version) } : null).filter(Boolean).slice(0, 12) : [],
+      changes: Array.isArray(raw.changes) ? raw.changes.filter(isObject).slice(0, 20) : [],
+    };
   }
 
   /**

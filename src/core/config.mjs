@@ -18,6 +18,7 @@ const DEFAULT_CONFIG = Object.freeze({
   logging: { level: "info", logBodies: false },
   sessions: { ttlMs: 24 * 60 * 60 * 1000, maxEntries: 500 },
   usageLedger: { enabled: true },
+  compatibilityWatch: { enabled: false, readOnly: true, applyEnabled: false, pollingEnabled: false, pollIntervalMs: 900000 },
   routing: { providerOrder: {} },
   defaults: { provider: "cursor", mode: "consult", model: "auto" },
   providers: {},
@@ -183,6 +184,7 @@ export function validateConfig(config, configPath = "<memory>") {
   if (!isPlainObject(config)) throw new ConfigError("Configuration root must be an object");
   if (config.routing === undefined) config = { ...config, routing: { providerOrder: {} } };
   if (config.usageLedger === undefined) config = { ...config, usageLedger: { enabled: false } };
+  if (config.compatibilityWatch === undefined) config = { ...config, compatibilityWatch: { enabled: false, readOnly: true, applyEnabled: false, pollingEnabled: false, pollIntervalMs: 900000 } };
   if (!isPlainObject(config.server)) throw new ConfigError("server must be an object");
   if (typeof config.server.host !== "string" || config.server.host.length === 0) throw new ConfigError("server.host must be a non-empty string");
   if (!Number.isInteger(config.server.port) || config.server.port < 1 || config.server.port > 65535) throw new ConfigError("server.port must be an integer from 1 to 65535");
@@ -210,6 +212,11 @@ export function validateConfig(config, configPath = "<memory>") {
   assertInteger(config.sessions.maxEntries, "sessions.maxEntries", { minimum: 1 });
   if (!isPlainObject(config.usageLedger)) throw new ConfigError("usageLedger must be an object");
   if (typeof config.usageLedger.enabled !== "boolean") throw new ConfigError("usageLedger.enabled must be boolean");
+  if (!isPlainObject(config.compatibilityWatch)) throw new ConfigError("compatibilityWatch must be an object");
+  for (const key of ["enabled", "readOnly", "applyEnabled", "pollingEnabled"]) {
+    if (typeof config.compatibilityWatch[key] !== "boolean") throw new ConfigError(`compatibilityWatch.${key} must be boolean`);
+  }
+  assertInteger(config.compatibilityWatch.pollIntervalMs, "compatibilityWatch.pollIntervalMs", { minimum: 60000, maximum: 86400000 });
 
   if (!isPlainObject(config.providers)) throw new ConfigError("providers must be an object");
   if (!isPlainObject(config.routing)) throw new ConfigError("routing must be an object");
@@ -643,6 +650,7 @@ export function createExampleConfig() {
     logging: { level: "info", logBodies: false },
     sessions: { ttlMs: 86400000, maxEntries: 500 },
     usageLedger: { enabled: true },
+    compatibilityWatch: { enabled: false, readOnly: true, applyEnabled: false, pollingEnabled: false, pollIntervalMs: 900000 },
     routing: {
       providerOrder: {
         consult: ["cursor", "cursor-ultra", "grok-build", "nous", "openrouter"],
