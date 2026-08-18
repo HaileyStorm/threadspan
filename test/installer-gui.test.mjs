@@ -159,6 +159,16 @@ test("provider readiness fails closed into Add providers and selection retains d
   assert.doesNotMatch(JSON.stringify({ grok, claude, agentrouter }), /Bearer |credential-value/i);
 });
 
+test("installer GUI exposes a separate exact provider-activation review without credentials or implicit routing", async () => {
+  const source = await readFile(new URL("../ui/install.js", import.meta.url), "utf8");
+  assert.match(source, /Activate one provider/);
+  assert.match(source, /Choose one exact mode\/provider\/account\/model request/);
+  assert.match(source, /No smart routing, fallback, takeover, retry/);
+  assert.match(source, /providerActivation:true/);
+  assert.match(source, /Exact one-attempt provider plan created/);
+  assert.doesNotMatch(source, /activation-(?:token|api-key|credential-value)/i);
+});
+
 test("GUI plans and applies Codex full access against its selected host environment", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "threadspan-gui-codex-policy-"));
   const installRoot = join(root, "install");

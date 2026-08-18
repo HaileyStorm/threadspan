@@ -5,12 +5,17 @@ import { fileURLToPath } from "node:url";
 import {
   applyFreshInstallPlan,
   applyInstallerPlan,
+  applyProviderActivationPlan,
   createFreshTaskProtectionBinding,
   createFreshInstallPlan,
   createInstallerPlan,
+  createProviderActivationPlan,
   previewFreshInstallPlan,
   previewInstallerPlan,
+  previewProviderActivationPlan,
 } from "./index.mjs";
+import { loadConfig } from "../core/config.mjs";
+import { BridgeService } from "../bridge/service.mjs";
 import { ALL_COMPONENT_IDS, COMPONENT_IDS, EXPLICIT_ONLY_COMPONENT_IDS, OPTIONAL_COMPONENT_IDS, readInstalledVoiceConfig } from "./components.mjs";
 import { COPY_CHECK_DISCLAIMER, COPY_CHECK_NO_PARTNERSHIP } from "../core/copy-check.mjs";
 import { DEFAULT_VOICE_PROFILE_ID, voicePresetCards } from "../core/voice-profiles.mjs";
@@ -51,6 +56,7 @@ export class InstallerGuiController {
       relaunch: options.relaunchUpdatedInstaller ?? relaunchUpdatedInstaller,
     });
     this.freshInstallOptions = options.freshInstallOptions ?? null;
+    this.providerActivationExecutor = options.providerActivationExecutor ?? defaultProviderActivationExecutor;
     this.ready = this.#rehydrate();
     const weakController = new WeakRef(this);
     const timer = setInterval(() => {
@@ -166,6 +172,7 @@ export class InstallerGuiController {
     await this.ready;
     const session = this.authorize(nonce);
     if (["applying", "complete", "cancelled", "update-relaunching"].includes(session.state)) throw new Error(`Installer session cannot plan while ${session.state}`);
+    if (input.providerActivation === true) return this.#planProviderActivation(session, input);
     const selected = Array.isArray(input.components) ? input.components : defaultComponents();
     if (input.freshInstall === true) return this.#planFreshInstall(session, input, selected);
     const plan = createInstallerPlan({
@@ -196,9 +203,10 @@ export class InstallerGuiController {
   async apply(nonce, input) {
     await this.ready;
     const session = this.authorize(nonce);
-    if (session.state !== "planned") throw new Error(`Installer session cannot apply while ${session.state}`);
+    if (!["planned", "activation-planned"].includes(session.state)) throw new Error(`Installer session cannot apply while ${session.state}`);
     if (!session.plan) throw new Error("Preview a plan before applying it");
     if (input.approvedDigest !== session.plan.digest) throw new Error("Approved digest does not match the previewed plan");
+    if (session.plan.kind === "threadspan-provider-activation") return this.#applyProviderActivation(session, input);
     if (session.plan.kind === "threadspan-fresh-install") return this.#applyFreshInstall(session, input);
     const refreshedPlan = createInstallerPlan({
       installRoot: session.installRoot,
@@ -283,6 +291,34 @@ export class InstallerGuiController {
     return { plan, preview: previewFreshInstallPlan(plan), usageEstimate: estimateInstallationUsage(plan.selectedComponentIds) };
   }
 
+  async #planProviderActivation(session, input) {
+    if (!session.freshInstallPlan || !session.freshInstallReceipt) throw new Error("Provider activation requires a completed pending fresh install in this session");
+    if (!["activation-pending", "activation-planned"].includes(session.state)) throw new Error(`Installer session cannot plan provider activation while ${session.state}`);
+    const request = input.request && typeof input.request === "object" ? input.request : {};
+    const plan = await createProviderActivationPlan({
+      freshInstallPlan: session.freshInstallPlan,
+      freshInstallReceipt: session.freshInstallReceipt,
+      configPath: session.freshInstallPlan.config.path,
+      request,
+      readiness: {
+        [request.providerId]: {
+          authReady: input.readiness?.authReady === true,
+          runtimeReady: input.readiness?.runtimeReady === true,
+          ...(input.readiness?.authRef ? { authRef: String(input.readiness.authRef) } : {}),
+        },
+      },
+      environment: this.environment,
+    });
+    session.plan = plan;
+    session.state = "activation-planned";
+    await this.recovery.update(session.sessionId, {
+      state: "activation-planned",
+      planDigest: plan.digest,
+      result: { providerActivation: { providerEvidence: plan.providerEvidence, routeId: plan.request.routeId } },
+    });
+    return { plan, preview: previewProviderActivationPlan(plan), usageEstimate: { deterministicSetupTokens: 0, acceptanceModelTokens: { low: 1, likely: 64, high: 512 } } };
+  }
+
   async #applyFreshInstall(session, input) {
     throwIfSessionCancelled(session);
     const refreshed = await createFreshInstallPlan(session.freshPlanningInput);
@@ -315,13 +351,36 @@ export class InstallerGuiController {
         ...(freshOptions?.checkpoint ? { checkpoint: freshOptions.checkpoint } : {}),
       });
       throwIfSessionCancelled(session);
-      session.state = "complete";
-      await this.recovery.update(session.sessionId, { state: "complete", result: sanitizeResult(result) });
+      session.freshInstallPlan = session.plan;
+      session.freshInstallReceipt = result;
+      session.state = "activation-pending";
+      await this.recovery.update(session.sessionId, { state: "activation-pending", result: sanitizeResult(result) });
       return result;
     } catch (error) {
       if (session.closeIntent === "cancel" || session.state === "cancelled") throw error;
       session.state = "planned";
       await this.recovery.update(session.sessionId, { state: "planned" });
+      throw error;
+    }
+  }
+
+  async #applyProviderActivation(session, input) {
+    session.state = "activating-provider";
+    await this.recovery.update(session.sessionId, { state: "activating-provider" });
+    try {
+      const result = await applyProviderActivationPlan(session.plan, {
+        approvedDigest: input.approvedDigest,
+        ...(input.recoverClaimDigest ? { recoverClaimDigest: String(input.recoverClaimDigest) } : {}),
+        signal: session.cancelController.signal,
+        executor: this.providerActivationExecutor,
+      });
+      session.state = "complete";
+      await this.recovery.update(session.sessionId, { state: "complete", result: sanitizeResult(result) });
+      return result;
+    } catch (error) {
+      if (session.closeIntent === "cancel" || session.state === "cancelled") throw error;
+      session.state = "activation-planned";
+      await this.recovery.update(session.sessionId, { state: "activation-planned" });
       throw error;
     }
   }
@@ -590,6 +649,26 @@ function estimateInstallationUsage(components) {
 }
 
 function sanitizeResult(result) {
+  if (result?.kind === "threadspan-provider-activation-receipt") {
+    return {
+      schemaVersion: result.schemaVersion,
+      kind: result.kind,
+      status: result.status,
+      reason: result.reason,
+      planId: result.planId,
+      planDigest: result.planDigest,
+      predecessorPlanDigest: result.predecessorPlanDigest,
+      providerId: result.providerId,
+      routeId: result.routeId,
+      attempts: result.attempts,
+      configSha256: result.configSha256,
+      rollbackComplete: result.rollbackComplete,
+      liveRequest: result.liveRequest,
+      providerEvidence: result.providerEvidence,
+      credentialsExposed: false,
+      providerAppLifecycle: false,
+    };
+  }
   if (result?.kind === "threadspan-fresh-install-receipt") {
     return {
       schemaVersion: result.schemaVersion,
@@ -615,6 +694,13 @@ function sanitizeResult(result) {
     unchanged: result.unchanged,
     exclusions: result.exclusions,
   };
+}
+
+async function defaultProviderActivationExecutor(request, context) {
+  const config = loadConfig(context.configPath);
+  const service = new BridgeService(config);
+  try { return await service.executeProviderActivation(request, { signal: context.signal }); }
+  finally { await service.close(); }
 }
 
 function sanitizeUpdateResult(result) {

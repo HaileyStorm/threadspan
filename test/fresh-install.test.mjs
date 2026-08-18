@@ -9,10 +9,12 @@ import test from "node:test";
 import {
   applyFreshInstallPlan,
   applyFreshInstallUninstallPlan,
+  applyProviderActivationPlan,
   applyDaemonServicePlan,
   createFreshInstallPlan,
   createFreshInstallConfig,
   createFreshInstallUninstallPlan,
+  createProviderActivationPlan,
   previewFreshInstallPlan,
   resolveFreshInstallProvenance,
 } from "../src/installer/index.mjs";
@@ -208,7 +210,9 @@ test("fresh GUI wait protection may converge active tasks to zero without Deskto
   const serviceDirectory = join(base.root, "gui-wait-services");
   await Promise.all([mkdir(guiRoot), mkdir(serviceDirectory)]);
   let inventoryReads = 0;
+  let activationCalls = 0;
   const controller = new InstallerGuiController({ server: { host: "127.0.0.1", port: 8743 }, codex: {} }, {
+    environment: { NOUS_API_KEY: "offline-gui-key" },
     recoveryStore: new InstallerRecoveryStore({ root: join(base.root, "gui-wait-recovery") }),
     stableUpdater: { checkAndUpdate: async () => ({ status: "current", currentVersion: "0.5.0", latestVersion: "0.5.0", canContinueCurrent: true, retryable: true }) },
     listTasks: async () => {
@@ -226,6 +230,10 @@ test("fresh GUI wait protection may converge active tasks to zero without Deskto
       serviceDirectory,
       ...(session.plan ? { commandRunner: lifecycleRunner(session.plan) } : {}),
     }),
+    providerActivationExecutor: async (request) => {
+      activationCalls += 1;
+      return { success: true, discovered: true, sentinelVerified: true, status: "completed", responseId: "gui-offline-fake", route: { providerId: request.providerId, mode: request.mode, model: request.model, accountId: null } };
+    },
   });
   t.after(() => controller.dispose());
   const created = await controller.createSession({ installRoot: guiRoot, origin: { kind: "direct" } });
@@ -236,7 +244,7 @@ test("fresh GUI wait protection may converge active tasks to zero without Deskto
     components: ["daemon", "nous"],
     taskProtection: { taskIds: ["task-1"], disposition: "wait" },
   });
-  assert.deepEqual(planned.plan.selectedProviderIds, ["nous"]);
+  assert.deepEqual(planned.plan.selectedProviderIds, ["nous", "nous-worker"]);
   assert.equal(planned.plan.providerEvidence[0].status, "pending");
   await controller.protect(nonce, { taskIds: ["task-1"], disposition: "wait" });
   const receipt = await controller.apply(nonce, { approvedDigest: planned.plan.digest });
@@ -246,6 +254,20 @@ test("fresh GUI wait protection may converge active tasks to zero without Deskto
   assert.equal(durable.result.digest, receipt.digest);
   assert.equal(durable.result.providerEvidence[0].status, "pending");
   assert.equal(durable.result.hostSurface.status, "pending");
+  assert.equal(controller.authorize(nonce).state, "activation-pending");
+
+  const activation = await controller.plan(nonce, {
+    providerActivation: true,
+    request: { providerId: "nous", mode: "consult", model: "deepseek/deepseek-v4-flash-0731" },
+    readiness: { authReady: true, runtimeReady: true },
+  });
+  assert.equal(activation.plan.kind, "threadspan-provider-activation");
+  assert.match(activation.preview.text, /Exact request: consult\/nous\/deepseek\/deepseek-v4-flash-0731/);
+  const activated = await controller.apply(nonce, { approvedDigest: activation.plan.digest });
+  assert.equal(activated.status, "ready");
+  assert.equal(activationCalls, 1);
+  assert.equal(controller.authorize(nonce).state, "complete");
+  assert.doesNotMatch(JSON.stringify(await controller.recovery.read(created.sessionId)), /offline-gui-key/);
 });
 
 test("fresh GUI session URL brackets accepted IPv6 loopback", async (t) => {
@@ -408,6 +430,26 @@ test("fresh apply creates separate owner-only credentials, sanitized pending evi
   assert.equal(receipt.providerEvidence[0].live, false);
   assert.equal(receipt.status, "applied-pending-provider-and-host-activation");
 
+  const activationPlan = await createProviderActivationPlan({
+    freshInstallPlan: plan,
+    freshInstallReceipt: receipt,
+    request: { providerId: "nous", mode: "consult", model: parsed.providers.nous.model },
+    environment: { NOUS_API_KEY: "offline-test-only" },
+  });
+  const activationReceipt = await applyProviderActivationPlan(activationPlan, {
+    approvedDigest: activationPlan.digest,
+    executor: async () => ({
+      success: true,
+      discovered: true,
+      sentinelVerified: true,
+      status: "completed",
+      responseId: "offline-fake",
+      route: { providerId: "nous", mode: "consult", model: parsed.providers.nous.model, accountId: null },
+    }),
+  });
+  assert.equal(activationReceipt.status, "ready");
+  assert.equal(JSON.parse(await readFile(plan.config.path, "utf8")).providers.nous.enabled, true);
+
   const beforeReplay = events.length;
   assert.deepEqual(await applyFreshInstallPlan(plan, {
     approvedDigest: plan.digest,
@@ -417,6 +459,8 @@ test("fresh apply creates separate owner-only credentials, sanitized pending evi
   assert.equal(events.length, beforeReplay, "terminal replay must not execute lifecycle commands");
 
   const uninstall = await createFreshInstallUninstallPlan(plan);
+  assert.equal(uninstall.activationSuccessor.status, "ready");
+  assert.equal(uninstall.config.sha256, activationReceipt.configSha256);
   const uninstallReceipt = await applyFreshInstallUninstallPlan(uninstall, { approvedDigest: uninstall.digest, commandRunner: runner });
   assert.equal(uninstallReceipt.status, "uninstalled");
   for (const path of [plan.config.path, plan.tokens.owner.path, plan.tokens.connector.path, ...plan.componentChild.plan.operations.map((item) => join(plan.installRoot, item.relativePath))]) {

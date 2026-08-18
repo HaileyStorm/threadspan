@@ -65,6 +65,30 @@ records contain IDs, host kind, project path, component IDs, digests, state,
 timestamps, and bounded results, but no prompts, credential values, browser
 state, provider response text, or owner-local telemetry.
 
+After that pending proof, the same authenticated installer session can review a
+separate one-provider activation transaction. The user chooses the exact
+provider, mode, non-auto model, optional opaque account/profile reference, and
+confirms provider-native authentication/runtime prerequisites. Review shows the
+exact route, config hashes, blocked selected providers, one-attempt limit, and
+the distinct approval digest. Apply calls the same activation API as the CLI;
+the browser never receives credential values or provider response text.
+
+Only closed descriptor, auth, runtime, live-discovery, and live-request evidence
+can produce `ready`. Preview or incomplete providers remain visibly `blocked`
+and are never passed to the executor. Failure and uncertain post-dispatch resume
+are terminal for that approved plan: config is rolled back when exact ownership
+can be proven, and no smart route, fallback, takeover, retry, Desktop restart,
+provider app launch, sign-in flow, or billing action is attempted.
+
+Stale activation ownership is recoverable only by copying the exact SHA-256
+claim digest from the server error into the visible reviewed recovery field.
+Post-dispatch uncertainty is not automatic recovery: the GUI leaves the observed
+config untouched and reports unknown provider termination. Current activation
+therefore executes only raw API Consult/Integrated adapters with a provable
+single request. Codex, Cursor, Grok Build, all Delegate routes, and Preview remain
+visible but blocked until their adapters can prove no hidden turns/retries and
+bounded termination.
+
 The shipped setup command still obtains its loopback session from an existing
 authenticated daemon. A native zero-state launcher capable of creating that
 first authenticated helper is not yet shipped. The GUI advertises the canonical

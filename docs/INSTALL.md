@@ -18,6 +18,46 @@ threadspan install fresh-uninstall-plan --install-plan fresh-plan.json --output 
 threadspan install fresh-uninstall --plan fresh-uninstall.json --approve-digest SHA256
 ```
 
+Provider activation is a separate successor transaction after the pending fresh
+receipt. It enables exactly one selected provider only after its descriptor,
+authentication reference, runtime prerequisite, mode, account, and model have
+been closed into a reviewed plan:
+
+```text
+threadspan install provider-activation-plan --fresh-plan fresh-plan.json --fresh-receipt fresh-receipt.json --output activation.json --provider ID --mode consult|integrated|delegate --model MODEL [--account OPAQUE_ID] [--workspace PATH] [--auth-ref OPAQUE_REF] [--auth-ready] [--runtime-ready]
+threadspan install provider-activate --plan activation.json --approve-digest SHA256
+```
+
+The plan binds the fresh-install digest, exact config preimage and next hash,
+the explicit `mode/provider[/@account]/model` route, and one-attempt policy. It
+contains opaque account/profile/environment references and prerequisite
+booleans, never credential values. Smart routing, same-account fallback,
+cross-provider takeover, adapter streaming retry, and provider application or
+Desktop lifecycle are disabled. Preview providers and unmet selected providers
+remain visible as blocked evidence and cannot execute.
+
+The executor first requires the exact provider/model to appear in live
+discovery, then makes the single bounded request and requires the exact
+`THREADSPAN_ACTIVATION_OK` sentinel. Only that completed live response returns
+`ready`. Ordinary failures restore the exact disabled config preimage and return
+a sanitized stable `blocked` receipt. If a process stops after dispatch but
+before the terminal receipt, resume records `request-outcome-unknown`, leaves the
+observed config unchanged, marks provider termination unknown, requires manual
+recovery, and never issues a second request. A reviewed stale-claim digest is
+available on CLI and GUI paths. Successful activation is composed as a
+separately approved successor for fresh-install replay and uninstall. Each fresh
+predecessor/config can acquire exactly one terminal activation successor—even a
+blocked one—so differently named or sequential plans cannot dispatch duplicate
+requests or create an ambiguous uninstall chain.
+
+The current exact-one-request proof is available only for Consult/Integrated raw
+API adapters whose streaming fallback is explicitly disabled. Delegate and
+provider-owned agent adapters—including Codex, Cursor, and Grok Build—remain
+visible with `one-attempt-not-provable` and are not executed by activation.
+Their native sign-in/runtime descriptors may be installed, but `ready` requires
+a future adapter contract that proves one outer request, no internal retries or
+extra turns, and bounded in-flight termination. Preview providers remain blocked.
+
 `fresh-plan` never accepts `--source-revision`. It derives the service revision
 from either an exact clean Git `HEAD` equal to the inspected official
 `origin/main` tracking ref, or owner-local staged provenance written after
@@ -52,7 +92,8 @@ digest-bound child plan and terminal replay. A completed parent receipt remains
 `applied-pending-provider-and-host-activation`: offline setup does not prove
 provider authentication, runtime reachability, live inference, or host-surface
 activation. Provider evidence reports each dimension and a closed reason code;
-a descriptor alone is never `ready`.
+a descriptor alone is never `ready`. The pending receipt is retained unchanged
+as predecessor provenance even after a separate activation succeeds.
 
 Production apply rejects a plan created for another native platform. Synthetic
 Linux/Windows planning remains useful for offline tests, but it is not host

@@ -21,16 +21,19 @@ import {
   applyFreshInstallPlan,
   applyFreshInstallUninstallPlan,
   applyInstallerPlan,
+  applyProviderActivationPlan,
   createDaemonServicePlan,
   createDaemonServiceUninstallPlan,
   createFreshInstallPlan,
   createFreshInstallUninstallPlan,
   createInstallerPlan,
+  createProviderActivationPlan,
   previewDaemonServicePlan,
   previewDaemonServiceUninstallPlan,
   previewFreshInstallPlan,
   previewFreshInstallUninstallPlan,
   previewInstallerPlan,
+  previewProviderActivationPlan,
   readDaemonServiceLifecycleClaim,
   resolveDaemonServiceClaimRoot,
 } from "./installer/index.mjs";
@@ -158,6 +161,62 @@ export async function main(argv = process.argv.slice(2)) {
       const receipt = await applyFreshInstallUninstallPlan(plan, {
         approvedDigest,
         recoverClaimDigest: valueOption(parsed.options.recoverClaimDigest),
+      });
+      process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "provider-activation-plan") {
+      const freshPlanPath = valueOption(parsed.options.freshPlan);
+      const freshReceiptPath = valueOption(parsed.options.freshReceipt);
+      const outputPath = valueOption(parsed.options.output);
+      const providerId = valueOption(parsed.options.provider);
+      const mode = valueOption(parsed.options.mode);
+      const model = valueOption(parsed.options.model);
+      if (!freshPlanPath || !freshReceiptPath || !outputPath || !providerId || !mode || !model) {
+        throw new Error("install provider-activation-plan requires --fresh-plan, --fresh-receipt, --output, --provider, --mode, and --model");
+      }
+      const freshInstallPlan = JSON.parse(await readFile(resolve(freshPlanPath), "utf8"));
+      const freshInstallReceipt = JSON.parse(await readFile(resolve(freshReceiptPath), "utf8"));
+      const plan = await createProviderActivationPlan({
+        freshInstallPlan,
+        freshInstallReceipt,
+        configPath: freshInstallPlan.config.path,
+        planId: valueOption(parsed.options.planId),
+        request: {
+          providerId,
+          mode,
+          model,
+          ...(valueOption(parsed.options.account) ? { accountId: valueOption(parsed.options.account) } : {}),
+          ...(valueOption(parsed.options.workspace) ? { workspace: valueOption(parsed.options.workspace) } : {}),
+        },
+        readiness: {
+          [providerId]: {
+            authReady: parsed.options.authReady === true,
+            runtimeReady: parsed.options.runtimeReady === true,
+            ...(valueOption(parsed.options.authRef) ? { authRef: valueOption(parsed.options.authRef) } : {}),
+          },
+        },
+      });
+      const destination = await writePlanDocument(outputPath, plan);
+      process.stdout.write(previewProviderActivationPlan(plan).text);
+      process.stdout.write(`Plan file: ${destination}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "provider-activate") {
+      const planPath = valueOption(parsed.options.plan);
+      const approvedDigest = valueOption(parsed.options.approveDigest);
+      if (!planPath || !approvedDigest) throw new Error("install provider-activate requires --plan and --approve-digest");
+      const plan = JSON.parse(await readFile(resolve(planPath), "utf8"));
+      const receipt = await applyProviderActivationPlan(plan, {
+        approvedDigest,
+        recoverClaimDigest: valueOption(parsed.options.recoverClaimDigest),
+        executor: async (request, context) => {
+          const activeConfig = loadConfig(context.configPath);
+          const activeLogger = new Logger({ level: valueOption(parsed.options.logLevel) ?? activeConfig.logging?.level ?? "info" });
+          const service = new BridgeService(activeConfig, { logger: activeLogger });
+          try { return await service.executeProviderActivation(request, { signal: context.signal }); }
+          finally { await service.close(); }
+        },
       });
       process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
       return;
@@ -845,6 +904,8 @@ Usage:
   threadspan install fresh-apply --plan PLAN.json --approve-digest SHA256 --approve-task-protection-digest SHA256 [--recover-claim-digest SHA256]
   threadspan install fresh-uninstall-plan --install-plan PLAN.json --output PLAN.json
   threadspan install fresh-uninstall --plan PLAN.json --approve-digest SHA256 [--recover-claim-digest SHA256]
+  threadspan install provider-activation-plan --fresh-plan PLAN.json --fresh-receipt RECEIPT.json --output PLAN.json --provider ID --mode MODE --model MODEL [--account ID] [--workspace PATH] [--auth-ref OPAQUE_REF] [--auth-ready] [--runtime-ready]
+  threadspan install provider-activate --plan PLAN.json --approve-digest SHA256 [--recover-claim-digest SHA256]
   threadspan install service-plan --root PATH --output PLAN.json --source-revision REVISION --lifecycle-owner OPAQUE_ID [--service-directory PATH] [--state-root PATH] [--legacy-startup-path PATH]
   threadspan install service-apply --plan PLAN.json --approve-digest SHA256 [--recover-claim-digest SHA256]
   threadspan install service-uninstall-plan --manifest PATH --output PLAN.json

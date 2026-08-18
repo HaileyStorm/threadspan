@@ -47,6 +47,42 @@ test("registry resolves route-prefixed and explicit provider models", () => {
   assert.equal(explicitPrefixed.model, "mock/other");
 });
 
+test("provider activation route resolution forbids smart selection and preserves capability errors", () => {
+  const registry = new ProviderRegistry(createTestConfig({
+    providers: { mock: { adapter: "mock", model: "exact-model", models: ["exact-model"], capabilities: ["consult"] } },
+  }), { logger: silentLogger() });
+  const route = registry.resolveExactActivationRoute({ providerId: "mock", mode: "consult", model: "exact-model" });
+  assert.equal(route.smart, false);
+  assert.equal(route.providerId, "mock");
+  assert.equal(route.accountId, UNKNOWN_ACCOUNT_ID);
+  assert.throws(() => registry.resolveExactActivationRoute({ providerId: "threadspan", mode: "consult", model: "exact-model" }), RequestError);
+  assert.throws(() => registry.resolveExactActivationRoute({ providerId: "mock", mode: "consult", model: "auto" }), RequestError);
+  assert.throws(() => registry.resolveExactActivationRoute({ providerId: "mock", mode: "delegate", model: "exact-model" }), CapabilityError);
+});
+
+test("bridge activation executor performs live discovery and one exact request", async (t) => {
+  const config = createTestConfig({
+    defaults: { provider: "threadspan", mode: "consult", model: "auto" },
+    providers: { mock: { adapter: "mock", model: "activation-model", models: ["activation-model"], capabilities: ["consult"], reply: "THREADSPAN_ACTIVATION_OK" } },
+  });
+  const service = new BridgeService(config, { logger: silentLogger() });
+  t.after(() => service.close());
+  let runs = 0;
+  const provider = service.registry.get("mock");
+  const originalRun = provider.run.bind(provider);
+  provider.run = async function* (request) { runs += 1; yield* originalRun(request); };
+  const receipt = await service.executeProviderActivation({ providerId: "mock", mode: "consult", model: "activation-model" });
+  assert.equal(runs, 1);
+  assert.deepEqual(receipt.route, { providerId: "mock", mode: "consult", model: "activation-model", accountId: null });
+  assert.equal(receipt.success, true);
+  assert.equal(receipt.discovered, true);
+
+  const wrongConfig = createTestConfig({ providers: { mock: { adapter: "mock", model: "activation-model", models: ["activation-model"], capabilities: ["consult"], reply: "almost" } } });
+  const wrong = new BridgeService(wrongConfig, { logger: silentLogger() });
+  t.after(() => wrong.close());
+  await assert.rejects(wrong.executeProviderActivation({ providerId: "mock", mode: "consult", model: "activation-model" }), /exact sentinel/);
+});
+
 test("service provider descriptions and Threadspan route map preserve optional web metadata", async (t) => {
   const config = createTestConfig({
     providers: {

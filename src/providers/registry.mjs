@@ -158,6 +158,32 @@ export class ProviderRegistry {
   }
 
   /**
+   * Resolve an activation route without smart selection, mutable account defaults, or an auto model.
+   * Capability errors from the selected adapter intentionally pass through unchanged.
+   */
+  resolveExactActivationRoute({ model, mode, providerId, accountId }) {
+    if (typeof providerId !== "string" || !providerId || ["threadspan", "auto"].includes(providerId)) {
+      throw new RequestError("Provider activation requires one explicit non-smart provider");
+    }
+    if (typeof model !== "string" || !model || model === "auto") {
+      throw new RequestError("Provider activation requires one explicit non-auto model");
+    }
+    if (!mode || !["consult", "integrated", "delegate"].includes(mode)) {
+      throw new RequestError("Provider activation requires one explicit mode");
+    }
+    if (accountId === UNKNOWN_ACCOUNT_ID) throw new RequestError("Provider activation cannot use the unknown/default account sentinel explicitly");
+    const route = this.resolveRoute({ providerId, mode, model, accountId });
+    if (route.smart || route.providerId !== providerId || route.mode !== mode || route.model !== model) {
+      throw new RequestError("Provider activation route changed during exact resolution");
+    }
+    if (accountId && route.accountId !== accountId) throw new RequestError("Provider activation account changed during exact resolution");
+    if (!accountId && route.accountId !== UNKNOWN_ACCOUNT_ID) {
+      throw new RequestError(`Provider activation must explicitly bind active account '${route.accountId}'`);
+    }
+    return route;
+  }
+
+  /**
    * List all provider capabilities and models, retaining model-discovery errors as data.
    * @param {{refreshCatalog?: boolean}} [options] Catalog refresh policy; cached reads never mutate provider health.
    * @returns {Promise<Array<Record<string, any>>>}

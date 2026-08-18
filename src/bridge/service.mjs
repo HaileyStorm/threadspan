@@ -668,6 +668,63 @@ export class BridgeService {
     });
   }
 
+  /**
+   * Execute the single bounded request authorized by a provider-activation plan.
+   * This surface never selects smart routing, fallback, takeover, retry, or provider-app lifecycle.
+   */
+  async executeProviderActivation(request, options = {}) {
+    this.#assertOpen();
+    const route = this.registry.resolveExactActivationRoute(request ?? {});
+    const oneAttemptAdapter = ["openai-chat", "openrouter", "deepseek", "nous"].includes(route.provider.config.adapter)
+      || (route.provider.config.adapter === "mock" && Boolean(process.env.NODE_TEST_CONTEXT));
+    if (route.mode === "delegate" || !oneAttemptAdapter) {
+      throw new RequestError(`Provider '${route.providerId}' cannot prove one-request activation without internal turns or retry`);
+    }
+    const discovered = await this.describeProviders({ refreshCatalog: true });
+    const descriptor = discovered.find((entry) => entry.id === route.providerId && entry.accountId === route.accountId);
+    if (!descriptor || descriptor.health?.status !== "available") {
+      throw new RequestError(`Provider '${route.providerId}' did not appear as available in live discovery`);
+    }
+    if (!descriptor.models?.some((entry) => entry.id === route.model)) {
+      throw new RequestError(`Model '${route.model}' did not appear in live provider discovery`);
+    }
+    const response = await this.executeResponse({
+      model: `${route.mode}/${route.providerId}/${route.accountId === UNKNOWN_ACCOUNT_ID ? "" : `@${route.accountId}/`}${route.model}`,
+      input: "Return exactly THREADSPAN_ACTIVATION_OK. Do not use tools, browse, modify files, or perform provider application lifecycle actions.",
+      stream: false,
+      store: false,
+      max_output_tokens: 32,
+      metadata: {
+        bridge_mode: route.mode,
+        bridge_provider: route.providerId,
+        bridge_account_id: route.accountId,
+        bridge_workspace: request.workspace,
+        bridge_account_fallback: false,
+        bridge_automatic_takeover: false,
+        bridge_allow_subagents: false,
+        bridge_allow_web_search: false,
+        bridge_activation_probe: true,
+      },
+    }, { signal: options.signal });
+    if (response?.status !== "completed") throw new ProviderError(route.providerId, "Provider activation request did not complete", { retryable: false });
+    if (response.output_text !== "THREADSPAN_ACTIVATION_OK") {
+      throw new ProviderError(route.providerId, "Provider activation response did not match the exact sentinel", { retryable: false });
+    }
+    return {
+      success: true,
+      discovered: true,
+      status: "completed",
+      sentinelVerified: true,
+      responseId: response.id,
+      route: {
+        providerId: route.providerId,
+        mode: route.mode,
+        model: route.model,
+        accountId: route.accountId === UNKNOWN_ACCOUNT_ID ? null : route.accountId,
+      },
+    };
+  }
+
   /** Return the provider-neutral, host-default-preserving branch policy. */
   branchingPolicy() {
     return publicBranchingPolicy(this.config.branching);

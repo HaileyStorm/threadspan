@@ -14,6 +14,7 @@ import {
 } from "./update-check.mjs";
 import { computePlanDigest, createInstallerPlan } from "./components.mjs";
 import { createDaemonServicePlan, validateDaemonServicePlan } from "./service.mjs";
+import { providerIdsForComponents, readProviderActivationSuccessor } from "./provider-activation.mjs";
 import {
   applyDaemonServicePlan,
   applyDaemonServiceUninstallPlan,
@@ -155,7 +156,7 @@ export async function createFreshInstallPlan(options) {
   const provenance = await resolveFreshInstallProvenance(options.sourceRoot, { runGit: options.runGit });
   const componentIds = normalizeIds(options.componentIds ?? ["daemon"], PROVIDER_ID_PATTERN, "component");
   const providerCatalog = createExampleConfig().providers;
-  const providerIds = normalizeIds(options.providerIds ?? componentIds.filter((id) => providerCatalog[id]), PROVIDER_ID_PATTERN, "provider");
+  const providerIds = normalizeIds(options.providerIds ?? providerIdsForComponents(componentIds, providerCatalog), PROVIDER_ID_PATTERN, "provider");
   const componentPlan = createInstallerPlan({
     installRoot,
     selection: componentIds,
@@ -379,6 +380,11 @@ export async function createFreshInstallUninstallPlan(installPlan, options = {})
   const componentPlan = await createInstallerUninstallPlan(journal.componentManifestPath, { planId: `${installPlan.planId}-components-uninstall` });
   const serviceManifestPath = resolve(installPlan.serviceChild.plan.stateRoot, "manifests", `${installPlan.serviceChild.plan.planId}.json`);
   const servicePlan = await createDaemonServiceUninstallPlan(serviceManifestPath, { planId: `${installPlan.planId}-service-uninstall` });
+  const activationSuccessor = await readProviderActivationSuccessor(installPlan);
+  if (activationSuccessor?.status === "blocked" && activationSuccessor.rollbackComplete === false) {
+    throw new Error("Fresh uninstall requires reviewed recovery of the incomplete provider-activation rollback");
+  }
+  const effectiveConfigSha256 = activationSuccessor?.status === "ready" ? activationSuccessor.configSha256 : installPlan.config.sha256;
   const base = {
     schemaVersion: 1,
     kind: "threadspan-fresh-uninstall",
@@ -392,7 +398,14 @@ export async function createFreshInstallUninstallPlan(installPlan, options = {})
     platform: installPlan.platform,
     stateRoot: installPlan.stateRoot,
     journalPath,
-    config: installPlan.config,
+    config: { ...installPlan.config, sha256: effectiveConfigSha256 },
+    activationSuccessor: activationSuccessor ? {
+      kind: activationSuccessor.kind,
+      planId: activationSuccessor.planId,
+      planDigest: activationSuccessor.planDigest,
+      status: activationSuccessor.status,
+      configSha256: activationSuccessor.configSha256,
+    } : null,
     tokens: installPlan.tokens,
     credentialBindings: journal.credentialBindings,
     componentChild: { digest: componentPlan.digest, plan: componentPlan },
@@ -759,11 +772,11 @@ async function applyFreshConfigAndTokens(plan, options, persistBindings) {
   }
 }
 
-async function assertFreshConfigAndTokens(plan, bindings) {
+async function assertFreshConfigAndTokens(plan, bindings, expectedConfigSha256 = plan.config.sha256) {
   validateCredentialBindings(bindings);
   const configStats = await assertRegularFile(plan.config.path, "Fresh-install config");
   if (process.platform === "win32") await verifyWindowsOwnerOnlyFile(plan.config.path);
-  if (await sha256File(plan.config.path) !== plan.config.sha256 || (process.platform !== "win32" && (configStats.mode & 0o777) !== 0o600)) {
+  if (await sha256File(plan.config.path) !== expectedConfigSha256 || (process.platform !== "win32" && (configStats.mode & 0o777) !== 0o600)) {
     throw new Error("Fresh-install config changed or has unsafe permissions");
   }
   const ownerStats = await assertRegularFile(plan.tokens.owner.path, "Fresh-install owner token");
@@ -928,7 +941,12 @@ async function replayFreshInstallReceipt(plan, journal) {
   assertJournalMatchesPlan(journal, plan);
   const expected = freshInstallReceipt(plan, journal);
   if (stableStringify(journal.terminalReceipt) !== stableStringify(expected)) throw new Error("Terminal fresh-install receipt is invalid");
-  await assertFreshConfigAndTokens(plan, journal.credentialBindings);
+  const activationSuccessor = await readProviderActivationSuccessor(plan);
+  if (activationSuccessor?.status === "blocked" && activationSuccessor.rollbackComplete === false) {
+    throw new Error("Fresh-install replay found an incomplete provider-activation rollback");
+  }
+  const effectiveConfigSha256 = activationSuccessor?.status === "ready" ? activationSuccessor.configSha256 : plan.config.sha256;
+  await assertFreshConfigAndTokens(plan, journal.credentialBindings, effectiveConfigSha256);
   await validateInstallerAppliedState(plan.componentChild.plan);
   await validateDaemonServiceAppliedState(plan.serviceChild.plan);
   return journal.terminalReceipt;

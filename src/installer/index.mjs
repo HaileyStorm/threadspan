@@ -44,3 +44,12 @@ export {
   resolveFreshInstallClaimRoot,
   resolveFreshInstallProvenance,
 } from "./fresh-install.mjs";
+export {
+  COMPONENT_PROVIDER_ACTIVATION_MAP,
+  PROVIDER_ACTIVATION_SCHEMA_VERSION,
+  applyProviderActivationPlan,
+  createProviderActivationPlan,
+  previewProviderActivationPlan,
+  providerIdsForComponents,
+  readProviderActivationSuccessor,
+} from "./provider-activation.mjs";
