@@ -65,6 +65,8 @@ export class ProviderRegistry {
     this.health = new Map();
     /** @type {Map<string, Record<string, number>>} */
     this.usage = new Map();
+    /** @type {Map<string, {models: Array<Record<string, any>>, modelError?: string}>} */
+    this.catalogs = new Map();
     this.usageLedger = context.usageLedger;
     this.accountStore = context.accountStore ?? new AccountStore(config.accounts);
     /** @type {Map<string, any>} */
@@ -119,6 +121,7 @@ export class ProviderRegistry {
     const segments = typeof model === "string" ? model.split("/").filter(Boolean) : [];
 
     if (segments.length >= 3 && ["consult", "integrated", "delegate"].includes(segments[0])) {
+      assertSafeRoutedRoute(model);
       const routedMode = segments.shift();
       const routedProvider = segments.shift();
       resolvedMode ??= routedMode;
@@ -130,6 +133,7 @@ export class ProviderRegistry {
       }
       resolvedModel = segments.join("/");
     } else if (!providerId && segments.length >= 2 && this.providers.has(segments[0])) {
+      assertSafeRoutedRoute(model, { short: true });
       const routedProvider = segments.shift();
       resolvedProvider ??= routedProvider;
       if (segments[0]?.startsWith("@")) {
@@ -155,9 +159,10 @@ export class ProviderRegistry {
 
   /**
    * List all provider capabilities and models, retaining model-discovery errors as data.
+   * @param {{refreshCatalog?: boolean}} [options] Catalog refresh policy; cached reads never mutate provider health.
    * @returns {Promise<Array<Record<string, any>>>}
    */
-  async describe() {
+  async describe(options = {}) {
     const items = [];
     for (const [id] of this.providers.entries()) {
       const account = this.accountStore.resolve(id, this.config.defaults?.provider === id ? this.config.defaults?.accountId : undefined);
@@ -179,15 +184,10 @@ export class ProviderRegistry {
         continue;
       }
       const provider = this.#providerForAccount(id, account);
-      let models = [];
-      let modelError;
-      try {
-        models = await provider.listModels();
-        this.#markCatalog(id, account.id, true);
-      } catch (error) {
-        modelError = error instanceof Error ? error.message : String(error);
-        this.#markCatalog(id, account.id, false, modelError);
-      }
+      const cached = this.catalogs.get(accountKey(id, account.id));
+      const { models, modelError } = options.refreshCatalog === false && cached
+        ? cached
+        : await this.#loadCatalog(id, account, provider);
       items.push({ id, accountId: account.id, accounts: this.accountStore.list({ providerId: id }), adapter: provider.config.adapter, capabilities: provider.capabilities(), models, health: this.#health(id, account.id), ...(modelError ? { modelError } : {}) });
     }
     return items;
@@ -198,22 +198,7 @@ export class ProviderRegistry {
    * @returns {Promise<Array<Record<string, any>>>}
    */
   async listRoutedModels() {
-    const output = ["consult", "integrated", "delegate"]
-      .filter((mode) => this.#eligibleProviders(mode).length > 0)
-      .map((mode) => ({
-        id: `${mode}/threadspan/auto`,
-        object: "model",
-        created: 0,
-        owned_by: "threadspan",
-        metadata: {
-          bridge_mode: mode,
-          provider: "threadspan",
-          upstream_model: "auto",
-          threadspan_smart: true,
-          eligible_providers: this.#eligibleProviders(mode).map(([id]) => id),
-          eligible_accounts: this.#eligibleProviders(mode).map(([, , account]) => account.id),
-        },
-      }));
+    const output = [];
     for (const [providerId] of this.providers.entries()) {
       const configuredAccounts = this.accountStore.list({ providerId });
       if (configuredAccounts.length === 0 && this.providers.get(providerId)?.config.adapter === "codex-native-worker") continue;
@@ -227,22 +212,21 @@ export class ProviderRegistry {
           this.#markAccountUnavailable(providerId, account.id, error);
           continue;
         }
-        let degraded = false;
-        const models = await provider.listModels().then((items) => {
-          this.#markCatalog(providerId, account.id, true);
-          return items;
-        }).catch((error) => {
-          degraded = true;
-          this.#markCatalog(providerId, account.id, false, error instanceof Error ? error.message : String(error));
-          return [{ id: provider.config.model ?? "auto", configuredFallback: true }];
-        });
+        const catalog = await this.#loadCatalog(providerId, account, provider);
+        const degraded = Boolean(catalog.modelError);
+        const models = degraded ? [{ id: provider.config.model ?? "auto", configuredFallback: true }] : catalog.models;
         const capabilities = provider.capabilities();
         for (const [mode, entry] of Object.entries(capabilities.modes)) {
           if (!entry.supported) continue;
           for (const model of models) {
+            assertSafeRoutedModelId(model.id, providerId);
             const accountSegment = account.id === UNKNOWN_ACCOUNT_ID ? "" : `@${account.id}/`;
+            const routedId = `${mode}/${providerId}/${accountSegment}${model.id}`;
+            assertSafeRoutedRoute(routedId);
+            const health = this.#health(providerId, account.id);
+            const contextWindow = model.contextWindow ?? model.context_window ?? provider.config.contextWindow;
             output.push({
-              id: `${mode}/${providerId}/${accountSegment}${model.id}`,
+              id: routedId,
               object: "model",
               created: 0,
               owned_by: providerId,
@@ -251,11 +235,12 @@ export class ProviderRegistry {
                 provider: providerId,
                 account_id: account.id,
                 upstream_model: model.id,
-                availability: this.#health(providerId, account.id).status,
+                availability: health.status,
                 catalog_degraded: degraded,
                 configured_fallback: model.configuredFallback === true,
-                ...(model.free === true ? { free: true } : {}),
-                ...(model.contextWindow ?? model.context_window ? { context_window: model.contextWindow ?? model.context_window } : {}),
+                ...(degraded ? { catalog_reason: "Live provider catalog unavailable; using the configured fallback." } : {}),
+                ...(typeof model.free === "boolean" ? { free: model.free } : {}),
+                ...(contextWindow ? { context_window: contextWindow } : {}),
                 ...(model.supported_reasoning_levels ? { supported_reasoning_levels: model.supported_reasoning_levels } : {}),
                 ...(model.default_reasoning_level ? { default_reasoning_level: model.default_reasoning_level } : {}),
                 ...(capabilities.images === true ? { images: true } : {}),
@@ -265,7 +250,155 @@ export class ProviderRegistry {
         }
       }
     }
+    const smart = ["consult", "integrated", "delegate"]
+      .map((mode) => [mode, this.#eligibleProviders(mode)])
+      .filter(([, eligible]) => eligible.length > 0)
+      .map(([mode, eligible]) => ({
+        id: `${mode}/threadspan/auto`,
+        object: "model",
+        created: 0,
+        owned_by: "threadspan",
+        metadata: {
+          bridge_mode: mode,
+          provider: "threadspan",
+          upstream_model: "auto",
+          threadspan_smart: true,
+          availability: "available",
+          catalog_degraded: false,
+          configured_fallback: false,
+          eligible_providers: eligible.map(([id]) => id),
+          eligible_accounts: eligible.map(([, , account]) => account.id),
+        },
+      }));
+    output.unshift(...smart);
     return output;
+  }
+
+  /**
+   * Freeze one synchronous routing projection after catalog refresh.
+   * Normal execution continues to use live `resolveRoute`; this is only for coherent read models.
+   */
+  routingSnapshot({ routedModels, mode, providerId, model, accountId }) {
+    const captures = [];
+    const providers = [];
+    for (const [id, base] of this.providers.entries()) {
+      const configured = this.accountStore.list({ providerId: id });
+      const active = this.accountStore.resolve(id);
+      const accounts = configured.length > 0 ? configured.map((account) => this.accountStore.get(account.id)) : [active];
+      for (const account of accounts) {
+        let provider;
+        let captureError;
+        try { provider = this.#providerForAccount(id, account); } catch (error) { captureError = error instanceof Error ? error.message : String(error); }
+        const nativeSetupRequired = account.id === UNKNOWN_ACCOUNT_ID && base.config.adapter === "codex-native-worker";
+        const health = nativeSetupRequired
+          ? { ...this.#health(id, account.id), status: "unavailable", setupRequired: true }
+          : { ...this.#health(id, account.id) };
+        const catalog = this.catalogs.get(accountKey(id, account.id));
+        captures.push({
+          id,
+          accountId: account.id,
+          active: account.id === active.id,
+          provider,
+          account,
+          adapter: (provider ?? base).config.adapter,
+          capabilities: (provider ?? base).capabilities(),
+          models: catalog?.models ?? [],
+          modelError: nativeSetupRequired ? "Setup required: add and select a validated isolated Codex account/profileRef" : catalog?.modelError ?? captureError,
+          health,
+          usage: { ...(this.usage.get(accountKey(id, account.id)) ?? emptyUsage()) },
+        });
+      }
+      const selected = captures.find((entry) => entry.id === id && entry.active) ?? captures.find((entry) => entry.id === id);
+      providers.push({
+        id,
+        accountId: selected?.accountId ?? UNKNOWN_ACCOUNT_ID,
+        accounts: structuredClone(configured),
+        adapter: selected?.adapter ?? base.config.adapter,
+        capabilities: structuredClone(selected?.capabilities ?? base.capabilities()),
+        models: structuredClone(selected?.models ?? []),
+        health: structuredClone(selected?.health ?? { status: "unknown" }),
+        ...(selected?.modelError ? { modelError: selected.modelError } : {}),
+        ...(selected?.health?.setupRequired === true ? { setupRequired: true } : {}),
+      });
+    }
+
+    const rankedByMode = Object.fromEntries(["consult", "integrated", "delegate"].map((candidateMode) => [candidateMode, this.#rankCaptured(captures, candidateMode)]));
+    const modeOrder = new Map(["consult", "integrated", "delegate"].map((candidateMode, index) => [candidateMode, index]));
+    const frozenModels = (Array.isArray(routedModels) ? routedModels : []).map((entry, sourceIndex) => {
+      const copy = structuredClone(entry);
+      const metadata = copy.metadata ?? {};
+      if (metadata.provider === "threadspan") {
+        const eligible = rankedByMode[metadata.bridge_mode] ?? [];
+        metadata.availability = eligible.length > 0 ? "available" : "unavailable";
+        metadata.eligible_providers = eligible.map((candidate) => candidate.id);
+        metadata.eligible_accounts = eligible.map((candidate) => candidate.accountId);
+      } else {
+        const capture = captures.find((candidate) => candidate.id === metadata.provider && candidate.accountId === (metadata.account_id ?? UNKNOWN_ACCOUNT_ID));
+        metadata.availability = capture?.health?.status ?? "unavailable";
+      }
+      copy.metadata = metadata;
+      return { copy, sourceIndex };
+    }).sort((left, right) => {
+      const leftMeta = left.copy.metadata ?? {};
+      const rightMeta = right.copy.metadata ?? {};
+      const leftMode = leftMeta.bridge_mode;
+      const rightMode = rightMeta.bridge_mode;
+      const modeDifference = (modeOrder.get(leftMode) ?? 99) - (modeOrder.get(rightMode) ?? 99);
+      if (modeDifference !== 0) return modeDifference;
+      const leftSmart = leftMeta.provider === "threadspan" ? 0 : 1;
+      const rightSmart = rightMeta.provider === "threadspan" ? 0 : 1;
+      if (leftSmart !== rightSmart) return leftSmart - rightSmart;
+      const ranked = rankedByMode[leftMode] ?? [];
+      const providerRank = new Map(ranked.map((candidate, index) => [candidate.id, index]));
+      const rankDifference = (providerRank.get(leftMeta.provider) ?? Number.MAX_SAFE_INTEGER)
+        - (providerRank.get(rightMeta.provider) ?? Number.MAX_SAFE_INTEGER);
+      if (rankDifference !== 0) return rankDifference;
+      const providerDifference = canonicalIdCompare(String(leftMeta.provider ?? ""), String(rightMeta.provider ?? ""));
+      if (providerDifference !== 0) return providerDifference;
+      return left.sourceIndex - right.sourceIndex;
+    }).map(({ copy }) => copy);
+    const nodes = providers.map((item) => {
+      const capture = captures.find((candidate) => candidate.id === item.id && candidate.accountId === item.accountId);
+      const profile = this.config.routing?.providerProfiles?.[item.id] ?? {};
+      return {
+        id: item.id,
+        accountId: item.accountId,
+        adapter: item.adapter,
+        label: profile.label ?? item.id,
+        intelligence: boundedWeight(profile.intelligence, defaultIntelligence(item.adapter)),
+        specialties: Array.isArray(profile.specialties) ? profile.specialties.map(String).slice(0, 6) : defaultSpecialties(item.adapter),
+        modes: Object.entries(item.capabilities?.modes ?? {}).filter(([, entry]) => entry?.supported).map(([candidateMode]) => candidateMode),
+        availability: capture?.health?.status ?? "unknown",
+        models: (item.models ?? []).map((candidateModel) => candidateModel.id).filter(Boolean).slice(0, 12),
+        usage: { ...(capture?.usage ?? emptyUsage()) },
+      };
+    });
+    const edges = ["consult", "integrated", "delegate"].flatMap((candidateMode) => rankedByMode[candidateMode].map((candidate, index) => ({
+      mode: candidateMode,
+      provider: candidate.id,
+      priority: index + 1,
+      weight: candidate.ranking.score,
+      score: candidate.ranking.score,
+      scoreComponents: candidate.ranking.components,
+      tieBreak: candidate.ranking.tieBreak,
+      intelligence: nodes.find((node) => node.id === candidate.id)?.intelligence ?? 50,
+    })));
+
+    let route;
+    let routeError;
+    try {
+      route = this.#resolveCapturedRoute({ mode, providerId, model, accountId }, captures, rankedByMode);
+    } catch (error) {
+      routeError = error instanceof Error ? error.message : String(error);
+      route = {
+        providerId,
+        accountId: UNKNOWN_ACCOUNT_ID,
+        mode,
+        model: this.config.providers?.[providerId]?.model ?? model ?? "auto",
+        health: { status: "unavailable" },
+      };
+    }
+    return deepFreeze({ providers, routedModels: frozenModels, routeMap: { nodes, edges }, route, routeError });
   }
 
   /** Return count-only runtime diagnostics for all configured providers. */
@@ -316,7 +449,7 @@ export class ProviderRegistry {
         intelligence: boundedWeight(profile.intelligence, defaultIntelligence(item.adapter)),
         specialties: Array.isArray(profile.specialties) ? profile.specialties.map(String).slice(0, 6) : defaultSpecialties(item.adapter),
         modes: Object.entries(item.capabilities?.modes ?? {}).filter(([, entry]) => entry?.supported).map(([mode]) => mode),
-        availability: item.health?.status ?? "unknown",
+        availability: this.#health(item.id, item.accountId ?? UNKNOWN_ACCOUNT_ID).status,
         models: (item.models ?? []).map((model) => model.id).filter(Boolean).slice(0, 12),
         usage,
       };
@@ -324,9 +457,18 @@ export class ProviderRegistry {
     const edges = [];
     for (const mode of ["consult", "integrated", "delegate"]) {
       const eligible = this.#eligibleProviders(mode);
-      eligible.forEach(([id], index) => {
+      eligible.forEach(([id, , , ranking], index) => {
         const node = nodes.find((candidate) => candidate.id === id);
-        edges.push({ mode, provider: id, priority: index + 1, weight: this.#routeScore(id, mode, index), intelligence: node?.intelligence ?? 50 });
+        edges.push({
+          mode,
+          provider: id,
+          priority: index + 1,
+          weight: ranking.score,
+          score: ranking.score,
+          scoreComponents: ranking.components,
+          tieBreak: ranking.tieBreak,
+          intelligence: node?.intelligence ?? 50,
+        });
       });
     }
     return { nodes, edges };
@@ -494,33 +636,88 @@ export class ProviderRegistry {
     return { provider, providerId, accountId: account.id, account, mode, model, smart: true, explicitAccount: false, requestedProviderId: "threadspan" };
   }
 
+  #resolveCapturedRoute(input, captures, rankedByMode) {
+    if (["threadspan", "auto"].includes(input.providerId)) {
+      let selected;
+      if (input.accountId) {
+        if (input.accountId === UNKNOWN_ACCOUNT_ID) throw new RequestError(`Unknown account '${input.accountId}'`);
+        selected = captures.find((capture) => capture.accountId === input.accountId && capture.provider);
+        if (!selected) throw new RequestError(`Unknown account '${input.accountId}'`);
+      } else {
+        selected = rankedByMode[input.mode]?.[0];
+        if (!selected) throw new RequestError(`No currently eligible Threadspan provider supports '${input.mode}' mode`);
+      }
+      if (!selected.capabilities?.modes?.[input.mode]?.supported) throw new RequestError(`Provider '${selected.id}' does not support '${input.mode}' mode`);
+      return {
+        providerId: selected.id,
+        accountId: selected.accountId,
+        mode: input.mode,
+        model: !input.model || input.model === "auto" ? selected.provider.config.model ?? "auto" : input.model,
+        smart: true,
+        explicitAccount: Boolean(input.accountId),
+        requestedProviderId: "threadspan",
+        health: { ...selected.health },
+      };
+    }
+    const live = this.resolveRoute(input);
+    const selected = captures.find((capture) => capture.id === live.providerId && capture.accountId === live.accountId);
+    return {
+      providerId: live.providerId,
+      accountId: live.accountId,
+      mode: live.mode,
+      model: live.model,
+      smart: false,
+      explicitAccount: live.explicitAccount,
+      health: { ...(selected?.health ?? { status: "unknown" }) },
+    };
+  }
+
+  #rankCaptured(captures, mode) {
+    const preferred = this.config.routing?.providerOrder?.[mode] ?? [];
+    const rank = new Map(preferred.map((id, index) => [id, index]));
+    return captures
+      .filter((capture) => capture.active && capture.provider && capture.capabilities?.modes?.[mode]?.supported && capture.health.status !== "unavailable")
+      .map((capture) => ({ ...capture, ranking: routeRanking(this.config, capture.id, mode, rank.get(capture.id), capture.health.status, capture.usage) }))
+      .sort((left, right) => left.ranking.score - right.ranking.score || canonicalIdCompare(left.id, right.id));
+  }
+
   #eligibleProviders(mode) {
     const preferred = this.config.routing?.providerOrder?.[mode] ?? [];
     const rank = new Map(preferred.map((id, index) => [id, index]));
     return [...this.providers.entries()].flatMap(([id]) => {
       try {
         const account = this.accountStore.resolve(id);
-        return [[id, this.#providerForAccount(id, account), account]];
+        const provider = this.#providerForAccount(id, account);
+        return [[id, provider, account, this.#routeRanking(id, mode, rank.get(id), account)]];
       } catch (error) {
         this.#markAccountUnavailable(id, UNKNOWN_ACCOUNT_ID, error);
         return [];
       }
     })
       .filter(([id, provider, account]) => provider.capabilities().modes?.[mode]?.supported && this.#health(id, account.id).status !== "unavailable")
-      .sort(([left], [right]) => this.#routeScore(left, mode, rank.get(left)) - this.#routeScore(right, mode, rank.get(right)));
+      .sort(([leftId, , , left], [rightId, , , right]) => left.score - right.score || canonicalIdCompare(leftId, rightId));
   }
 
-  #routeScore(id, mode, preferredRank) {
-    const profile = this.config.routing?.providerProfiles?.[id] ?? {};
-    const account = this.accountStore.resolve(id);
+  #routeRanking(id, mode, preferredRank, account = this.accountStore.resolve(id)) {
     const usage = this.usage.get(accountKey(id, account.id)) ?? emptyUsage();
     const health = this.#health(id, account.id).status;
-    const preference = Number.isSafeInteger(preferredRank) ? preferredRank * 100 : 10_000;
-    const healthPenalty = health === "available" ? 0 : health === "unknown" ? 15 : 40;
-    const failurePenalty = usage.requests > 0 ? Math.round((usage.failures / usage.requests) * 60) : 0;
-    const balancePenalty = Math.min(50, Math.floor(usage.requests / 4));
-    const modeBias = Number(profile.modeWeights?.[mode] ?? 0);
-    return preference + healthPenalty + failurePenalty + balancePenalty - (Number.isFinite(modeBias) ? modeBias : 0);
+    return routeRanking(this.config, id, mode, preferredRank, health, usage);
+  }
+
+  /** Refresh one account-bound catalog and atomically retain the matching health projection. */
+  async #loadCatalog(id, account, provider) {
+    let result;
+    try {
+      const models = await provider.listModels();
+      this.#markCatalog(id, account.id, true);
+      result = { models };
+    } catch (error) {
+      const modelError = error instanceof Error ? error.message : String(error);
+      this.#markCatalog(id, account.id, false, modelError);
+      result = { models: [], modelError };
+    }
+    this.catalogs.set(accountKey(id, account.id), result);
+    return result;
   }
 
   #markCatalog(id, accountId, available, error) {
@@ -648,6 +845,63 @@ export class ProviderRegistry {
 
 function accountKey(providerId, accountId) {
   return `${providerId}\u0000${accountId ?? UNKNOWN_ACCOUNT_ID}`;
+}
+
+/** Compare validated provider ids without locale- or insertion-order dependence. */
+function canonicalIdCompare(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function routeRanking(config, id, mode, preferredRank, health, usage) {
+  const profile = config.routing?.providerProfiles?.[id] ?? {};
+  const preference = Number.isSafeInteger(preferredRank) ? preferredRank * 100 : 10_000;
+  const healthPenalty = health === "available" ? 0 : health === "unknown" ? 15 : 40;
+  const failurePenalty = usage.requests > 0 ? Math.round((usage.failures / usage.requests) * 60) : 0;
+  const balancePenalty = Math.min(50, Math.floor(usage.requests / 4));
+  const modeBias = Number(profile.modeWeights?.[mode] ?? 0);
+  const appliedModeBias = Number.isFinite(modeBias) ? modeBias : 0;
+  return {
+    score: preference + healthPenalty + failurePenalty + balancePenalty - appliedModeBias,
+    components: { preference, healthPenalty, failurePenalty, balancePenalty, modeBias: appliedModeBias },
+    tieBreak: { field: "provider", value: id },
+  };
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value)) deepFreeze(nested);
+  return Object.freeze(value);
+}
+
+/** Reject model ids that cannot round-trip through the existing routed-model grammar. */
+function assertSafeRoutedModelId(modelId, providerId) {
+  if (typeof modelId !== "string" || modelId.length === 0 || modelId.length > 512) {
+    throw new RequestError(`Provider '${providerId}' returned a model id that cannot be represented safely as a routed model`);
+  }
+  const segments = modelId.split("/");
+  if (segments[0]?.startsWith("@") || segments.some((segment) => !segment || segment === "." || segment === "..") || /[\\\s\u0000-\u001f\u007f]/.test(modelId)) {
+    throw new RequestError(`Provider '${providerId}' returned a model id that cannot be represented safely as a routed model`);
+  }
+}
+
+/** Validate a caller-supplied routed id before its account/model segments are interpreted. */
+function assertSafeRoutedRoute(value, options = {}) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512 || /[\\\s\u0000-\u001f\u007f]/.test(value)) {
+    throw new RequestError("Routed model id is malformed or unsafe");
+  }
+  const segments = value.split("/");
+  const providerIndex = options.short === true ? 0 : 1;
+  if (segments.some((segment) => !segment || segment === "." || segment === "..") || !/^[a-z0-9][a-z0-9._-]{0,119}$/i.test(segments[providerIndex] ?? "")) {
+    throw new RequestError("Routed model id is malformed or unsafe");
+  }
+  const remainder = segments.slice(providerIndex + 1);
+  if (remainder[0]?.startsWith("@") && (!/^[a-z0-9][a-z0-9._:-]{0,159}$/i.test(remainder[0].slice(1)) || remainder.length < 2)) {
+    throw new RequestError("Routed model id contains an invalid or ambiguous account segment");
+  }
+  const modelSegments = remainder[0]?.startsWith("@") ? remainder.slice(1) : remainder;
+  if (modelSegments.length === 0 || modelSegments[0].startsWith("@")) {
+    throw new RequestError("Routed model id contains an invalid or ambiguous model segment");
+  }
 }
 
 function certifiesSafeAccountFallback(provider) {

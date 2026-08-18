@@ -387,6 +387,62 @@ test("Grok Build configuration enforces agent-mode and finite-run boundaries", (
     defaults: { provider: "grok", mode: "consult", model: "grok-4.6" },
     providers: { grok: { ...provider, allowWebSearch: false, disableWebSearch: false } },
   }), /conflicting allowWebSearch\/disableWebSearch/);
+  const recoveryConfigured = validateConfig({
+    ...valid,
+    defaults: { provider: "grok", mode: "delegate", model: "grok-4.6" },
+    providers: {
+      grok: {
+        ...provider,
+        delegate: {
+          ...provider.delegate,
+          maxTurns: 16,
+          explorationLoop: {
+            enabled: true,
+            reserveTurns: 4,
+            minimumStructuredActivities: 4,
+            minimumRepeatedKindCount: 2,
+          },
+        },
+      },
+    },
+  });
+  assert.equal(recoveryConfigured.providers.grok.delegate.explorationLoop.reserveTurns, 4);
+  const recoveryDefaults = validateConfig({
+    ...valid,
+    defaults: { provider: "grok", mode: "delegate", model: "grok-4.6" },
+    providers: { grok: { ...provider, delegate: { ...provider.delegate, maxTurns: 16, explorationLoop: { enabled: true } } } },
+  });
+  assert.deepEqual(recoveryDefaults.providers.grok.delegate.explorationLoop, { enabled: true });
+  for (const explorationLoop of [
+    { enabled: true, reserveTurns: 16, minimumStructuredActivities: 4, minimumRepeatedKindCount: 2 },
+    { enabled: true, reserveTurns: 4, minimumStructuredActivities: 2, minimumRepeatedKindCount: 3 },
+    { enabled: true, reserveTurns: 4, minimumStructuredActivities: 4, minimumRepeatedKindCount: 2, retries: 2 },
+  ]) {
+    assert.throws(() => validateConfig({
+      ...valid,
+      defaults: { provider: "grok", mode: "delegate", model: "grok-4.6" },
+      providers: { grok: { ...provider, delegate: { ...provider.delegate, maxTurns: 16, explorationLoop } } },
+    }), /explorationLoop/);
+  }
+  assert.throws(() => validateConfig({
+    ...valid,
+    defaults: { provider: "grok", mode: "consult", model: "grok-4.6" },
+    providers: { grok: { ...provider, consult: { explorationLoop: { enabled: false } } } },
+  }), /Consult never recovers automatically/);
+  assert.throws(() => validateConfig({
+    ...valid,
+    defaults: { provider: "grok", mode: "delegate", model: "grok-4.6" },
+    providers: {
+      grok: {
+        ...provider,
+        profiles: { tiny: { reasoningEffort: "low", maxTurns: 3, expectedTurns: 1 } },
+        delegate: {
+          profile: "tiny",
+          explorationLoop: { enabled: true, reserveTurns: 4 },
+        },
+      },
+    },
+  }), /reserveTurns must be lower than Delegate maxTurns/);
 });
 
 test("the multi-coordinator fleet preset is valid and centralizes one nine-slot Grok controller", () => {

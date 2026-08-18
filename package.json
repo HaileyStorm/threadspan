@@ -1,6 +1,6 @@
 {
   "name": "threadspan",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "One task across OpenAI Codex, Cursor, Grok Build, Nous Portal, OpenRouter, and compatible providers.",
   "type": "module",
   "bin": {

@@ -7,6 +7,19 @@ export { renderCodexProfileDocuments, installCodexProfileDocuments, uninstallCod
 export { discoverNativeCodexCatalog, appServerModelToCatalog } from "./codex/app-server.mjs";
 export { CodexContinuityController } from "./codex/continuity-controller.mjs";
 export { AutomaticTakeoverController, DEFAULT_AUTOMATIC_TAKEOVER_POLICY } from "./core/automatic-takeover-controller.mjs";
+export {
+  ACTION_ITEM_SCHEMA_VERSION,
+  ACTION_ITEM_STATUSES,
+  ActionItemBusyError,
+  ActionItemCapacityError,
+  ActionItemCommitAmbiguousError,
+  ActionItemConflictError,
+  ActionItemNotFoundError,
+  ActionItemOutboxConflictError,
+  ActionItemStore,
+  ActionItemTerminalError,
+  ActionItemValidationError,
+} from "./core/action-items.mjs";
 export { naturalizeCopy, analyzeCopyReadability, inspectProtectedCopySpans, COPY_NATURALIZATION_PROFILES, COPY_DETECTOR_DISCLAIMER } from "./core/copy-naturalizer.mjs";
 export {
   COPY_CHECK_ADAPTERS,
@@ -63,6 +76,7 @@ export { CodexWorkerProvider, buildCodexWorkerArguments, parseCodexWorkerJsonl }
 export { OpenRouterProvider } from "./providers/openrouter.mjs";
 export { UsageLedger, aggregateUsageEvents, normalizeUsageEvent, resolveUsageLedgerPath } from "./core/usage-ledger.mjs";
 export { DesktopCompatibilityWatch, assessNativeDesktopMigration, computeRepairPlanDigest } from "./maintenance/desktop-update.mjs";
+export { DesktopHost, createDesktopLaunchPlan, mainWindowEvaluationExpression, renderDesktopHudScript } from "./desktop/host.mjs";
 export { GitHubCompatibilityIntake } from "./maintenance/github-intake.mjs";
 export * from "./installer/index.mjs";
 export {

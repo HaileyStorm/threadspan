@@ -1,8 +1,8 @@
 # Implementation status
 
 **Snapshot date:** 2026-08-18
-**Package version:** 0.4.2
-**Assessment:** 0.4.2 is the current signed public release. It preserves Cursor API-key authentication through an explicit provider-only allowlist after the 0.4.1 child-environment hardening. The 517-test source gate and self-hosted CI pass, and Cursor, Grok Build, Nous, OpenRouter, native Continuity state, and durable daemon restart are live-accepted on the configured Linux and Windows hosts.
+**Package version:** 0.5.0 release candidate
+**Assessment:** 0.4.2 remains the current signed public release. The 0.5.0 candidate passes the 616-test Linux source gate and now has live app-attached ChatGPT/Codex Desktop HUD acceptance on Linux and Windows, including real picker selection and owner-authenticated route read-back. It adds bounded Grok exploration recovery, the owner-only Needs-you action surface, canonical route ranking/picker projection, streaming-provider descendant reaping, Continuity read-back, and refreshed privacy-reviewed media.
 
 ## What is complete
 
@@ -21,23 +21,28 @@
 - Optional maximum-utilization pure reducer, private durable journal/outbox, main-token event surface, sanitized HUD, and disabled-by-default installer component.
 - Explicit AgentRouter-through-Claude-Code gateway isolation plus explicit-only, no-spend discovery candidates for Mistral API, GroqCloud, Cloudflare Workers AI, and Gemini API.
 - Owner-only Continuity task tree and naming controls with opaque handles; guarded promotion works with or without an existing native Goal and delegates Goal transfer to the certified supervisor.
+- Durable owner-private global/per-project action items with strict public projection, owner-only completion, one exact-owner delivery outbox entry, and a compact Needs-you HUD rail.
+- Deterministic backend route scoring and one frozen catalog/health snapshot shared by smart selection, the route map, and the canonical picker route list.
+- Default-off Grok Build exploration recovery with one exact-session continuation and fail-closed structured provider diagnostics.
+- Shared POSIX descendant reaping for direct streaming Command and Claude Code providers after the group leader exits.
 - Optional account-first automatic takeover for bridge-routed certified pre-output failures, compatible provider selection, same-daemon disconnect survival, and externally visible recovery state. Cross-process native-host replay still requires a certified host launcher.
 
 ## Verification completed
 
-On Linux, the complete 0.4.1 release-candidate source gate passes: `npm run check` succeeds and the Node suite reports **517 tests, 517 passed, 0 failed, and 0 skipped**. The deployed native Windows 0.4.1 source passed the 43 focused cross-platform tests selected for this delta. Live revision-bound acceptance then passed on both configured hosts for Cursor Consult, Grok Build, Nous Consult/Integrated/Delegate, OpenRouter routing, daemon restart durability, and native Continuity state. Windows deployment preserved the already-running Codex task. These are account-, revision-, and host-specific observations, not universal provider guarantees; Desktop visual acceptance remains separate.
+On Linux, the complete 0.5.0 candidate source gate passes: `npm run check` succeeds and the Node suite reports **616 tests, 616 passed, 0 failed, and 0 skipped**. `npm run test:release-bundle` passes **23/23**, and `npm pack --dry-run --json` includes the intended 0.5.0 source/media while excluding `.working` coordination state. A loopback-only synthetic browser smoke rendered the desktop HUD, picker, route map, and 390px layout with no console warnings; the Needs-you rail stacked below Continuity without horizontal overflow. The earlier 0.4.1 revision passed 43 focused native Windows tests and the configured two-host live matrix, but that evidence does not certify the 0.5.0 delta.
 
 ## Implemented but not live-certified
 
 | Surface | Implemented confidence | Remaining unknowns |
 |---|---|---|
 | Cursor SDK Consult/Delegate | Offline lifecycle, race, retention, cancellation, and cleanup coverage; Cursor Consult accepted live on both configured hosts. | Delegate entitlement/model drift/billing; whether some workloads should use official Cursor Cloud Agents. |
-| Grok Build Consult/Delegate | Dedicated adapter plus live Consult/MCP startup on both configured hosts. | Sustained fleet capacity, nested-agent accounting, consumer weighting, and entitlement drift. |
+| Grok Build Consult/Delegate | Dedicated adapter plus earlier live Consult/MCP startup on both configured hosts; the new default-off one-continuation exploration path is offline-tested. | Live terminal-envelope compatibility for exploration recovery, sustained fleet capacity, nested-agent accounting, consumer weighting, and entitlement drift. |
 | Shared Desktop MCP topology | Remote shim/generated config tested against local HTTP servers; one persistent daemon and restart ownership accepted on both configured hosts. | Exact current Desktop picker/profile behavior after future app updates and broader platform packaging. |
 | Direct xAI / DeepSeek / Nous | Protocol transforms plus live Nous Consult/Integrated/Delegate on both configured hosts. | Catalog, limits, billing, and account state remain volatile. |
 | AgentRouter through Claude Code | Linux and Windows Claude Code 2.1.234 returned `THREADSPAN_AGENTROUTER_OK` through `agentrouter.org` with `claude-opus-4-8` in bounded no-spend probes on 2026-08-18. | Offer/end date is unknown; evidence visibility expires after seven days without a fresh probe. Generic Claude remains Preview and generic OpenAI Chat/Codex are not fallbacks. |
 | Mistral/Groq/Cloudflare/Gemini free candidates | Official documentation currently describes free or free-allocation tiers; disabled examples and installer metadata are offline-tested. | Current cardless eligibility, region, model, account, and endpoint must be live-checked before enablement. Cloudflare remains setup-candidate only. |
 | Maximum utilization | Offline reducer, persistence/replay, auth, installer, and HUD privacy coverage. | A native quota receipt adapter and each requested host capability must be certified separately on every host; unsupported effects remain pending/unsupported. |
+| Desktop Compatibility Watch | Disabled-by-default local observer, `compatibility doctor --after-update`, daemon polling lifecycle, bounded Linux/Windows probes, sanitized HUD state, and rollback-gated repair are offline-tested. | Exact installed Codex/ChatGPT Desktop builds still require separate native smoke on Linux and Windows; hashes do not certify Settings, Usage, picker, auth, or app lifecycle behavior. |
 
 ## Deliberately unsupported or incomplete
 
@@ -63,4 +68,4 @@ On Linux, the complete 0.4.1 release-candidate source gate passes: `npm run chec
 
 ## Release recommendation
 
-Suitable for controlled personal-workstation use, Desktop/Codex integration, selective Consult, and bounded provider Delegate work. The configured Linux and Windows hosts passed the 0.4.1 live matrix; other hosts and accounts must still run `docs/TESTING.md` and record their exact provider, package, host, and Desktop evidence.
+Suitable as a 0.5.0 source release after the final clean-commit and publication gates. The configured Linux and Windows hosts passed the earlier 0.4.1 live matrix; 0.5.0 claims are limited to the Linux source/release gates, simulated cross-platform coverage, and synthetic browser smoke until exact-revision native checks are recorded.

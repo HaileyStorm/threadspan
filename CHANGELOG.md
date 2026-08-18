@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 - 2026-08-18
+
+- Added a supervised, app-attached ChatGPT/Codex Desktop HUD on Linux and Windows with fast cold-start state, expandable model/provider/mode routes, immediate selection feedback, owner-authenticated route mutation, persistence, and explicit-mode preservation.
+- Added default-off, one-continuation Grok Build exploration recovery with exact session binding, trusted terminal fields, canonical physical-worktree serialization, bounded patch/test reserve, privacy-preserving evidence, and terminal auth/quota/rate/payment handling.
+- Added a durable owner-private action-item store and compact global/per-project **Needs you** rail with strict public projection, owner-only loopback controls, revision-bound idempotent completion, and exact-owner delivery outbox.
+- Added deterministic provider scoring and one frozen routing snapshot shared by smart selection, the route map, and canonical picker routes; browser preferences remain presentation-only and quota does not silently affect ranking.
+- Reaped POSIX descendants left by exited streaming-provider leaders while preserving Windows `taskkill` behavior and intentional `killTree: false` processes.
+- Strengthened Continuity presentation with pending-recovery status and an owner read-back after rename/rollover without adding native mutation or exposing native identifiers.
+- Completed Compatibility Watch CLI/daemon/HUD documentation and sanitized its published drift summaries to product and change-kind fields.
+- Refreshed the synthetic dashboard, picker, route-map screenshots and GIF, with a hash-bound privacy-reviewed media manifest and desktop/mobile browser smoke evidence.
+
+The 616-test Linux source gate passes, and the installed Linux and Windows ChatGPT/Codex Desktop renderers were captured live with the attached HUD and working picker.
+
 ## 0.4.2 - 2026-08-18
 
 - Added `CURSOR_API_KEY` to the starter Cursor CLI's explicit child-environment allowlist. This preserves API-key authentication under the 0.4.1 minimal-environment hardening without restoring broad daemon credential inheritance.

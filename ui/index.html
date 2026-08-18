@@ -152,7 +152,7 @@
         </svg>
       </div>
       <div class="drawer__body">
-        <section class="panel" aria-labelledby="route-heading">
+        <section class="panel route-panel" aria-labelledby="route-heading">
           <h2 id="route-heading">Current route</h2>
           <dl class="stack">
             <div class="field">
@@ -217,6 +217,47 @@
             <p class="note" data-field="continuity-status" role="status" aria-live="polite"></p>
           </details>
         </section>
+        <aside class="panel needs-you-panel" data-field="needs-you" aria-labelledby="needs-you-heading">
+          <div class="needs-you__head">
+            <div>
+              <h2 id="needs-you-heading">Needs you</h2>
+              <p class="note">Owner action queue</p>
+            </div>
+            <output data-field="needs-you-count" aria-label="Visible action items">0</output>
+          </div>
+          <p class="note needs-you__boundary">Actionable items appear by default. Stale and closed entries are historical visibility, not diagnostics or an active work queue.</p>
+          <form class="needs-you__filters" data-field="needs-you-filters">
+            <label>Scope
+              <select name="needs-scope">
+                <option value="all">Global + projects</option>
+                <option value="global">Global only</option>
+              </select>
+            </label>
+            <label>Status
+              <select name="needs-status">
+                <option value="open">Open</option>
+                <option value="all">All statuses</option>
+                <option value="stale">Stale</option>
+                <option value="closed">Closed</option>
+                <option value="completed">Completed</option>
+              </select>
+            </label>
+            <label>Sort
+              <select name="needs-sort">
+                <option value="updated-desc">Recently updated</option>
+                <option value="updated-asc">Oldest update</option>
+                <option value="title-asc">Title A–Z</option>
+              </select>
+            </label>
+            <label class="needs-you__search">Filter
+              <input name="needs-filter" type="search" maxlength="160" autocomplete="off" placeholder="Action or project">
+            </label>
+            <button type="submit">Apply</button>
+          </form>
+          <p class="note" data-field="needs-you-status" role="status" aria-live="polite" aria-atomic="true"></p>
+          <div class="needs-you__list" data-field="needs-you-list" role="list" aria-label="Owner action items"></div>
+          <p class="note" data-field="needs-you-empty">No owner action needs attention.</p>
+        </aside>
         <section class="panel" aria-labelledby="copy-review-heading">
           <details>
             <summary id="copy-review-heading">Copy review</summary>

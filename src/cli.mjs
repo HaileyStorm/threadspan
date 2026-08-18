@@ -21,6 +21,7 @@ import { DesktopCompatibilityWatch } from "./maintenance/desktop-update.mjs";
 import { GitHubCompatibilityIntake } from "./maintenance/github-intake.mjs";
 import { launchCompanionWindow } from "./installer/companion-launch.mjs";
 import { installHostSurface } from "./mcp/host-install.mjs";
+import { DesktopHost } from "./desktop/host.mjs";
 
 const SOURCE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(SOURCE_DIRECTORY, "..");
@@ -117,6 +118,10 @@ export async function main(argv = process.argv.slice(2)) {
 
     if (command === "serve") {
       await runServe(config, logger);
+      return;
+    }
+    if (command === "desktop" && ["attach", "launch"].includes(subcommand)) {
+      await runDesktopHost(config, parsed.options, subcommand === "launch");
       return;
     }
     if (command === "mcp") {
@@ -268,6 +273,24 @@ async function runServe(config, logger) {
   });
   await closeHttpServer(server);
   await service.close();
+}
+
+async function runDesktopHost(config, options, launch) {
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  try {
+    const host = new DesktopHost(config, {
+      appPath: valueOption(options.app),
+      inspectPort: valueOption(options.inspectPort),
+      pollIntervalMs: valueOption(options.pollInterval),
+    });
+    await host.run({ launch, signal: controller.signal });
+  } finally {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+  }
 }
 
 /**
@@ -654,6 +677,8 @@ Usage:
   threadspan install apply --plan PLAN.json --approve-digest SHA256
   threadspan config init [--config PATH] [--force]
   threadspan serve [--config PATH]
+  threadspan desktop launch [--config PATH] [--app PATH] [--inspect-port N]
+  threadspan desktop attach [--config PATH] [--inspect-port N]
   threadspan mcp [--config PATH] [--remote URL|--embedded] [--token-file CONNECTOR_TOKEN_PATH]
   threadspan host install --host grok|cursor|claude-code|hermes --token-file CONNECTOR_TOKEN_PATH [--target PATH] [--allow-preview]
   threadspan doctor [--config PATH] [--live]

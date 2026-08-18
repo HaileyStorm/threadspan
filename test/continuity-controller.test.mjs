@@ -161,3 +161,34 @@ test("Continuity promotes a goal-free task without fabricating Goal state", asyn
   const result = await controller.rollover({ handle: view.tasks[0].handle, digest: preview.digest });
   assert.equal(result.state, "supervisor-requested");
 });
+
+test("Continuity delivers one action completion only to the exact non-active Codex owner", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-continuity-action-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const native = nativeHarness();
+  const controller = new CodexContinuityController({ enabled: true, controlEnabled: true, statePath: join(root, "state.json") }, {
+    call: native.call, callBatch: native.callBatch,
+  });
+  const handle = "act_0123456789abcdef0123456789abcdef";
+
+  const delivered = await controller.deliverActionItem({
+    ownerRef: "codex-thread",
+    nativeId: native.thread.id,
+    handle,
+    note: "Approval granted",
+  });
+  assert.equal(delivered.supported, true);
+  assert.match(delivered.deliveryRef, /^codex-turn:[0-9a-f]{32}$/);
+  assert.doesNotMatch(JSON.stringify(delivered), /019dead0|turn-native-private/);
+  const start = native.calls.findLast((call) => call.method === "turn/start");
+  assert.equal(start.params.threadId, native.thread.id);
+  assert.match(start.params.input[0].text, new RegExp(handle));
+  assert.match(start.params.input[0].text, /Approval granted/);
+  assert.match(start.params.input[0].text, /Do not create an acknowledgement action item/);
+
+  native.thread.status = { type: "active" };
+  const before = native.calls.filter((call) => call.method === "turn/start").length;
+  await assert.rejects(controller.deliverActionItem({ ownerRef: "codex-thread", nativeId: native.thread.id, handle, note: null }), /owner is active/);
+  assert.equal(native.calls.filter((call) => call.method === "turn/start").length, before);
+  assert.deepEqual(await controller.deliverActionItem({ ownerRef: "other-provider", nativeId: native.thread.id, handle, note: null }), { supported: false });
+});

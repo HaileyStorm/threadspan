@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -25,6 +26,31 @@ test("Threadspan sidecar assets exist as local static files", async () => {
     const info = await stat(join(root, file));
     assert.ok(info.isFile(), `${file} should exist`);
     assert.ok(info.size > 0, `${file} should be non-empty`);
+  }
+});
+
+test("living HUD media manifest binds synthetic privacy-reviewed assets", async () => {
+  const manifestText = await read("docs/media/MANIFEST.json");
+  const manifest = JSON.parse(manifestText);
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.source.fixture, "ui/adapt-state.js:SYNTHETIC_STATE");
+  assert.match(manifest.source.privacyReview, /^passed-/);
+  assert.doesNotMatch(manifestText, /(?:\/home\/|[A-Za-z]:\\|https?:\/\/|credential|accountId|ownerRef|nativeId)/i);
+  assert.equal(manifest.assets.length, 4);
+
+  for (const asset of manifest.assets) {
+    assert.match(asset.path, /^threadspan-(?:dashboard|route-picker|route-map)\.png$|^threadspan-demo\.gif$/);
+    const bytes = await readFile(join(root, "docs", "media", asset.path));
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), asset.sha256);
+    if (asset.path.endsWith(".png")) {
+      assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+      assert.deepEqual(asset.dimensions, { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) });
+    } else {
+      assert.match(bytes.subarray(0, 6).toString("ascii"), /^GIF8[79]a$/);
+      assert.deepEqual(asset.dimensions, { width: bytes.readUInt16LE(6), height: bytes.readUInt16LE(8) });
+      assert.equal(asset.frames, 3);
+      assert.equal(asset.frameDelayCentiseconds, 260);
+    }
   }
 });
 
@@ -227,6 +253,51 @@ test("adapter normalizes synthetic JSON and fails closed on bad state", async ()
   assert.equal(sanitized.maximumUtilization.quota.usedRatio, 0.97);
   assert.doesNotMatch(JSON.stringify(sanitized.maximumUtilization), /private-bucket|private-account|private-receipt|private-body|\/private\/path|bucketId|accountId|receipt/);
 
+  const compatibility = api.adaptThreadspanState({
+    status: "ready",
+    route: { id: "consult/mock/m", mode: "consult", provider: "mock", model: "m" },
+    compatibility: {
+      status: "attention", changed: true, observedAt: "2026-08-18T12:00:00.000Z",
+      products: [{ id: "codex-desktop", label: "Codex Desktop", status: "detected", version: "1.2.3" }],
+      changes: [{ productId: "codex-desktop", kind: "changed", current: { path: "/private/app", authorization: "secret" } }],
+    },
+  }).compatibility;
+  assert.equal(JSON.stringify(compatibility.changes), JSON.stringify([{ productId: "codex-desktop", kind: "changed" }]));
+  assert.doesNotMatch(JSON.stringify(compatibility), /private|secret|authorization|current/);
+
+  const publicActionItems = api.adaptActionItems({
+    schemaVersion: 1,
+    total: 1,
+    global: { count: 1, items: [{
+      handle: "act_0123456789abcdef0123456789abcdef", projectKey: null, projectLabel: null,
+      title: "Review the owner action", summary: null, status: "open", revision: 1,
+      createdAt: "2026-08-18T12:00:00.000Z", updatedAt: "2026-08-18T12:00:00.000Z", completedAt: null,
+    }] },
+    projects: [],
+  });
+  assert.equal(publicActionItems.global.items.length, 1);
+  const contaminatedActionItems = api.adaptActionItems({
+    schemaVersion: 1,
+    total: 1,
+    global: { count: 1, items: [{ ...publicActionItems.global.items[0], ownerRef: "private-owner" }] },
+    projects: [],
+  });
+  assert.equal(contaminatedActionItems.total, 0);
+  assert.doesNotMatch(JSON.stringify(contaminatedActionItems), /private-owner|ownerRef/);
+
+  const pendingContinuity = api.adaptContinuity({
+    enabled: true,
+    tasks: [{
+      handle: "demo-continuity-handle-02", title: "Visible logical task", project: "Threadspan", action: "Pending",
+      current: { generation: 2, status: "idle", goalStatus: "active" }, generations: [],
+      pendingRecovery: { active: true, phase: "successor-discovered", blocker: "Waiting for predecessor fence", action: "Recheck native state" },
+    }],
+  });
+  assert.equal(pendingContinuity.tasks[0].pendingRecovery, true);
+  assert.equal(pendingContinuity.tasks[0].recovery.phase, "successor-discovered");
+  assert.equal(pendingContinuity.tasks[0].recovery.blocker, "Waiting for predecessor fence");
+  assert.equal(pendingContinuity.tasks[0].recovery.action, "Recheck native state");
+
   const filtered = api.applyFilters(ready, { mode: "consult", verifiedOnly: true });
   assert.equal(filtered.fallbacks.length, 2);
   assert.equal(filtered.history.length, 1);
@@ -238,16 +309,18 @@ test("adapter normalizes synthetic JSON and fails closed on bad state", async ()
   assert.equal(api.adaptThreadspanState({ route: { id: "other/x/y", mode: "other" } }).status, "empty");
 });
 
-test("docs describe independent hosting and refuse assumed Desktop HUD injection", async () => {
+test("docs distinguish live app attachment from the independent sidecar", async () => {
   const docs = await read("docs/UI.md");
-  assert.match(docs, /HUD injection is not assumed/i);
+  assert.match(docs, /live-accepted/i);
+  assert.match(docs, /isolated Shadow DOM HUD/i);
+  assert.match(docs, /never copied into the renderer/i);
   assert.match(docs, /Served by the local daemon/);
   assert.match(docs, /Opened independently/);
   assert.match(docs, /plugin or MCP UI surface/i);
   assert.match(docs, /adaptThreadspanState/);
   assert.match(docs, /snapshot is not a security sandbox/i);
   assert.match(docs, /not automatic failover/i);
-  assert.match(docs, /not live-certified/i);
+  assert.match(docs, /Compatibility Watch/i);
 });
 
 test("renderer keeps authoritative quota and local recent-burn projection visibly separate", async () => {

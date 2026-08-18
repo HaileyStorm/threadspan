@@ -120,7 +120,7 @@ export function createHttpServer(service, config, options = {}) {
           release = await gate.acquire(mcpController.signal);
           const result = await dispatchMcpRequest(service, body.method, body.params ?? {}, mcpController.signal, {
             serverName: "threadspan",
-            serverVersion: "0.4.0",
+            serverVersion: "0.5.0",
             allowedTools: CONNECTOR_TOOL_NAMES,
           });
           writeMcpJson(response, { jsonrpc: "2.0", id: body.id ?? null, result }, mcpSessionId);
@@ -135,6 +135,34 @@ export function createHttpServer(service, config, options = {}) {
           requestController.signal.removeEventListener("abort", abortMcp);
           if (mcpActiveRequests.get(mcpKey) === mcpController) mcpActiveRequests.delete(mcpKey);
         }
+        return;
+      }
+      if (url.pathname === "/v1/action-items" || url.pathname.startsWith("/v1/action-items/")) {
+        enforceOwnerOnlyAuthentication(request, authentication, "Action items");
+        if (request.method === "GET" && url.pathname === "/v1/action-items") {
+          writeJson(response, 200, await service.actionItemsState(actionItemQuery(url.searchParams)));
+          return;
+        }
+        if (request.method === "POST" && url.pathname === "/v1/action-items") {
+          if ([...url.searchParams.keys()].length > 0) throw new RequestError("Action-item publication does not accept query parameters");
+          const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+          writeJson(response, 201, await service.publishActionItem(body));
+          return;
+        }
+        const completion = /^\/v1\/action-items\/([^/]+)\/complete$/.exec(url.pathname);
+        if (request.method === "POST" && completion) {
+          if ([...url.searchParams.keys()].length > 0) throw new RequestError("Action-item completion does not accept query parameters");
+          const handle = decodeActionItemHandle(completion[1]);
+          const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+          writeJson(response, 200, await service.completeActionItem(handle, body));
+          return;
+        }
+        if (url.pathname === "/v1/action-items" || completion) {
+          response.setHeader("allow", url.pathname === "/v1/action-items" ? "GET, POST" : "POST");
+          writeJson(response, 405, errorEnvelope("method_not_allowed", "Action-item route uses its documented method only"));
+          return;
+        }
+        writeJson(response, 404, errorEnvelope("not_found", "No action-item route matches this request"));
         return;
       }
       if (url.pathname.startsWith("/v1/maximum-utilization/")) {
@@ -230,6 +258,31 @@ export function createHttpServer(service, config, options = {}) {
           return;
         }
       }
+      if (url.pathname === "/v1/desktop/route") {
+        enforceAccountMutationAuthentication(request, authentication);
+        if (request.method === "GET") {
+          writeJson(response, 200, service.desktopRouteState());
+          return;
+        }
+        if (request.method === "POST") {
+          const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+          writeJson(response, 200, service.selectDesktopRoute(body));
+          return;
+        }
+        response.setHeader("allow", "GET, POST");
+        writeJson(response, 405, errorEnvelope("method_not_allowed", "Desktop route selection requires GET or POST"));
+        return;
+      }
+      if (url.pathname === "/v1/desktop/state") {
+        enforceOwnerOnlyAuthentication(request, authentication, "Desktop state");
+        if (request.method !== "GET") {
+          response.setHeader("allow", "GET");
+          writeJson(response, 405, errorEnvelope("method_not_allowed", "Desktop state requires GET"));
+          return;
+        }
+        writeJson(response, 200, service.desktopState());
+        return;
+      }
       enforceRequestAuthentication(request, config, authentication);
       applyCorsResponseHeaders(request, response, config);
 
@@ -295,15 +348,74 @@ function enforceConnectorAuthentication(request, config, authentication) {
 
 /** Account mutation is always owner-authenticated and loopback-only, even in permissive dev mode. */
 function enforceAccountMutationAuthentication(request, authentication) {
-  if (!isLoopbackAddress(request.socket.remoteAddress ?? "")) throw new BridgeError("Account mutation is loopback-only", { status: 403, code: "loopback_required" });
-  if (!authentication.main) throw new BridgeError("Main account-mutation authentication is not configured", { status: 503, code: "auth_not_configured" });
-  if (!tokensEqual(parseBearerToken(request.headers.authorization), authentication.main)) throw new BridgeError("Missing or invalid account-mutation bearer token", { status: 401, code: "unauthorized" });
+  enforceOwnerOnlyAuthentication(request, authentication, "Account mutation");
+}
+
+/** Require the main owner token on loopback; connector tokens never authorize this surface. */
+function enforceOwnerOnlyAuthentication(request, authentication, label) {
+  if (!isLoopbackAddress(request.socket.remoteAddress ?? "")) throw new BridgeError(`${label} is loopback-only`, { status: 403, code: "loopback_required" });
+  if (!authentication.main) throw new BridgeError(`Main authentication is not configured for ${label.toLowerCase()}`, { status: 503, code: "auth_not_configured" });
+  if (!tokensEqual(parseBearerToken(request.headers.authorization), authentication.main)) throw new BridgeError(`Missing or invalid owner bearer token for ${label.toLowerCase()}`, { status: 401, code: "unauthorized" });
 }
 
 function isAccountMutation(method, pathname) {
   return (method === "POST" && pathname === "/v1/accounts")
     || (method === "PUT" && pathname === "/v1/accounts/active")
     || (method === "DELETE" && pathname.startsWith("/v1/accounts/") && pathname !== "/v1/accounts/active");
+}
+
+function actionItemQuery(searchParams) {
+  const allowed = new Set(["scope", "projectKey", "status", "filter", "sort", "limit"]);
+  for (const key of searchParams.keys()) {
+    if (!allowed.has(key) || searchParams.getAll(key).length !== 1) throw new RequestError("Action-item query contains unsupported or repeated parameters");
+  }
+  const result = {};
+  const scope = searchParams.get("scope");
+  const projectKey = searchParams.get("projectKey");
+  const status = searchParams.get("status");
+  const filter = searchParams.get("filter");
+  const sort = searchParams.get("sort");
+  const limit = searchParams.get("limit");
+  if (scope !== null) {
+    if (!["all", "global", "project"].includes(scope)) throw new RequestError("Action-item scope is invalid");
+    result.scope = scope;
+  }
+  if (projectKey !== null) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(projectKey)) throw new RequestError("Action-item project key is invalid");
+    result.projectKey = projectKey;
+  }
+  if (scope === "project" && projectKey === null) throw new RequestError("Project scope requires a project key");
+  if (scope === "global" && projectKey !== null) throw new RequestError("Global scope cannot include a project key");
+  if (status !== null) {
+    if (!["open", "completed", "stale", "closed"].includes(status)) throw new RequestError("Action-item status is invalid");
+    result.status = status;
+  }
+  if (filter !== null) {
+    if (!filter.trim() || filter.length > 160 || /[\u0000-\u001f\u007f]/.test(filter)) throw new RequestError("Action-item filter is invalid");
+    result.filter = filter.trim();
+  }
+  if (sort !== null) {
+    if (!["updated-desc", "updated-asc", "created-desc", "created-asc", "title-asc", "title-desc"].includes(sort)) {
+      throw new RequestError("Action-item sort is invalid");
+    }
+    result.sort = sort;
+  }
+  if (limit !== null) {
+    if (!/^[1-9][0-9]{0,2}$/.test(limit) || Number(limit) > 500) throw new RequestError("Action-item limit is invalid");
+    result.limit = Number(limit);
+  }
+  return result;
+}
+
+function decodeActionItemHandle(value) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    throw new RequestError("Action-item handle encoding is invalid");
+  }
+  if (!/^act_[0-9a-f]{32}$/.test(decoded)) throw new RequestError("Action-item handle is invalid");
+  return decoded;
 }
 
 /** Preserve JSON-RPC request id type within an MCP session. */

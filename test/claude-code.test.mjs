@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { AccountStore } from "../src/core/account-store.mjs";
 import { createTestConfig, createWindowsNpmBinShim, nativePath, silentLogger } from "./helpers.mjs";
 import { ProviderRegistry } from "../src/providers/registry.mjs";
@@ -15,6 +16,7 @@ import {
 } from "../src/providers/claude-code.mjs";
 
 const fixture = nativePath(new URL("./fixtures/claude-code-cli.mjs", import.meta.url));
+const processTreeFixture = nativePath(new URL("./fixtures/process-tree-leak.mjs", import.meta.url));
 const sessionId = "550e8400-e29b-41d4-a716-446655440000";
 const emptyMcpConfigPath = join(tmpdir(), "threadspan-empty-mcp.json");
 
@@ -36,6 +38,27 @@ async function collect(iterable) {
   const output = [];
   for await (const event of iterable) output.push(event);
   return output;
+}
+
+async function assertProcessGone(pid, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0); }
+    catch { return; }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`process ${pid} was still alive after ${timeoutMs} ms`);
+}
+
+function killProcessIfRunning(pid) {
+  if (!pid) return;
+  try { process.kill(pid, "SIGKILL"); } catch {}
+}
+
+async function createProcessTreeLauncher(directory) {
+  const launcher = join(directory, "process-tree-cli");
+  await writeFile(launcher, `#!/usr/bin/env node\nimport ${JSON.stringify(pathToFileURL(processTreeFixture).href)};\n`, { mode: 0o700 });
+  return launcher;
 }
 
 test("Claude Code invocation preserves Linux and Windows argv without a shell", () => {
@@ -354,4 +377,62 @@ test("an already-cancelled queued turn fails without leaving the event stream op
     threadId: "cancelled-thread",
     signal: controller.signal,
   })), /cancelled before start/);
+});
+
+test("Claude Code reaps descendants after normal leader completion", { skip: process.platform === "win32" }, async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), "threadspan-claude-process-tree-"));
+  let descendantPid;
+  t.after(() => {
+    killProcessIfRunning(descendantPid);
+    return rm(workspace, { recursive: true, force: true });
+  });
+  const events = await collect(provider({
+    command: await createProcessTreeLauncher(workspace),
+    terminationGraceMs: 20,
+  }).run({
+    mode: "delegate",
+    model: "sonnet",
+    messages: [{ role: "user", content: "Return the fixture result" }],
+    threadId: "process-tree-normal",
+    workspace,
+    metadata: { bridge_scope: { allowed: ["."] } },
+  }));
+  descendantPid = Number(events.find((event) => event.type === "done").message.content);
+  assert.ok(Number.isSafeInteger(descendantPid) && descendantPid > 0);
+  await assertProcessGone(descendantPid);
+});
+
+test("Claude Code cancellation reaps a stubborn descendant", { skip: process.platform === "win32" }, async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), "threadspan-claude-process-cancel-"));
+  const controller = new AbortController();
+  let descendantPid;
+  t.after(() => {
+    killProcessIfRunning(descendantPid);
+    return rm(workspace, { recursive: true, force: true });
+  });
+  const iterator = provider({
+    command: await createProcessTreeLauncher(workspace),
+    model: "process-tree-cancel",
+    models: ["process-tree-cancel"],
+    terminationGraceMs: 20,
+  }).run({
+    mode: "delegate",
+    model: "process-tree-cancel",
+    messages: [{ role: "user", content: "Wait for cancellation" }],
+    threadId: "process-tree-cancel",
+    workspace,
+    metadata: { bridge_scope: { allowed: ["."] } },
+    signal: controller.signal,
+  })[Symbol.asyncIterator]();
+  while (!descendantPid) {
+    const step = await iterator.next();
+    assert.equal(step.done, false);
+    if (step.value.type === "text-delta") descendantPid = Number(step.value.delta);
+  }
+  const cancellation = new Error("Claude cancellation requested");
+  controller.abort(cancellation);
+  await assert.rejects(async () => {
+    while (!(await iterator.next()).done) {}
+  }, /Claude cancellation requested/);
+  await assertProcessGone(descendantPid);
 });

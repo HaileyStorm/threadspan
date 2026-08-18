@@ -68,7 +68,7 @@ export async function discoverNativeCodexCatalog(options = {}) {
     child.once("exit", (code, signal) => {
       if (!settled) finish(new Error(`Codex App Server exited before model/list completed (${signal ?? code}); ${errors.slice(0, 1000)}`));
     });
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "threadspan", version: "0.3.0" } } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "threadspan", version: "0.5.0" } } })}\n`);
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} })}\n`);
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "model/list", params: {} })}\n`);
   });
@@ -189,7 +189,7 @@ export async function callCodexAppServerBatchWithReceipt(requests, options = {})
     child.once("exit", (code, signal) => {
       if (!settled) void finish(new Error(`Codex App Server exited before ${methods.join(", ")} completed (${signal ?? code}); ${errors.slice(0, 1000)}`));
     });
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "threadspan", version: "0.4.0" } } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "threadspan", version: "0.5.0" } } })}\n`);
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} })}\n`);
     normalizedRequests.forEach((request, index) => {
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: index + 2, method: request.method, params: request.params })}\n`);

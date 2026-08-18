@@ -38,8 +38,8 @@ export async function runMcpServer(options) {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
   const logger = options.logger;
-  const serverName = options.serverName ?? "cursor-codex-bridge";
-  const serverVersion = options.serverVersion ?? "0.2.1";
+  const serverName = options.serverName ?? "threadspan";
+  const serverVersion = options.serverVersion ?? "0.5.0";
   const activeRequests = new Map();
   const pendingTasks = new Set();
   const writeJsonRpc = createJsonRpcWriter(output);

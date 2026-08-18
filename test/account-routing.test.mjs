@@ -105,6 +105,39 @@ test("automatic takeover exhausts one same-provider alternate before a compatibl
   assert.doesNotMatch(JSON.stringify(response), /private upstream detail/);
 });
 
+test("automatic routing uses only the active account and never silently selects an alternate", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-active-account-routing-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const firstKey = "THREADSPAN_ACTIVE_ACCOUNT_FIRST";
+  const secondKey = "THREADSPAN_ACTIVE_ACCOUNT_SECOND";
+  process.env[firstKey] = "first";
+  process.env[secondKey] = "second";
+  t.after(() => { delete process.env[firstKey]; delete process.env[secondKey]; });
+  const store = new AccountStore({ path: join(root, "accounts.json") });
+  const first = await store.create({ providerId: "api", label: "First", authKind: "api-key-env", authSourceRef: firstKey });
+  const second = await store.create({ providerId: "api", label: "Second", authKind: "api-key-env", authSourceRef: secondKey });
+  await store.select(second.id);
+  const config = createTestConfig({
+    defaults: { provider: "threadspan", mode: "consult", model: "auto" },
+    accounts: { path: store.path, profileSources: {}, fallback: { enabled: true, maxCandidates: 3 } },
+    providers: {
+      mock: { enabled: false },
+      api: { adapter: "openai-chat", baseUrl: "https://example.test/v1", model: "m", models: ["m"], capabilities: ["consult"] },
+    },
+  });
+  const registry = new ProviderRegistry(config, { logger: silentLogger(), accountStore: store });
+  t.after(() => registry.close());
+
+  const automatic = registry.resolveRoute({ model: "consult/threadspan/auto" });
+  assert.equal(automatic.accountId, second.id);
+  const ids = (await registry.listRoutedModels()).map((item) => item.id);
+  assert.ok(ids.includes(`consult/api/@${first.id}/m`));
+  assert.ok(ids.includes(`consult/api/@${second.id}/m`));
+  await registry.recordFailure(automatic, new Error("active account unavailable"));
+  assert.throws(() => registry.resolveRoute({ model: "consult/threadspan/auto" }), /No currently eligible/);
+  assert.equal(registry.resolveRoute({ providerId: "api", accountId: first.id, mode: "consult", model: "m" }).accountId, first.id, "an explicit account remains executable");
+});
+
 test("cross-provider takeover requires explicit equal privacy classes", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "threadspan-takeover-privacy-"));
   t.after(() => rm(root, { recursive: true, force: true }));

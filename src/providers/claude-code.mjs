@@ -7,7 +7,7 @@ import { StringDecoder } from "node:string_decoder";
 import { AsyncQueue } from "../core/async-queue.mjs";
 import { ProviderError, RequestError } from "../core/errors.mjs";
 import { KeyedSerialQueue } from "../core/keyed-serial-queue.mjs";
-import { spawnManagedChild, terminateProcessTree } from "../core/managed-process.mjs";
+import { reapManagedProcessTree, spawnManagedChild } from "../core/managed-process.mjs";
 import { renderMessagesForAgent } from "../core/policies.mjs";
 import { enforceGitWorkspacePolicy } from "../workspace/git-workspace.mjs";
 import { createWorkspaceSnapshot, isPathInside } from "../workspace/snapshot.mjs";
@@ -369,11 +369,18 @@ async function* runClaudeCodeProcess(options) {
   child.stdin.on("error", (error) => { stdinError = error; });
   child.stdin.end(options.prompt);
   let timedOut = false;
-  const abort = () => { void terminateProcessTree(child, { graceMs: options.terminationGraceMs, killTree: true }); };
+  let cleanupTask;
+  const requestCleanup = () => {
+    cleanupTask ??= reapManagedProcessTree(child, { graceMs: options.terminationGraceMs, killTree: true });
+    cleanupTask.catch(() => undefined);
+    return cleanupTask;
+  };
+  exitPromise.then(() => { void requestCleanup(); }, () => undefined);
+  const abort = () => { void requestCleanup(); };
   options.signal?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(() => {
     timedOut = true;
-    void terminateProcessTree(child, { graceMs: options.terminationGraceMs, killTree: true });
+    void requestCleanup();
   }, options.timeoutMs);
   timer.unref?.();
 
@@ -463,7 +470,7 @@ async function* runClaudeCodeProcess(options) {
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", abort);
-    if (child.exitCode === null && child.signalCode === null) await terminateProcessTree(child, { graceMs: options.terminationGraceMs, killTree: true }).catch(() => undefined);
+    await requestCleanup().catch(() => undefined);
     await stderrTask.catch(() => undefined);
   }
 }

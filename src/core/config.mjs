@@ -4,6 +4,8 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { ConfigError } from "./errors.mjs";
 import { normalizeVoiceConfig } from "./voice-profiles.mjs";
 
+const GROK_BUILTIN_PROFILE_MAX_TURNS = Object.freeze({ mechanical: 8, balanced: 16, deep: 24, diagnose: 12 });
+
 const DEFAULT_CONFIG = Object.freeze({
   server: {
     host: "127.0.0.1",
@@ -954,7 +956,12 @@ function validateGrokBuildProvider(providerId, provider) {
   }
 
   validateGrokModeOptions(providerId, "consult", provider.consult, provider.maxTurnsCeiling ?? 100);
-  validateGrokModeOptions(providerId, "delegate", provider.delegate, provider.maxTurnsCeiling ?? 100);
+  const delegateProfileName = provider.delegate?.profile ?? "balanced";
+  const effectiveDelegateMaxTurns = provider.delegate?.maxTurns
+    ?? provider.profiles?.[delegateProfileName]?.maxTurns
+    ?? GROK_BUILTIN_PROFILE_MAX_TURNS[delegateProfileName]
+    ?? 16;
+  validateGrokModeOptions(providerId, "delegate", provider.delegate, provider.maxTurnsCeiling ?? 100, effectiveDelegateMaxTurns);
 }
 
 /** Validate the shell-free, provider-native-session Claude Code Preview boundary. */
@@ -1065,7 +1072,7 @@ function validateGrokProfile(providerId, profileName, profile, ceiling) {
 }
 
 /** Validate one Grok Consult/Delegate policy object. */
-function validateGrokModeOptions(providerId, mode, options, ceiling) {
+function validateGrokModeOptions(providerId, mode, options, ceiling, effectiveMaxTurns) {
   if (options === undefined) return;
   if (!isPlainObject(options)) throw new ConfigError(`Provider '${providerId}'.${mode} must be an object`);
   for (const key of ["profile", "reasoningEffort", "permissionMode", "sandbox", "workspaceStrategy", "snapshotRoot"]) {
@@ -1082,6 +1089,10 @@ function validateGrokModeOptions(providerId, mode, options, ceiling) {
   }
   if (options.maxTurns !== undefined && options.expectedTurns !== undefined && options.expectedTurns > options.maxTurns) {
     throw new ConfigError(`Provider '${providerId}'.${mode}.expectedTurns cannot exceed maxTurns`);
+  }
+  if (options.explorationLoop !== undefined) {
+    if (mode !== "delegate") throw new ConfigError(`Provider '${providerId}'.consult.explorationLoop is unsupported; Consult never recovers automatically`);
+    validateExplorationLoopOptions(providerId, options.explorationLoop, effectiveMaxTurns ?? options.maxTurns, ceiling);
   }
   for (const key of ["maxPromptChars", "timeoutMs", "maxOutputBytes", "snapshotMaxBytes", "snapshotMaxFiles"]) {
     if (options[key] !== undefined) assertInteger(options[key], `Provider '${providerId}'.${mode}.${key}`, { minimum: 1 });
@@ -1116,6 +1127,36 @@ function validateGrokModeOptions(providerId, mode, options, ceiling) {
     if (options[key] !== undefined && typeof options[key] !== "string" && !isPlainObject(options[key])) {
       throw new ConfigError(`Provider '${providerId}'.${mode}.${key} must be a JSON object or non-empty string`);
     }
+  }
+}
+
+/** Validate the opt-in, one-recovery Delegate exploration-loop boundary. */
+function validateExplorationLoopOptions(providerId, options, configuredMaxTurns, ceiling) {
+  const path = `Provider '${providerId}'.delegate.explorationLoop`;
+  if (!isPlainObject(options)) throw new ConfigError(`${path} must be an object`);
+  const unknown = Object.keys(options).filter((key) => ![
+    "enabled",
+    "reserveTurns",
+    "minimumStructuredActivities",
+    "minimumRepeatedKindCount",
+  ].includes(key));
+  if (unknown.length > 0) throw new ConfigError(`${path} contains unsupported fields: ${unknown.join(", ")}`);
+  if (typeof options.enabled !== "boolean") throw new ConfigError(`${path}.enabled must be boolean`);
+  for (const [key, minimum, maximum] of [
+    ["reserveTurns", 1, Math.max(1, ceiling - 1)],
+    ["minimumStructuredActivities", 2, 100],
+    ["minimumRepeatedKindCount", 2, 100],
+  ]) {
+    if (options[key] !== undefined) assertInteger(options[key], `${path}.${key}`, { minimum, maximum });
+  }
+  const reserveTurns = options.reserveTurns ?? 4;
+  const minimumStructuredActivities = options.minimumStructuredActivities ?? 4;
+  const minimumRepeatedKindCount = options.minimumRepeatedKindCount ?? 2;
+  if (minimumRepeatedKindCount > minimumStructuredActivities) {
+    throw new ConfigError(`${path}.minimumRepeatedKindCount cannot exceed minimumStructuredActivities`);
+  }
+  if (options.enabled && configuredMaxTurns !== undefined && reserveTurns >= configuredMaxTurns) {
+    throw new ConfigError(`${path}.reserveTurns must be lower than Delegate maxTurns when enabled`);
   }
 }
 
@@ -1455,6 +1496,12 @@ export function createExampleConfig() {
           maxTurns: 16,
           expectedTurns: 4,
           noPlan: true,
+          explorationLoop: {
+            enabled: false,
+            reserveTurns: 4,
+            minimumStructuredActivities: 4,
+            minimumRepeatedKindCount: 2,
+          },
           permissionMode: "bypassPermissions",
           requireGit: true,
           requireLinkedWorktree: true,

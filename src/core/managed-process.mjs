@@ -134,6 +134,26 @@ export function terminateProcessTree(child, options = {}) {
   return operation;
 }
 
+/**
+ * Terminate a live managed child, then reap POSIX descendants that outlive its group leader.
+ * Windows retains `terminateProcessTree` semantics because a completed leader no longer provides
+ * a safe process-tree identity for a second `taskkill` pass.
+ *
+ * @param {import("node:child_process").ChildProcess} child Child process.
+ * @param {{graceMs?: number, platform?: NodeJS.Platform, killTree?: boolean}} [options] Cleanup options.
+ * @returns {Promise<void>}
+ */
+export async function reapManagedProcessTree(child, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const killTree = options.killTree !== false;
+  if (child.exitCode === null && child.signalCode === null) {
+    await terminateProcessTree(child, { ...options, platform, killTree });
+  }
+  if (platform !== "win32" && killTree) {
+    await reapExitedProcessGroup(child, { graceMs: options.graceMs, platform });
+  }
+}
+
 /** Execute the process-tree termination sequence once. */
 async function terminateProcessTreeOnce(child, options) {
   const graceMs = options.graceMs ?? 2000;
@@ -349,27 +369,35 @@ export async function runCapturedProcess(options) {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", abort);
     if (terminationTask) await terminationTask.catch(() => undefined);
-    if (child.exitCode === null && child.signalCode === null) await requestTermination().catch(() => undefined);
-    if (options.killTree !== false) await reapExitedProcessGroup(child).catch(() => undefined);
+    await reapManagedProcessTree(child, { killTree: options.killTree !== false }).catch(() => undefined);
     await Promise.allSettled([stdoutTask, stderrTask]);
   }
 }
 
 /** Reap descendants that outlive an exited detached POSIX group leader. */
 async function reapExitedProcessGroup(child, options = {}) {
-  if (process.platform === "win32" || !child.pid) return;
+  if ((options.platform ?? process.platform) === "win32" || !child.pid) return;
   if (!processGroupExists(child.pid)) return;
   try { process.kill(-child.pid, "SIGTERM"); } catch { return; }
-  const deadline = Date.now() + (options.graceMs ?? 500);
-  while (Date.now() < deadline) {
-    if (!processGroupExists(child.pid)) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  const graceMs = options.graceMs ?? 500;
+  if (await waitForProcessGroupExit(child.pid, graceMs)) return;
   try { process.kill(-child.pid, "SIGKILL"); } catch {}
+  await waitForProcessGroupExit(child.pid, Math.max(250, graceMs));
 }
 
 function processGroupExists(pid) {
   try { process.kill(-pid, 0); return true; } catch { return false; }
+}
+
+/** Wait a bounded duration for a POSIX process group to disappear. */
+async function waitForProcessGroupExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (processGroupExists(pid)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(20, remaining)));
+  }
+  return true;
 }
 
 /** Read a stream with either a hard limit or a retained-tail limit. */

@@ -10,12 +10,12 @@ npm run verify
 
 This executes source syntax checks and Node's built-in test runner over `test/*.test.mjs`.
 
-Current 0.4.1 Linux release-candidate result:
+Current 0.5.0 Linux release-candidate result:
 
 ```text
 npm run check: passed
-517 tests
-517 passed
+610 tests
+610 passed
 0 failed
 0 skipped
 ```
@@ -40,7 +40,7 @@ The suite uses local fakes, local HTTP servers, and isolated temporary paths. It
 | Threads/queues | Same-thread ordering, unrelated concurrency, abort-safe queue behavior. |
 | Cursor adapter | Integrated rejection, simultaneous Delegate creation dedupe, queued Delegate cancellation/overtake prevention. |
 | Snapshots | Copy/exclusions, canonical symlink confinement and snapshot-local rewriting, byte limit, cleanup after failed copy, and pattern behavior. |
-| Grok Build | Non-consuming executable/version/hash preflight, model/usage/error parsing, finite safety argv, profiles/overrides, snapshot Consult, quota failure/no retry, and Integrated rejection. |
+| Grok Build | Non-consuming executable/version/hash preflight, model/usage/error parsing, finite safety argv, profiles/overrides, snapshot Consult, quota failure/no retry, Integrated rejection, and opt-in Delegate exploration classification with trusted top-level fields, exact session echo, workspace-keyed serialization, and one same-session patch/test recovery. |
 | Managed workers | Weighted FIFO admission and expected/actual turn reconciliation, private run ledger/evidence, Git linked-worktree/branch/clean gates, and multi-skill installation. |
 | xAI-compatible accounting | Reasoning usage plus exact `cost_in_usd_ticks` preservation as provider metadata. |
 
@@ -129,6 +129,13 @@ Keep this phase intentionally small and account-aware:
 - [ ] Default invocation keeps web/search and subagents enabled, still emits `--no-memory`, finite `--max-turns`, and no-auto-update; explicit opt-out calls add `--no-subagents` and/or `--disable-web-search`.
 - [ ] Terminal JSON contains the expected text and available usage/model-call/cost fields.
 - [ ] Quota/rate/entitlement error produces one terminal failure and no retry.
+- [ ] With exploration recovery explicitly enabled, one canary emits adapter-owned `--session-id`, reserves final/test turns below the overall ceiling, and uses exactly one same-session `--resume` only after repeated structured plan/read activity leaves Git unchanged.
+- [ ] Initial and recovery terminal envelopes both echo the exact adapter-bound session ID; omission, mismatch, or nested model-authored spoof fields fail closed.
+- [ ] A changed worktree, missing structured activity, Consult request, ordinary successful finish, or failed recovery never produces another invocation; a recovery entitlement failure remains terminal with failed-attempt evidence hashes.
+- [ ] Root/subdirectory/symlink aliases, Windows case aliases, and separate Grok adapter instances for one physical worktree serialize across Git-before through final Git-after; unrelated worktrees overlap and disabled/Consult requests do not enter that queue.
+- [ ] The spawned child uses the canonical physical Git top-level for cwd, `--cwd`, and workspace environment; deterministically retargeting the admitted lexical symlink cannot escape that binding.
+- [ ] Only one trusted nonzero initial max-turn terminal envelope from an enabled Delegate reaches classification; Consult, disabled Delegate, message-only failure, mixed authentication/credential/access-denied, expired token/API key, HTTP 401/402/403/429, insufficient quota/`RESOURCE_EXHAUSTED`, rate, insufficient funds/credits, billing/payment, subscription/entitlement diagnostics, malformed output, recovery nonzero, and ordinary process failures remain terminal. Bare issue numbers and assistant `output_text` discussions remain non-signals for valid envelopes.
+- [ ] Managed-process failures record only prompt/stderr hashes available from that boundary and never expose raw stdout merely to claim a hash.
 - [ ] Cancellation and timeout terminate the actual Grok process tree on Windows and Ubuntu.
 - [ ] Admission values are re-canary-tested; six generic or nine fleet outer slots / 1.4-second spacing / 18 turns per minute are not assumed universal, and all coordinators demonstrably share one daemon/controller.
 - [ ] The local ledger is reconciled with the provider usage surface after a meaningful batch.

@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-18T14:48:21Z",
+  "source": {
+    "fixture": "ui/adapt-state.js:SYNTHETIC_STATE",
+    "network": "loopback-static-assets-only",
+    "devicePixelRatio": 1,
+    "privacyReview": "passed-synthetic-public-only-no-host-chrome"
+  },
+  "tools": {
+    "capture": "Codex browser-client Chrome viewport screenshot",
+    "imageMagick": "6.9.12-98",
+    "ffmpeg": "6.1.1-3ubuntu5"
+  },
+  "liveAcceptance": {
+    "capturedAt": "2026-08-18T15:40:00Z",
+    "privacyReview": "owner-authorized-live-host-capture",
+    "assets": [
+      { "path": "threadspan-linux-live.png", "host": "linux", "dimensions": { "width": 3774, "height": 2128 }, "sha256": "243407933eb377d808b61290189a2dc71780dcd1c62f8e1b176b2867a4bf4dd5" },
+      { "path": "threadspan-windows-live.png", "host": "windows", "dimensions": { "width": 1632, "height": 909 }, "sha256": "2fa20f2e434e9dd9ccb75a05077db52a8d2149fb5c9ac42685b551e9dfb14286" }
+    ]
+  },
+  "assets": [
+    {
+      "path": "threadspan-dashboard.png",
+      "role": "expanded-dashboard-with-needs-you",
+      "viewport": { "width": 1622, "height": 963 },
+      "dimensions": { "width": 1622, "height": 926 },
+      "sha256": "211d5164bab591810cb01b52c15e2382832113b5a8a5a80524a5625d8e93fa0e"
+    },
+    {
+      "path": "threadspan-route-picker.png",
+      "role": "canonical-route-picker",
+      "viewport": { "width": 1637, "height": 972 },
+      "dimensions": { "width": 1637, "height": 934 },
+      "sha256": "67ff45955d89101bbf93bdfe2fdcfee2a641f7c0980ba77d28d64e7750dba60a"
+    },
+    {
+      "path": "threadspan-route-map.png",
+      "role": "route-map-with-needs-you",
+      "viewport": { "width": 1622, "height": 963 },
+      "dimensions": { "width": 1607, "height": 917 },
+      "sha256": "a7a3b3b258143b754506ef914b07955219de911c7a1ca2d07cd1d89ebc3c8e47"
+    },
+    {
+      "path": "threadspan-demo.gif",
+      "role": "dashboard-picker-route-map-loop",
+      "dimensions": { "width": 1280, "height": 720 },
+      "frames": 3,
+      "frameDelayCentiseconds": 260,
+      "sha256": "64f3070df3db845dc7fc9ef1364a0513542d7a8dea2cf73bcd15deaa2c8ba371"
+    }
+  ]
+}

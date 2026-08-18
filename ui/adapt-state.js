@@ -64,6 +64,26 @@
         ],
       }],
     },
+    actionItems: {
+      schemaVersion: 1,
+      total: 1,
+      global: {
+        count: 1,
+        items: [{
+          handle: "act_0123456789abcdef0123456789abcdef",
+          projectKey: null,
+          projectLabel: null,
+          title: "Review the bounded owner action",
+          summary: "Only actionable owner work appears here by default.",
+          status: "open",
+          revision: 1,
+          createdAt: "2026-08-17T20:00:00.000Z",
+          updatedAt: "2026-08-17T20:00:00.000Z",
+          completedAt: null,
+        }],
+      },
+      projects: [],
+    },
     route: {
       id: "delegate/grok-build/grok-4.6",
       mode: "delegate",
@@ -351,6 +371,7 @@
       fallbacks,
       checkpoint: adaptCheckpoint(raw.checkpoint),
       continuity: adaptContinuity(raw.continuity),
+      actionItems: adaptActionItems(raw.actionItems),
       utilization: adaptUtilization(raw.utilization),
       history: adaptHistory(raw.history),
       reroute: adaptReroute(raw.reroute),
@@ -554,6 +575,8 @@
           archived: generation.archived === true,
         };
       }).filter(Boolean) : [];
+      const recoverySource = isObject(task.pendingRecovery) ? task.pendingRecovery : isObject(task.recovery) ? task.recovery : {};
+      const pendingRecovery = task.pendingRecovery === true || isObject(task.pendingRecovery) || recoverySource.active === true;
       return {
         handle: text(task.handle),
         title: boundedText(task.title, 120) || "Untitled task",
@@ -561,7 +584,12 @@
         selected: task.selected === true,
         enrolled: task.enrolled === true,
         action: ["Promote", "Rollover", "Pending"].includes(text(task.action)) ? text(task.action) : "Promote",
-        pendingRecovery: task.pendingRecovery === true,
+        pendingRecovery,
+        recovery: {
+          phase: boundedText(recoverySource.phase, 80),
+          blocker: boundedText(recoverySource.blocker, 160),
+          action: boundedText(recoverySource.action, 120) || (pendingRecovery ? "Await native Continuity supervisor" : ""),
+        },
         current: {
           generation: Math.max(1, Math.trunc(finiteNumber(task.current?.generation, generations.length || 1))),
           status: boundedText(task.current?.status, 40) || "unknown",
@@ -583,6 +611,63 @@
       },
       tasks,
     };
+  }
+
+  /** Strictly project the closed public action-item schema and reject private-key contamination. */
+  function adaptActionItems(raw) {
+    const empty = { schemaVersion: 1, total: 0, global: { count: 0, items: [] }, projects: [] };
+    if (!isObject(raw) || raw.schemaVersion !== 1 || containsPrivateActionItemKey(raw)) return empty;
+    if (!hasOnlyKeys(raw, ["schemaVersion", "total", "global", "projects"])) return empty;
+    const global = isObject(raw.global) && hasOnlyKeys(raw.global, ["count", "items"]) && Array.isArray(raw.global.items)
+      ? raw.global.items.slice(0, 100).map((item) => adaptActionItem(item, null, null)).filter(Boolean)
+      : [];
+    const projects = Array.isArray(raw.projects) ? raw.projects.slice(0, 100).flatMap((project) => {
+      if (!isObject(project) || !hasOnlyKeys(project, ["key", "label", "count", "items"]) || !Array.isArray(project.items)) return [];
+      const key = /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(text(project.key)) ? text(project.key) : "";
+      const label = boundedText(project.label, 120);
+      if (!key || !label) return [];
+      const items = project.items.slice(0, 100).map((item) => adaptActionItem(item, key, label)).filter(Boolean);
+      return [{ key, label, count: items.length, items }];
+    }) : [];
+    const returned = global.length + projects.reduce((sum, project) => sum + project.items.length, 0);
+    return {
+      schemaVersion: 1,
+      total: Math.min(1_000, Math.max(returned, Number.isSafeInteger(raw.total) && raw.total >= 0 ? raw.total : 0)),
+      global: { count: global.length, items: global },
+      projects,
+    };
+  }
+
+  function adaptActionItem(raw, projectKey, projectLabel) {
+    const allowed = ["handle", "projectKey", "projectLabel", "title", "summary", "status", "revision", "createdAt", "updatedAt", "completedAt"];
+    if (!isObject(raw) || !hasOnlyKeys(raw, allowed)) return null;
+    const handle = /^act_[0-9a-f]{32}$/.test(text(raw.handle)) ? text(raw.handle) : "";
+    const status = ["open", "completed", "stale", "closed"].includes(text(raw.status)) ? text(raw.status) : "";
+    const revision = Number.isSafeInteger(raw.revision) && raw.revision > 0 ? raw.revision : 0;
+    const title = boundedText(raw.title, 240);
+    const summary = raw.summary === null ? null : boundedText(raw.summary, 2_000);
+    const createdAt = canonicalActionItemTime(raw.createdAt);
+    const updatedAt = canonicalActionItemTime(raw.updatedAt);
+    const completedAt = raw.completedAt === null ? null : canonicalActionItemTime(raw.completedAt);
+    if (!handle || !status || !revision || !title || summary === "" || !createdAt || !updatedAt || completedAt === "") return null;
+    return { handle, projectKey, projectLabel, title, summary, status, revision, createdAt, updatedAt, completedAt };
+  }
+
+  function containsPrivateActionItemKey(value) {
+    if (Array.isArray(value)) return value.some(containsPrivateActionItemKey);
+    if (!isObject(value)) return false;
+    const forbidden = /^(?:ownerRef|nativeId|sourceRevision|path|paths|prompt|prompts|note|idempotencyKey|eventId|claimToken|deliveryRef|receiptId)$/i;
+    return Object.entries(value).some(([key, child]) => forbidden.test(key) || containsPrivateActionItemKey(child));
+  }
+
+  function hasOnlyKeys(value, allowed) {
+    return Object.keys(value).every((key) => allowed.includes(key));
+  }
+
+  function canonicalActionItemTime(value) {
+    if (typeof value !== "string") return "";
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value ? value : "";
   }
 
   /**
@@ -661,6 +746,7 @@
       fallbacks: [],
       checkpoint: null,
       continuity: { enabled: false, controlEnabled: false, tasks: [], reason: "disabled" },
+      actionItems: { schemaVersion: 1, total: 0, global: { count: 0, items: [] }, projects: [] },
       utilization: [],
       history: [],
       reroute: null,
@@ -708,19 +794,40 @@
       if (!isObject(edge) || !text(edge.provider)) return null;
       const mode = text(edge.mode).toLowerCase();
       if (!MODES.includes(mode)) return null;
-      return { mode, provider: text(edge.provider), priority: finiteNumber(edge.priority, 0), weight: finiteNumber(edge.weight, 0) };
+      const components = isObject(edge.scoreComponents) ? edge.scoreComponents : {};
+      return {
+        mode,
+        provider: text(edge.provider),
+        priority: finiteNumber(edge.priority, 0),
+        weight: finiteNumber(edge.weight, 0),
+        score: finiteNumber(edge.score, finiteNumber(edge.weight, 0)),
+        scoreComponents: {
+          preference: finiteNumber(components.preference, 0),
+          healthPenalty: finiteNumber(components.healthPenalty, 0),
+          failurePenalty: finiteNumber(components.failurePenalty, 0),
+          balancePenalty: finiteNumber(components.balancePenalty, 0),
+          modeBias: finiteNumber(components.modeBias, 0),
+        },
+        tieBreak: isObject(edge.tieBreak) && edge.tieBreak.field === "provider"
+          ? { field: "provider", value: boundedText(edge.tieBreak.value, 120) }
+          : null,
+      };
     }).filter(Boolean) : [];
     return { nodes, edges };
   }
 
   function adaptCompatibility(raw) {
     if (!isObject(raw)) return { status: "disabled", changed: false, products: [], changes: [] };
+    const changeKinds = new Set(["baseline", "changed", "removed"]);
     return {
       status: text(raw.status) || "unknown",
       changed: raw.changed === true,
       observedAt: text(raw.observedAt),
       products: Array.isArray(raw.products) ? raw.products.map((product) => isObject(product) && text(product.id) ? { id: text(product.id), label: text(product.label) || text(product.id), status: text(product.status) || "unknown", version: text(product.version) } : null).filter(Boolean).slice(0, 12) : [],
-      changes: Array.isArray(raw.changes) ? raw.changes.filter(isObject).slice(0, 20) : [],
+      changes: Array.isArray(raw.changes) ? raw.changes.slice(0, 20).flatMap((change) => {
+        if (!isObject(change) || !text(change.productId) || !changeKinds.has(text(change.kind))) return [];
+        return [{ productId: boundedText(change.productId, 80), kind: text(change.kind) }];
+      }) : [],
     };
   }
 
@@ -864,8 +971,27 @@
         unavailabilityReason: boundedText(source.unavailabilityReason ?? source.reason, 240),
         capabilityReason: boundedText(source.capabilityReason, 240),
         setupReason: boundedText(source.setupReason, 240),
+        contextWindow: positiveSafeInteger(source.contextWindow ?? source.context_window),
+        supportedReasoningLevels: adaptReasoningLevels(source.supportedReasoningLevels ?? source.supported_reasoning_levels),
+        defaultReasoningLevel: boundedText(source.defaultReasoningLevel ?? source.default_reasoning_level, 40),
+        catalogDegraded: source.catalogDegraded === true || source.catalog_degraded === true,
+        catalogReason: boundedText(source.catalogReason ?? source.catalog_reason, 240),
+        configuredFallback: source.configuredFallback === true || source.configured_fallback === true,
       }];
     });
+  }
+
+  function adaptReasoningLevels(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.slice(0, 12).flatMap((level) => {
+      if (typeof level === "string") return [{ effort: boundedText(level, 40), description: "" }];
+      if (!isObject(level) || !text(level.effort)) return [];
+      return [{ effort: boundedText(level.effort, 40), description: boundedText(level.description, 240) }];
+    });
+  }
+
+  function positiveSafeInteger(value) {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
   }
 
   function routeId(value) {
@@ -886,12 +1012,13 @@
     if (!id) return null;
     const parsed = parseRouteId(id);
     const mode = parsed.mode;
-    const availability = boundedText(raw.availability, 40).toLowerCase() || "unknown";
+    const availability = boundedText(raw.availability ?? metadata.availability, 40).toLowerCase() || "unknown";
     const explicitFree = raw.free ?? metadata.free;
     return {
       id,
       mode,
       provider: parsed.provider,
+      accountId: parsed.accountId || "unknown/default",
       model: parsed.model,
       label: boundedText(raw.label ?? raw.display_name, 160),
       availability,
@@ -902,6 +1029,13 @@
       unavailabilityReason: boundedText(raw.unavailabilityReason, 240),
       capabilityReason: boundedText(raw.capabilityReason, 240),
       setupReason: boundedText(raw.setupReason, 240),
+      contextWindow: positiveSafeInteger(raw.contextWindow ?? metadata.context_window),
+      supportedReasoningLevels: adaptReasoningLevels(raw.supportedReasoningLevels ?? metadata.supported_reasoning_levels),
+      defaultReasoningLevel: boundedText(raw.defaultReasoningLevel ?? metadata.default_reasoning_level, 40),
+      catalogDegraded: raw.catalogDegraded === true || metadata.catalog_degraded === true,
+      catalogReason: boundedText(raw.catalogReason ?? metadata.catalog_reason, 240),
+      configuredFallback: raw.configuredFallback === true || metadata.configured_fallback === true,
+      images: raw.images === true || metadata.images === true,
       ...normalizeProviderWebMetadata(raw),
     };
   }
@@ -935,6 +1069,12 @@
             unavailabilityReason: model.unavailabilityReason || node.unavailabilityReason,
             capabilityReason: model.capabilityReason || node.capabilityReason,
             setupReason: model.setupReason || node.setupReason,
+            contextWindow: model.contextWindow,
+            supportedReasoningLevels: model.supportedReasoningLevels,
+            defaultReasoningLevel: model.defaultReasoningLevel,
+            catalogDegraded: model.catalogDegraded,
+            catalogReason: model.catalogReason,
+            configuredFallback: model.configuredFallback,
             providerLinks: node.providerLinks,
             creditState: node.creditState,
             expiryState: node.expiryState,
@@ -1161,6 +1301,7 @@
     SYNTHETIC_STATE,
     adaptPickerRoutes,
     adaptContinuity,
+    adaptActionItems,
     adaptAutomaticTakeover,
     adaptThreadspanState,
     applyFilters,

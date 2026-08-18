@@ -147,6 +147,55 @@ test("provider links and explicit account states survive route-map generation on
   assert.equal(unchanged.expiryState, "unknown");
 });
 
+test("canonical picker routes take precedence over route-map fallback and retain catalog metadata", () => {
+  const id = "consult/provider/@acct_opaque/model/name";
+  const ready = api.adaptThreadspanState({
+    status: "ready",
+    route: { id, mode: "consult", provider: "provider", accountId: "acct_opaque", model: "model/name" },
+    pickerRoutes: [{
+      id,
+      mode: "delegate",
+      provider: "contradiction",
+      accountId: "unsafe-label",
+      model: "contradiction",
+      availability: "degraded",
+      free: false,
+      contextWindow: 200_000,
+      supportedReasoningLevels: [{ effort: "xhigh", description: "Extended" }],
+      defaultReasoningLevel: "xhigh",
+      catalogDegraded: true,
+      catalogReason: "Live provider catalog unavailable; using the configured fallback.",
+      configuredFallback: true,
+      images: true,
+    }],
+    routeMap: {
+      nodes: [{ id: "legacy", availability: "available", modes: ["consult"], models: ["legacy-model"] }],
+      edges: [{
+        mode: "consult", provider: "legacy", priority: 1, weight: 15, score: 15,
+        scoreComponents: { preference: 0, healthPenalty: 15, failurePenalty: 0, balancePenalty: 0, modeBias: 0 },
+        tieBreak: { field: "provider", value: "legacy" },
+      }],
+    },
+  });
+  assert.deepEqual(plain(ready.pickerRoutes.map((route) => route.id)), [id]);
+  const [route] = ready.pickerRoutes;
+  assert.equal(route.mode, "consult");
+  assert.equal(route.provider, "provider");
+  assert.equal(route.accountId, "acct_opaque");
+  assert.equal(route.model, "model/name");
+  assert.equal(route.free, false);
+  assert.equal(route.freeKnown, true);
+  assert.equal(route.contextWindow, 200_000);
+  assert.deepEqual(plain(route.supportedReasoningLevels), [{ effort: "xhigh", description: "Extended" }]);
+  assert.equal(route.defaultReasoningLevel, "xhigh");
+  assert.equal(route.catalogDegraded, true);
+  assert.equal(route.configuredFallback, true);
+  assert.equal(route.images, true);
+  assert.equal(ready.routeMap.edges[0].score, 15);
+  assert.deepEqual(plain(ready.routeMap.edges[0].scoreComponents), { preference: 0, healthPenalty: 15, failurePenalty: 0, balancePenalty: 0, modeBias: 0 });
+  assert.deepEqual(plain(ready.routeMap.edges[0].tieBreak), { field: "provider", value: "legacy" });
+});
+
 test("the active route remains visible through hidden, unavailable, and AND filters", () => {
   let preferences = api.createPickerPreferences();
   preferences = dispatch(preferences, { type: "toggle-hidden", routeId: ids[5] });

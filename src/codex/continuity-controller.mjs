@@ -109,6 +109,34 @@ export class CodexContinuityController {
     });
   }
 
+  /** Deliver one owner-authorized action completion to the exact idle native Codex task. */
+  async deliverActionItem(entry = {}) {
+    await this.initialize();
+    return this.#withLock(async () => {
+      this.#assertControls();
+      if (entry.ownerRef !== "codex-thread") return { supported: false };
+      const threadId = nativeActionOwnerId(entry.nativeId);
+      const handle = actionItemHandle(entry.handle);
+      const note = actionItemNote(entry.note);
+      const evidence = await this.#read("thread/read", { threadId, includeTurns: false });
+      const thread = evidence.result?.thread;
+      if (!thread) throw new RequestError("Action-item owner is no longer available");
+      const status = threadStatus(thread);
+      if (status === "active") throw new RequestError("Action-item owner is active; completion delivery remains queued");
+      if (!["idle", "notLoaded"].includes(status)) throw new RequestError("Action-item owner is not ready for completion delivery");
+      if (status === "notLoaded") await this.#mutate("thread/resume", { threadId, excludeTurns: true });
+      const input = [
+        `Threadspan action ${handle} was completed by the owner.`,
+        note ? `Owner note: ${note}` : "No completion note was supplied.",
+        "Resume only the bounded work this completion unblocks. Do not create an acknowledgement action item or wake an unrelated task.",
+      ].join(" ");
+      const started = await this.#mutate("turn/start", { threadId, input: [{ type: "text", text: input }] });
+      const turnId = started.result?.turn?.id;
+      if (typeof turnId !== "string" || !turnId) throw new Error("Native action completion turn did not return an id");
+      return { supported: true, deliveryRef: `codex-turn:${digestObject(turnId).slice(0, 32)}` };
+    });
+  }
+
   async previewRollover(input = {}) {
     await this.initialize();
     return this.#withLock(async () => {
@@ -371,6 +399,24 @@ function acceptedGoalTransfer(predecessor, successor, previousStatus) {
   if (!successor) return false;
   if (previousStatus === "usageLimited") return ["active", "usageLimited"].includes(successor.status);
   return successor.status === previousStatus;
+}
+
+function nativeActionOwnerId(value) {
+  const id = String(value ?? "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/.test(id)) throw new RequestError("Action-item owner identifier is invalid");
+  return id;
+}
+
+function actionItemHandle(value) {
+  const handle = String(value ?? "");
+  if (!/^act_[0-9a-f]{32}$/.test(handle)) throw new RequestError("Action-item handle is invalid");
+  return handle;
+}
+
+function actionItemNote(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value !== "string" || value.length > 500 || /[\u0000-\u001f\u007f]/.test(value)) throw new RequestError("Action-item note is invalid");
+  return value;
 }
 
 async function assertSafeStateAncestors(path, options = {}) {

@@ -6,6 +6,7 @@ import test from "node:test";
 import { BridgeService } from "../src/bridge/service.mjs";
 import { ProviderError } from "../src/core/errors.mjs";
 import { UsageLedger } from "../src/core/usage-ledger.mjs";
+import { ActionItemStore } from "../src/core/action-items.mjs";
 import { ProviderAdapter } from "../src/providers/base.mjs";
 import { closeHttpServer, createHttpServer, listenHttpServer } from "../src/bridge/http-server.mjs";
 import { createTestConfig as createBaseTestConfig, nativePath, silentLogger } from "./helpers.mjs";
@@ -28,6 +29,7 @@ test("HTTP surface serves health, models, buffered Responses, and SSE", async (t
     officialUrl: "https://provider.example",
     accountUrl: "https://provider.example/account",
     usageUrl: "https://provider.example/usage",
+    models: [{ id: "mock-model", free: true, contextWindow: 64_000, supported_reasoning_levels: [{ effort: "high", description: "Deep" }], default_reasoning_level: "high" }],
   } } });
   const service = new BridgeService(config, { logger: silentLogger() });
   const server = createHttpServer(service, config);
@@ -72,6 +74,17 @@ test("HTTP surface serves health, models, buffered Responses, and SSE", async (t
   assert.equal(sidecarState.route.officialUrl, "https://provider.example");
   assert.equal(sidecarState.route.accountUrl, "https://provider.example/account");
   assert.equal(sidecarState.route.usageUrl, "https://provider.example/usage");
+  const pickerRoute = sidecarState.pickerRoutes.find((route) => route.id === "consult/mock/mock-model");
+  assert.equal(pickerRoute.provider, "mock");
+  assert.equal(pickerRoute.accountId, "unknown/default");
+  assert.equal(pickerRoute.model, "mock-model");
+  assert.equal(pickerRoute.free, true);
+  assert.equal(pickerRoute.contextWindow, 64_000);
+  assert.deepEqual(pickerRoute.supportedReasoningLevels, [{ effort: "high", description: "Deep" }]);
+  assert.equal(pickerRoute.defaultReasoningLevel, "high");
+  assert.equal(pickerRoute.catalogDegraded, false);
+  assert.equal(pickerRoute.configuredFallback, false);
+  assert.equal(pickerRoute.availability, "available");
   assert.equal("creditState" in sidecarProvider, false);
   assert.equal("expiryState" in sidecarProvider, false);
   assert.equal(sidecarState.route.effectiveSettings.owner, "host");
@@ -101,6 +114,45 @@ test("HTTP surface serves health, models, buffered Responses, and SSE", async (t
   assert.match(streamText, /event: response\.created/);
   assert.match(streamText, /event: response\.completed/);
   assert.match(streamText, /data: \[DONE\]/);
+});
+
+test("Threadspan state publishes a bounded Compatibility Watch transition and stops polling", async (t) => {
+  const config = createTestConfig({
+    compatibilityWatch: { enabled: true, pollingEnabled: true, readOnly: true, applyEnabled: false, pollIntervalMs: 60_000 },
+  });
+  let publishReport;
+  let stopped = false;
+  const compatibilityWatch = {
+    startPolling(onReport) {
+      publishReport = onReport;
+      return { stop() { stopped = true; } };
+    },
+  };
+  const service = new BridgeService(config, { logger: silentLogger(), compatibilityWatch });
+  t.after(async () => { await service.close(); });
+
+  const loading = await service.threadspanState();
+  assert.deepEqual(loading.compatibility, { status: "loading", changed: false, products: [], changes: [] });
+
+  await publishReport({
+    status: "attention",
+    changed: true,
+    observedAt: "2026-08-18T12:00:00.000Z",
+    products: [{ id: "codex-desktop", label: "Codex Desktop", status: "detected", version: "1.2.3", path: "/private/app", authorization: "secret" }],
+    changes: [{ productId: "codex-desktop", kind: "changed", current: { pathHash: "private", rawOutput: "secret" } }],
+  });
+  const changed = await service.threadspanState();
+  assert.deepEqual(changed.compatibility, {
+    status: "attention",
+    changed: true,
+    observedAt: "2026-08-18T12:00:00.000Z",
+    products: [{ id: "codex-desktop", label: "Codex Desktop", status: "detected", version: "1.2.3" }],
+    changes: [{ productId: "codex-desktop", kind: "changed" }],
+  });
+  assert.doesNotMatch(JSON.stringify(changed.compatibility), /private|secret|authorization|rawOutput|pathHash/);
+
+  await service.close();
+  assert.equal(stopped, true);
 });
 
 test("HTTP Responses defaults Consult and Integrated to no source, preserves explicit workspace aliases, and rejects implicit Delegate cwd", async (t) => {
@@ -292,6 +344,150 @@ test("maximum-utilization native refresh and owner controls deny the connector t
   });
   assert.equal(accepted.status, 202);
   assert.equal(received.length, 1);
+});
+
+test("action-item HTTP surface is owner-only and strictly projects query and completion inputs", async (t) => {
+  const previousMain = process.env.THREADSPAN_ACTION_TEST_MAIN;
+  const previousConnector = process.env.THREADSPAN_ACTION_TEST_CONNECTOR;
+  process.env.THREADSPAN_ACTION_TEST_MAIN = "action-owner-token";
+  process.env.THREADSPAN_ACTION_TEST_CONNECTOR = "action-connector-token";
+  t.after(() => {
+    if (previousMain === undefined) delete process.env.THREADSPAN_ACTION_TEST_MAIN;
+    else process.env.THREADSPAN_ACTION_TEST_MAIN = previousMain;
+    if (previousConnector === undefined) delete process.env.THREADSPAN_ACTION_TEST_CONNECTOR;
+    else process.env.THREADSPAN_ACTION_TEST_CONNECTOR = previousConnector;
+  });
+  const calls = [];
+  const service = {
+    publishActionItem: async (body) => {
+      calls.push(["publish", body]);
+      return {
+        handle: "act_0123456789abcdef0123456789abcdef", projectKey: null, projectLabel: null,
+        title: body.title, summary: null, status: "open", revision: 1,
+        createdAt: "2026-08-18T12:00:00.000Z", updatedAt: "2026-08-18T12:00:00.000Z", completedAt: null,
+      };
+    },
+    actionItemsState: async (options) => {
+      calls.push(["read", options]);
+      return { schemaVersion: 1, total: 0, global: { count: 0, items: [] }, projects: [] };
+    },
+    completeActionItem: async (handle, body) => {
+      calls.push(["complete", handle, body]);
+      return { receiptId: "arcpt_0123456789abcdef0123456789abcdef", handle, status: "completed", revision: 3, completedAt: "2026-08-18T12:00:00.000Z" };
+    },
+  };
+  const config = {
+    server: {
+      host: "127.0.0.1", port: 0, authTokenEnv: "THREADSPAN_ACTION_TEST_MAIN",
+      connectorTokenEnv: "THREADSPAN_ACTION_TEST_CONNECTOR", allowUnauthenticatedLoopback: false,
+      maxBodyBytes: 1024 * 1024, requestTimeoutMs: 5000, maxConcurrentRequests: 1, allowedOrigins: [],
+    },
+  };
+  const server = createHttpServer(service, config);
+  const address = await listenHttpServer(server, { host: "127.0.0.1", port: 0 });
+  t.after(() => closeHttpServer(server));
+  const base = `http://127.0.0.1:${address.port}`;
+  const connector = { authorization: "Bearer action-connector-token" };
+  const owner = { authorization: "Bearer action-owner-token" };
+  const handle = "act_0123456789abcdef0123456789abcdef";
+
+  assert.equal((await fetch(`${base}/v1/action-items`, { headers: connector })).status, 401);
+  assert.equal((await fetch(`${base}/v1/action-items`, {
+    method: "POST", headers: { ...connector, "content-type": "application/json" }, body: JSON.stringify({ title: "blocked" }),
+  })).status, 401);
+  assert.equal((await fetch(`${base}/v1/action-items/${handle}/complete`, {
+    method: "POST", headers: { ...connector, "content-type": "application/json" }, body: JSON.stringify({ revision: 2 }),
+  })).status, 401);
+  assert.deepEqual(calls, []);
+
+  const publication = {
+    ownerRef: "codex-thread", nativeId: "019dead0-native-thread-id", sourceRevision: 1,
+    title: "Approve the bounded next step",
+  };
+  const published = await fetch(`${base}/v1/action-items`, {
+    method: "POST", headers: { ...owner, "content-type": "application/json" }, body: JSON.stringify(publication),
+  });
+  assert.equal(published.status, 201);
+  assert.deepEqual(calls[0], ["publish", publication]);
+  assert.doesNotMatch(JSON.stringify(await published.json()), /codex-thread|019dead0|ownerRef|nativeId/);
+
+  const read = await fetch(`${base}/v1/action-items?scope=project&projectKey=threadspan&status=stale&filter=review&sort=title-asc&limit=25`, { headers: owner });
+  assert.equal(read.status, 200);
+  assert.deepEqual(calls[1], ["read", { scope: "project", projectKey: "threadspan", status: "stale", filter: "review", sort: "title-asc", limit: 25 }]);
+  assert.equal((await fetch(`${base}/v1/action-items?ownerRef=private`, { headers: owner })).status, 400);
+  assert.equal(calls.length, 2);
+
+  const completed = await fetch(`${base}/v1/action-items/${handle}/complete`, {
+    method: "POST", headers: { ...owner, "content-type": "application/json" }, body: JSON.stringify({ revision: 2, note: "Owner confirmed" }),
+  });
+  assert.equal(completed.status, 200);
+  assert.deepEqual(calls[2], ["complete", handle, { revision: 2, note: "Owner confirmed" }]);
+  assert.equal((await fetch(`${base}/v1/action-items/${handle}/complete?retry=true`, {
+    method: "POST", headers: { ...owner, "content-type": "application/json" }, body: JSON.stringify({ revision: 2 }),
+  })).status, 400);
+});
+
+test("BridgeService publishes a sanitized action queue and drains one exact-owner delivery batch", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-service-actions-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "action-items.json");
+  const store = new ActionItemStore({ path, now: () => "2026-08-18T12:00:00.000Z" });
+  const item = await store.upsert({
+    ownerRef: "owner-service-task", nativeId: "native-service-action", sourceRevision: 1,
+    projectKey: "threadspan", projectLabel: "Threadspan", title: "Review service integration",
+  });
+  await store.complete(item.handle, { revision: item.revision, note: "Ready for exact owner" });
+  const deliveries = [];
+  const service = new BridgeService(createTestConfig(), {
+    logger: silentLogger(),
+    actionItemStore: store,
+    actionItemDeliveryAdapter: async (entry) => {
+      deliveries.push(entry);
+      return { deliveryRef: "owner-delivery-receipt" };
+    },
+  });
+  t.after(() => service.close());
+  await service.initialize();
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].ownerRef, "owner-service-task");
+  assert.equal((await store.replayOutbox()).length, 0);
+
+  const published = await service.publishActionItem({
+    ownerRef: "owner-open-task", nativeId: "native-open-action", sourceRevision: 1,
+    title: "Review the visible action queue",
+  });
+  const state = await service.threadspanState();
+  assert.equal(state.actionItems.global.items[0].handle, published.handle);
+  assert.doesNotMatch(JSON.stringify(state.actionItems), /owner-open-task|native-open-action|ownerRef|nativeId|sourceRevision/);
+  const receipt = await service.completeActionItem(published.handle, { revision: published.revision });
+  assert.equal(receipt.status, "completed");
+  assert.equal(deliveries.length, 2, "completion triggers one bounded delivery drain without polling");
+});
+
+test("BridgeService production composition routes completion through the native exact-owner adapter", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-service-native-actions-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new ActionItemStore({ path: join(root, "action-items.json"), now: () => "2026-08-18T12:00:00.000Z" });
+  const deliveries = [];
+  const continuityController = {
+    async initialize() {},
+    async view() { return { enabled: true, controlEnabled: true, tasks: [], capabilities: {} }; },
+    async deliverActionItem(entry) {
+      deliveries.push(entry);
+      return { supported: true, deliveryRef: "codex-turn:0123456789abcdef0123456789abcdef" };
+    },
+  };
+  const service = new BridgeService(createTestConfig(), { logger: silentLogger(), actionItemStore: store, continuityController });
+  t.after(() => service.close());
+  const item = await service.publishActionItem({
+    ownerRef: "codex-thread", nativeId: "019dead0-native-thread-id", sourceRevision: 1,
+    title: "Approve the exact native owner",
+  });
+  await service.completeActionItem(item.handle, { revision: item.revision, note: "Proceed" });
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].ownerRef, "codex-thread");
+  assert.equal(deliveries[0].nativeId, "019dead0-native-thread-id");
+  assert.equal((await store.replayOutbox()).length, 0);
 });
 
 test("Threadspan state propagates a sanitized recent-burn forecast without inventing quota", async (t) => {

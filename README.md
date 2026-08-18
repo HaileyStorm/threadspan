@@ -4,11 +4,22 @@
 
 **One task. Every model.**
 
-Threadspan connects Codex, Grok, Cursor, Nous, OpenRouter, Claude Code gateways, and optional agent runtimes through one local daemon. It adds a compact model/provider picker, shared usage and availability state, safe Consult/Integrated/Delegate modes, and a companion HUD without replacing a host app's native model catalog.
+Threadspan connects Codex, Grok, Cursor, Nous, OpenRouter, Claude Code gateways, and optional agent runtimes through one local daemon. It adds a compact model/provider picker, shared usage and availability state, safe Consult/Integrated/Delegate modes, and an app-attached HUD without replacing a host app's native OpenAI catalog.
 
 The point is practical: use the models and subscriptions you already have, see which ones are actually available, and keep work recoverable when one provider reaches a limit.
 
-![Threadspan HUD, route picker, and provider hierarchy](docs/media/threadspan-demo.gif)
+![Threadspan HUD with Needs you, route picker, and provider hierarchy](docs/media/threadspan-demo.gif)
+
+<details>
+<summary>See the live ChatGPT Desktop integration</summary>
+
+These are native renderer captures from the installed Linux and Windows apps, not browser mockups.
+
+![Threadspan collapsed inside ChatGPT Desktop on Linux](docs/media/threadspan-linux-live.png)
+
+![Threadspan route picker inside ChatGPT Desktop on Windows](docs/media/threadspan-windows-live.png)
+
+</details>
 
 ## Install with one prompt
 
@@ -34,7 +45,8 @@ The setup window is source-run in an app-style Vivaldi/Chrome/Edge window, not a
 - Direct Nous Portal Consult/Integrated routes and a bounded Codex-worker Delegate path.
 - OpenRouter discovery, including currently free models.
 - Explicit-only AgentRouter/Claude Code support plus check-first Mistral API, GroqCloud, Cloudflare Workers AI, and Gemini API discovery candidates.
-- A companion HUD with health, utilization, usage, ranking, and a collapsed route map.
+- An app-attached ChatGPT/Codex Desktop HUD with health, utilization, usage, ranking, and a compact route picker; detachable browser mode remains available.
+- A compact owner-only **Needs you** rail for durable global and per-project actions, with exact-owner completion delivery and stale/closed history kept out of the active queue.
 - Optional heuristic-first Tips: disabled by default, dismissible, cooldown-bound, and limited to one compact tip per browser session; cheap-model refinement and session-only Ask are separately gated and user-initiated.
 - Optional Copy review for every installation: local readability checks, protected-span enforcement, and an explicitly configured provider rewrite that never auto-applies.
 - Optional External copy check, off by default: user-started Pangram handoff plus documented Sapling/Winston API adapters. Results are advisory and never decide rewrite acceptance.
@@ -57,7 +69,7 @@ The picker stays compact by default, while search, filters, favorites, hiding, a
 
 The deeper route map shows ranked providers, supported modes, specialties, recent use, and failure counts without putting that machinery in the main view.
 
-![Threadspan provider hierarchy and maximum-utilization controls](docs/media/threadspan-route-map.png)
+![Threadspan provider hierarchy, Needs you rail, and maximum-utilization controls](docs/media/threadspan-route-map.png)
 
 </details>
 
@@ -79,7 +91,7 @@ A host surface is the app/CLI that owns the user's current conversation. Reverse
 
 | Host | Tier | Reverse surface | HUD/control surface | Recovery |
 |---|---|---|---|---|
-| Codex | Primary | MCP + Responses profiles + App Server | Companion HUD and App Server state | App Server / `codex exec resume` |
+| Codex | Primary | MCP + Responses profiles + App Server | App-attached HUD, route picker, and App Server state | App Server / `codex exec resume` |
 | Grok Build / Bot | Enhanced | MCP, plugin/skill, optional HTTPS connector | Grok dashboard/usage/tasks + companion | ACP / `grok --resume` |
 | Cursor | Standard | MCP + source webview extension | Cursor webview + companion | Cursor SDK `Agent.resume()` / `agent` |
 | Hermes Agent | Preview | Status, models, and conservative MCP Consult | Companion HUD | Planned; not implemented or live-certified |
@@ -113,7 +125,7 @@ Unsupported combinations fail closed. Threadspan does not turn Consult into Dele
    Card-free/free-credit candidates are also explicit-only and collapsed under **Add providers** without current ready evidence. Selection adds prerequisites only; signup, credential creation, app installation, billing changes, live probing, and route enablement each require user permission and a reviewed plan.
 3. Protect running tasks grouped by project. The default is **finish before install**; pausing is explicit.
 4. Review exact files, prerequisites, estimated usage, and plan digest.
-5. Separately approve Desktop closure and file writes.
+5. Separately approve the one-time Desktop restart needed to activate the app-attached HUD.
 6. Run focused live checks and keep rollback with the evidence.
 
 CLI, Desktop, and direct-release launches use the same plan/preview/apply engine. If the window disappears, a product-local recovery record lets Threadspan notify the origin through that host's native resume path. Explicit Cancel suppresses that notification.

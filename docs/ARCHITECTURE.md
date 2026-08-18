@@ -157,7 +157,7 @@ Each retained Cursor agent has an abort-aware serial lock. Agent creation is als
 
 ### Managed process trees
 
-Grok and generic command adapters launch structured argv without a shell by default. POSIX jobs run in a process group; Windows cleanup uses descendant-aware `taskkill`. Abort, timeout, output overflow, provider shutdown, or failed startup triggers bounded graceful-then-forced termination.
+Grok, generic command, and Claude Code adapters launch structured argv without a shell by default. POSIX jobs run in a process group; Windows cleanup uses descendant-aware `taskkill`. Abort, timeout, output overflow, provider shutdown, early iterator return, failed startup, or a group leader exiting before its descendants triggers bounded graceful-then-forced cleanup. POSIX streaming wrappers reap the managed group after leader exit; Windows intentionally does not sweep an exited leader's PID because native Job Object ownership is not yet implemented and PID reuse must fail safe.
 
 ### MCP dispatcher
 

@@ -37,7 +37,13 @@ Files are written with private modes where the platform honors POSIX modes. Wind
 
 ## Manual doctor after an update
 
-Because there is no CLI/index integration yet, import the module by its direct file path:
+Run the owner-local CLI after an app update:
+
+```bash
+threadspan compatibility doctor --after-update
+```
+
+The public module remains available for embedded integrations:
 
 ```js
 import { DesktopCompatibilityWatch } from "./src/maintenance/desktop-update.mjs";
@@ -48,7 +54,7 @@ const report = await watch.doctorAfterUpdate();
 
 The report labels the evidence as local read-only observation. On the first run, detected/missing products establish a baseline. Later runs report product additions, removals, or changed normalized evidence. A changed fingerprint is a prompt for compatibility review; it is not proof that an update is safe or unsafe.
 
-Exact current Desktop behavior still needs native smoke testing on the installed Linux and Windows builds. Offline tests and hashes do not certify model-picker, Settings, Usage, app lifecycle, or authentication behavior.
+Exact current Desktop behavior still needs native smoke testing on the installed Linux and Windows builds. Offline tests and hashes do not certify model-picker, Settings, Usage, app lifecycle, or authentication behavior. The daemon and HUD expose only the watcher's bounded sanitized report; they do not restart an app or convert an observed fingerprint into compatibility acceptance.
 
 ## Optional polling
 

@@ -1,13 +1,16 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { WeightedAdmissionController } from "../core/admission-controller.mjs";
 import { readExecutableVersion, resolveExecutablePath, sha256File } from "../core/executable.mjs";
 import { CapabilityError, ProviderError, RequestError } from "../core/errors.mjs";
+import { classifyExplorationLoop } from "../core/exploration-loop.mjs";
 import { createId } from "../core/ids.mjs";
+import { KeyedSerialQueue } from "../core/keyed-serial-queue.mjs";
 import { ManagedProcessError, normalizeManagedCommand, runCapturedProcess } from "../core/managed-process.mjs";
 import { renderMessagesForAgent } from "../core/policies.mjs";
-import { RunLedger, workspacePathFingerprint } from "../core/run-ledger.mjs";
+import { RunLedger, sha256Text, workspacePathFingerprint } from "../core/run-ledger.mjs";
 import { enforceGitWorkspacePolicy, inspectGitWorkspace } from "../workspace/git-workspace.mjs";
 import { createWorkspaceSnapshot } from "../workspace/snapshot.mjs";
 import { ProviderAdapter } from "./base.mjs";
@@ -21,6 +24,7 @@ const BUILTIN_PROFILES = Object.freeze({
 });
 
 const DEFAULT_ALLOWED_EFFORTS = Object.freeze(["low", "medium", "high"]);
+const GROK_EXPLORATION_WORKSPACE_QUEUE = new KeyedSerialQueue();
 const PROTECTED_GROK_ARGUMENTS = new Set([
   "-c", "-m", "-p", "-r", "-s", "-w",
   "--agent", "--agents", "--allow", "--always-approve", "--cwd", "--deny",
@@ -74,6 +78,7 @@ export class GrokBuildProvider extends ProviderAdapter {
   /** Return Grok Build's actual execution boundaries. */
   capabilities() {
     const configured = new Set(Array.isArray(this.config.capabilities) ? this.config.capabilities : ["consult", "delegate"]);
+    const explorationLoop = resolveGrokExplorationLoopPolicy(this.config, { mode: "delegate" }, { maxTurns: this.config.delegate?.maxTurns ?? 16 });
     return {
       modes: {
         consult: {
@@ -97,6 +102,12 @@ export class GrokBuildProvider extends ProviderAdapter {
       durableThreads: false,
       providerOwnsTools: true,
       freshBoundedSessions: true,
+      boundedSameSessionRecovery: {
+        enabled: explorationLoop.enabled,
+        mode: "delegate",
+        maximumRecoveries: explorationLoop.enabled ? 1 : 0,
+        reserveTurns: explorationLoop.reserveTurns,
+      },
       automaticRetries: false,
       executionBoundary: "official-grok-build-cli",
       defaults: resolveGrokExecutionPolicy(this.config, { mode: "delegate", metadata: {} }),
@@ -132,8 +143,35 @@ export class GrokBuildProvider extends ProviderAdapter {
     }
   }
 
-  /** Execute one bounded Grok Build Consult or Delegate job. */
+  /** Execute one job, serializing only exploration-enabled Delegate work sharing a workspace. */
   async *run(request) {
+    const serializeWorkspace = request.mode === "delegate"
+      && this.config.delegate?.explorationLoop?.enabled === true
+      && typeof request.workspace === "string"
+      && request.workspace.length > 0;
+    if (!serializeWorkspace) {
+      yield* this.#runJob(request);
+      return;
+    }
+    const workspaceKey = await resolveExplorationWorkspaceKey(request.workspace);
+    const acquired = deferredPromise();
+    const released = deferredPromise();
+    const lock = GROK_EXPLORATION_WORKSPACE_QUEUE.run(workspaceKey, request.signal, async () => {
+      acquired.resolve();
+      await released.promise;
+    });
+    lock.then(undefined, acquired.reject);
+    await acquired.promise;
+    try {
+      yield* this.#runJob(request, workspaceKey);
+    } finally {
+      released.resolve();
+      await lock;
+    }
+  }
+
+  /** Execute one bounded Grok Build Consult or Delegate job after any workspace serialization. */
+  async *#runJob(request, expectedWorkspaceKey) {
     if (this.closed) throw new ProviderError(this.id, "Grok Build provider is closed", { status: 503 });
     this.assertMode(request.mode);
     if (request.mode === "integrated") {
@@ -143,10 +181,15 @@ export class GrokBuildProvider extends ProviderAdapter {
     await this.#assertConfiguredModel(request.model);
     const jobId = createId("job");
     const profile = resolveGrokTaskProfile(this.config, request);
+    const explorationLoop = resolveGrokExplorationLoopPolicy(this.config, request, profile);
+    const admissionExpectedTurns = explorationLoop.enabled
+      ? Math.min(profile.maxTurns, profile.expectedTurns + explorationLoop.reserveTurns)
+      : profile.expectedTurns;
     const executionPolicy = resolveGrokExecutionPolicy(this.config, request);
+    const acceptance = normalizeAcceptanceCommands(request.metadata?.bridge_acceptance_commands);
+    const acceptanceCommands = acceptance.commands;
     const installation = await this.#preflight();
-    const workspaceFingerprint = workspacePathFingerprint(request.workspace);
-    const acceptanceCommands = normalizeStringArray(request.metadata?.bridge_acceptance_commands);
+    let workspaceFingerprint;
     const coordinatorId = optionalMetadataString(request.metadata?.bridge_coordinator_id);
     const workerGroup = optionalMetadataString(request.metadata?.bridge_worker_group);
     let snapshot;
@@ -157,10 +200,16 @@ export class GrokBuildProvider extends ProviderAdapter {
     let releaseAdmission;
     let terminalRecorded = false;
     let actualAdmissionUnits;
+    let activeAttempt = "initial";
+    let nativeSessionId;
 
     try {
       ({ workspace, snapshot, emptyWorkspace, gitBefore } = await prepareGrokWorkspace(this.config, request, this.logger));
-      const prompt = renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitBefore, acceptanceCommands, { coordinatorId, workerGroup }, {
+      if (expectedWorkspaceKey && await physicalGitWorkspaceKey(gitBefore) !== expectedWorkspaceKey) {
+        throw new RequestError("Grok Build exploration workspace identity changed before the writable attempt");
+      }
+      workspaceFingerprint = workspacePathFingerprint(workspace);
+      const prompt = renderGrokBuildPrompt(request, explorationLoop.initialProfile, executionPolicy, snapshot, gitBefore, acceptanceCommands, { coordinatorId, workerGroup }, {
         outputSummary: this.config.outputSummary,
         providerId: this.id,
         adapter: this.config.adapter ?? "grok-build",
@@ -172,7 +221,8 @@ export class GrokBuildProvider extends ProviderAdapter {
       if (prompt.length > maxPromptChars) {
         throw new RequestError(`Grok Build prompt is ${prompt.length} characters, exceeding maxPromptChars (${maxPromptChars}); reduce thread context or raise the reviewed limit`);
       }
-      const initialEvidence = await this.ledger.captureEvidence(jobId, { prompt });
+      nativeSessionId = explorationLoop.enabled ? randomUUID() : undefined;
+      const initialEvidence = await this.ledger.captureEvidence(`${jobId}-initial`, { prompt });
 
       await this.ledger.append({
         event: "queued",
@@ -183,6 +233,11 @@ export class GrokBuildProvider extends ProviderAdapter {
         reasoningEffort: profile.reasoningEffort,
         maxTurns: profile.maxTurns,
         expectedTurns: profile.expectedTurns,
+        admissionExpectedTurns,
+        initialMaxTurns: explorationLoop.initialProfile.maxTurns,
+        recoveryReserveTurns: explorationLoop.enabled ? explorationLoop.reserveTurns : 0,
+        explorationRecoveryEnabled: explorationLoop.enabled,
+        sessionId: nativeSessionId,
         allowSubagents: executionPolicy.allowSubagents,
         allowWebSearch: executionPolicy.allowWebSearch,
         noMemory: executionPolicy.noMemory,
@@ -190,111 +245,156 @@ export class GrokBuildProvider extends ProviderAdapter {
         coordinatorId,
         workerGroup,
         workspaceFingerprint,
-        acceptanceCommands,
+        acceptanceCommands: acceptance.summary,
         gitBefore: summarizeGitState(gitBefore),
         ...initialEvidence,
       });
       yield { type: "status", status: "queued", message: "Waiting for Grok Build admission" };
-      releaseAdmission = await this.admission.acquire(profile.expectedTurns, request.signal);
+      releaseAdmission = await this.admission.acquire(admissionExpectedTurns, request.signal);
       await this.ledger.append({ event: "admitted", jobId, admission: this.admission.stats() });
       yield { type: "status", status: "admitted" };
 
-      const args = buildGrokBuildArguments(this.config, request, profile, workspace, prompt, executionPolicy);
       yield { type: "status", status: "started" };
-      const result = await runCapturedProcess({
-        command: installation.executable,
-        args,
-        expectedExecutableSha256: installation.sha256,
-        cwd: workspace,
-        env: buildGrokEnvironment(this.config, {
-          CURSOR_BRIDGE_MODE: request.mode,
-          CURSOR_BRIDGE_MODEL: request.model,
-          CURSOR_BRIDGE_THREAD_ID: request.threadId ?? "",
-          CURSOR_BRIDGE_WORKSPACE: request.workspace ?? "",
-          CURSOR_BRIDGE_JOB_ID: jobId,
-          CURSOR_BRIDGE_COORDINATOR_ID: coordinatorId ?? "",
-          CURSOR_BRIDGE_WORKER_GROUP: workerGroup ?? "",
-          CURSOR_BRIDGE_ALLOW_SUBAGENTS: String(executionPolicy.allowSubagents),
-          CURSOR_BRIDGE_ALLOW_WEB_SEARCH: String(executionPolicy.allowWebSearch),
-          CURSOR_BRIDGE_NO_MEMORY: String(executionPolicy.noMemory),
-        }),
-        signal: request.signal,
-        timeoutMs: request.timeoutMs ?? modeConfig.timeoutMs ?? this.config.timeoutMs ?? 30 * 60 * 1000,
-        maxStdoutBytes: modeConfig.maxOutputBytes ?? this.config.maxOutputBytes ?? 16 * 1024 * 1024,
-        maxStderrBytes: this.config.maxStderrBytes ?? 256 * 1024,
-        killTree: true,
-        onSpawn: ({ pid, startedAt }) => {
-          return this.ledger.append({
-            event: "running",
-            jobId,
-            pid,
-            startedAt: new Date(startedAt).toISOString(),
-            executable: installation.executable,
-            version: installation.version,
-            ...(installation.sha256 ? { executableSha256: installation.sha256 } : {}),
-          });
-        },
-      });
-
-      const parsed = parseGrokBuildPayload(result.stdout, result.stderr, this.id);
-      actualAdmissionUnits = normalizeActualTurns(parsed.modelCalls ?? parsed.turns, profile.expectedTurns);
-      const evidence = await this.ledger.captureEvidence(jobId, {
+      const initialAttempt = await this.#runAttempt({
+        attempt: "initial",
+        ordinal: 1,
+        jobId,
+        request,
+        profile: explorationLoop.initialProfile,
+        executionPolicy,
+        installation,
+        workspace,
         prompt,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        metadata: { exitCode: result.exitCode, exitSignal: result.exitSignal },
+        coordinatorId,
+        workerGroup,
+        nativeSession: nativeSessionId ? { id: nativeSessionId, resume: false } : undefined,
+        allowNonzeroMaxTurnRecovery: request.mode === "delegate" && explorationLoop.enabled,
+        modeConfig,
       });
-      if (result.exitCode !== 0) throw createGrokExitError(this.id, result, parsed);
-      if (parsed.errorCode) throw createGrokPayloadError(this.id, parsed, result);
+      let finalAttempt = initialAttempt;
+      const attempts = [summarizeGrokAttempt(initialAttempt)];
+      let explorationDecision;
 
       if (request.mode === "delegate") gitAfter = await inspectGitWorkspace(workspace).catch(() => undefined);
+      if (explorationLoop.enabled) {
+        explorationDecision = classifyExplorationLoop({
+          mode: request.mode,
+          terminalState: incompleteGrokFinishReason(initialAttempt.parsed.finishReason) ? "incomplete" : "complete",
+          activities: initialAttempt.parsed.activities,
+          gitBefore,
+          gitAfter,
+          turnsUsed: initialAttempt.parsed.modelCalls ?? initialAttempt.parsed.turns,
+          overallTurnCeiling: profile.maxTurns,
+          reserveTurns: explorationLoop.reserveTurns,
+          minimumStructuredActivities: explorationLoop.minimumStructuredActivities,
+          minimumRepeatedKindCount: explorationLoop.minimumRepeatedKindCount,
+        });
+        await this.ledger.append({
+          event: "exploration-classified",
+          jobId,
+          threadId: request.threadId,
+          attempt: "initial",
+          recoveryIssued: explorationDecision.recover,
+          ...explorationDecision,
+        });
+      }
+
+      if (explorationDecision?.recover) {
+        activeAttempt = "recovery";
+        const recoveryProfile = {
+          ...profile,
+          maxTurns: explorationDecision.recoveryTurns,
+          expectedTurns: explorationDecision.recoveryTurns,
+          noPlan: true,
+        };
+        const recoveryPrompt = renderExplorationRecoveryPrompt(acceptanceCommands);
+        yield { type: "status", status: "recovering", message: "Resuming the same Grok Build session with the reserved patch/test budget" };
+        finalAttempt = await this.#runAttempt({
+          attempt: "recovery",
+          ordinal: 2,
+          jobId,
+          request,
+          profile: recoveryProfile,
+          executionPolicy,
+          installation,
+          workspace,
+          prompt: recoveryPrompt,
+          coordinatorId,
+          workerGroup,
+          nativeSession: { id: nativeSessionId, resume: true },
+          allowNonzeroMaxTurnRecovery: false,
+          modeConfig,
+        });
+        attempts.push(summarizeGrokAttempt(finalAttempt));
+        gitAfter = await inspectGitWorkspace(workspace).catch(() => undefined);
+      }
+
+      const parsed = finalAttempt.parsed;
+      const combinedUsage = combineUsage(attempts.map((attempt) => attempt.usage));
+      const combinedTurns = sumOptionalNumbers(attempts.map((attempt) => attempt.turns));
+      const combinedModelCalls = sumOptionalNumbers(attempts.map((attempt) => attempt.modelCalls));
+      const combinedCost = sumOptionalNumbers(attempts.map((attempt) => attempt.estimatedCostUsd));
+      const durationMs = attempts.reduce((sum, attempt) => sum + attempt.durationMs, 0);
+      actualAdmissionUnits = normalizeActualTurns(combinedModelCalls ?? combinedTurns, profile.expectedTurns);
       const providerMetadata = {
         grokBuild: {
           jobId,
+          threadId: request.threadId,
+          sessionId: nativeSessionId,
           profile: profile.name,
           reasoningEffort: profile.reasoningEffort,
           maxTurns: profile.maxTurns,
           expectedTurns: profile.expectedTurns,
+          admissionExpectedTurns,
           allowSubagents: executionPolicy.allowSubagents,
           allowWebSearch: executionPolicy.allowWebSearch,
           noMemory: executionPolicy.noMemory,
           coordinatorId,
           workerGroup,
-          turns: parsed.turns,
-          modelCalls: parsed.modelCalls,
-          estimatedCostUsd: parsed.estimatedCostUsd,
+          turns: combinedTurns,
+          modelCalls: combinedModelCalls,
+          estimatedCostUsd: combinedCost,
           reportedModel: parsed.reportedModel,
-          durationMs: result.durationMs,
+          durationMs,
           executableVersion: installation.version,
           ledgerPath: this.ledger.path,
           admission: this.admission.stats(),
           gitBefore: summarizeGitState(gitBefore),
           gitAfter: summarizeGitState(gitAfter),
           acceptanceCommands,
+          explorationRecovery: {
+            enabled: explorationLoop.enabled,
+            issued: explorationDecision?.recover === true,
+            reserveTurns: explorationLoop.enabled ? explorationLoop.reserveTurns : 0,
+            classification: explorationDecision,
+          },
+          attempts: attempts.map(({ usage: _usage, ...attempt }) => attempt),
         },
       };
       await this.ledger.append({
         event: "completed",
         jobId,
-        durationMs: result.durationMs,
-        exitCode: result.exitCode,
-        usage: parsed.usage,
-        turns: parsed.turns,
-        modelCalls: parsed.modelCalls,
+        threadId: request.threadId,
+        durationMs,
+        exitCode: finalAttempt.result.exitCode,
+        usage: combinedUsage,
+        turns: combinedTurns,
+        modelCalls: combinedModelCalls,
         admissionUnits: actualAdmissionUnits,
-        estimatedCostUsd: parsed.estimatedCostUsd,
+        estimatedCostUsd: combinedCost,
         gitAfter: summarizeGitState(gitAfter),
-        ...evidence,
+        recoveryIssued: explorationDecision?.recover === true,
+        attempts: attempts.map(({ usage: _usage, ...attempt }) => attempt),
       });
       terminalRecorded = true;
 
       if (parsed.text) yield { type: "text-delta", delta: parsed.text };
-      if (parsed.usage) yield { type: "usage", usage: parsed.usage };
+      if (combinedUsage) yield { type: "usage", usage: combinedUsage };
       yield {
         type: "done",
         finishReason: parsed.finishReason ?? "stop",
         message: { role: "assistant", content: parsed.text },
-        usage: parsed.usage,
+        usage: combinedUsage,
         providerMetadata,
       };
     } catch (error) {
@@ -303,6 +403,9 @@ export class GrokBuildProvider extends ProviderAdapter {
         await this.ledger.append({
           event: cancelled ? "cancelled" : "failed",
           jobId,
+          threadId: request.threadId,
+          attempt: activeAttempt,
+          sessionId: nativeSessionId,
           admissionUnits: actualAdmissionUnits,
           error: boundedError(error),
           admission: this.admission.stats(),
@@ -355,6 +458,168 @@ export class GrokBuildProvider extends ProviderAdapter {
       throw error;
     });
     return this.preflightPromise;
+  }
+
+  /** Run one initial or recovery process inside the same admitted logical job. */
+  async #runAttempt(options) {
+    const {
+      attempt,
+      ordinal,
+      jobId,
+      request,
+      profile,
+      executionPolicy,
+      installation,
+      workspace,
+      prompt,
+      coordinatorId,
+      workerGroup,
+      nativeSession,
+      allowNonzeroMaxTurnRecovery,
+      modeConfig,
+    } = options;
+    const args = buildGrokBuildArguments(this.config, request, profile, workspace, prompt, executionPolicy, nativeSession);
+    const evidenceId = `${jobId}-${attempt}`;
+    let result;
+    try {
+      result = await runCapturedProcess({
+        command: installation.executable,
+        args,
+        expectedExecutableSha256: installation.sha256,
+        cwd: workspace,
+        env: buildGrokEnvironment(this.config, {
+          CURSOR_BRIDGE_MODE: request.mode,
+          CURSOR_BRIDGE_MODEL: request.model,
+          CURSOR_BRIDGE_THREAD_ID: request.threadId ?? "",
+          CURSOR_BRIDGE_WORKSPACE: workspace,
+          CURSOR_BRIDGE_JOB_ID: jobId,
+          CURSOR_BRIDGE_ATTEMPT: attempt,
+          CURSOR_BRIDGE_ATTEMPT_ORDINAL: String(ordinal),
+          CURSOR_BRIDGE_COORDINATOR_ID: coordinatorId ?? "",
+          CURSOR_BRIDGE_WORKER_GROUP: workerGroup ?? "",
+          CURSOR_BRIDGE_ALLOW_SUBAGENTS: String(executionPolicy.allowSubagents),
+          CURSOR_BRIDGE_ALLOW_WEB_SEARCH: String(executionPolicy.allowWebSearch),
+          CURSOR_BRIDGE_NO_MEMORY: String(executionPolicy.noMemory),
+        }),
+        signal: request.signal,
+        timeoutMs: request.timeoutMs ?? modeConfig.timeoutMs ?? this.config.timeoutMs ?? 30 * 60 * 1000,
+        maxStdoutBytes: modeConfig.maxOutputBytes ?? this.config.maxOutputBytes ?? 16 * 1024 * 1024,
+        maxStderrBytes: this.config.maxStderrBytes ?? 256 * 1024,
+        killTree: true,
+        onSpawn: ({ pid, startedAt }) => this.ledger.append({
+          event: "running",
+          jobId,
+          threadId: request.threadId,
+          attempt,
+          attemptOrdinal: ordinal,
+          evidenceId,
+          sessionId: nativeSession?.id,
+          sessionOperation: nativeSession ? nativeSession.resume === true ? "resume" : "create" : undefined,
+          maxTurns: profile.maxTurns,
+          pid,
+          startedAt: new Date(startedAt).toISOString(),
+          executable: installation.executable,
+          version: installation.version,
+          ...(installation.sha256 ? { executableSha256: installation.sha256 } : {}),
+        }),
+      });
+    } catch (error) {
+      const evidence = await this.ledger.captureEvidence(evidenceId, {
+        prompt,
+        ...(error?.details?.stderr === undefined ? {} : { stderr: error.details.stderr }),
+        metadata: { attempt, ordinal, processFailure: true },
+      });
+      await this.ledger.append({
+        event: "attempt-failed",
+        jobId,
+        threadId: request.threadId,
+        attempt,
+        attemptOrdinal: ordinal,
+        evidenceId,
+        sessionId: nativeSession?.id,
+        sessionOperation: nativeSession ? nativeSession.resume === true ? "resume" : "create" : undefined,
+        maxTurns: profile.maxTurns,
+        error: boundedError(error),
+        ...evidence,
+      });
+      throw error;
+    }
+    const evidence = await this.ledger.captureEvidence(evidenceId, {
+      prompt,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      metadata: { exitCode: result.exitCode, exitSignal: result.exitSignal, attempt, ordinal },
+    });
+    const appendFailedAttempt = (error) => this.ledger.append({
+      event: "attempt-failed",
+      jobId,
+      threadId: request.threadId,
+      attempt,
+      attemptOrdinal: ordinal,
+      evidenceId,
+      sessionId: nativeSession?.id,
+      sessionOperation: nativeSession ? nativeSession.resume === true ? "resume" : "create" : undefined,
+      maxTurns: profile.maxTurns,
+      durationMs: result.durationMs,
+      exitCode: result.exitCode,
+      exitSignal: result.exitSignal,
+      error: boundedError(error),
+      ...evidence,
+    });
+    let parsed;
+    try {
+      parsed = parseGrokBuildPayload(result.stdout, result.stderr, this.id);
+    } catch (error) {
+      await appendFailedAttempt(error);
+      throw error;
+    }
+    if (parsed.errorCode) {
+      const error = createGrokPayloadError(this.id, parsed, result);
+      await appendFailedAttempt(error);
+      throw error;
+    }
+    const recoverableNonzeroExit = recoverableNonzeroGrokMaxTurnExit({
+      allowed: allowNonzeroMaxTurnRecovery === true,
+      attempt,
+      result,
+      parsed,
+      nativeSession,
+    });
+    if (result.exitCode !== 0 && !recoverableNonzeroExit) {
+      const error = createGrokExitError(this.id, result, parsed);
+      await appendFailedAttempt(error);
+      throw error;
+    }
+    if (nativeSession?.id && parsed.sessionId !== nativeSession.id) {
+      const error = new ProviderError(this.id, parsed.sessionId
+        ? "Grok Build returned a session different from the adapter-bound session"
+        : "Grok Build omitted the adapter-bound session from its terminal envelope", {
+        retryable: false,
+        details: { attempt, attemptOrdinal: ordinal, retryPolicy: "no-automatic-retry" },
+      });
+      await appendFailedAttempt(error);
+      throw error;
+    }
+    await this.ledger.append({
+      event: "attempt-completed",
+      jobId,
+      threadId: request.threadId,
+      attempt,
+      attemptOrdinal: ordinal,
+      evidenceId,
+      sessionId: nativeSession?.id,
+      sessionOperation: nativeSession ? nativeSession.resume === true ? "resume" : "create" : undefined,
+      maxTurns: profile.maxTurns,
+      durationMs: result.durationMs,
+      exitCode: result.exitCode,
+      turns: parsed.turns,
+      modelCalls: parsed.modelCalls,
+      finishReason: parsed.finishReason,
+      recoverableNonzeroExit,
+      structuredActivityCount: parsed.activities.length,
+      ...evidence,
+    });
+    return { attempt, ordinal, profile, result, parsed, evidence, evidenceId, nativeSession, recoverableNonzeroExit };
   }
 
   /** Reject unadvertised models when strict model-list policy is enabled. */
@@ -467,7 +732,7 @@ export async function inspectGrokBuildInstallation(config, options = {}) {
 }
 
 /** Build the exact one-shot argument vector used for a Grok Build job. */
-export function buildGrokBuildArguments(config, request, profile, workspace, prompt, resolvedPolicy) {
+export function buildGrokBuildArguments(config, request, profile, workspace, prompt, resolvedPolicy, nativeSession) {
   const modeConfig = config[request.mode] ?? {};
   const executionPolicy = resolvedPolicy ?? resolveGrokExecutionPolicy(config, request);
   const permissionMode = modeConfig.permissionMode ?? config.permissionMode ?? "dontAsk";
@@ -480,6 +745,7 @@ export function buildGrokBuildArguments(config, request, profile, workspace, pro
   args.push("--model", request.model);
   args.push("--reasoning-effort", profile.reasoningEffort);
   for (const value of config.preArgs ?? []) args.push(String(value));
+  if (nativeSession?.id) args.push(nativeSession.resume === true ? "--resume" : "--session-id", nativeSession.id);
   args.push("--single", prompt);
   args.push("--output-format", "json");
   args.push("--permission-mode", permissionMode);
@@ -576,6 +842,28 @@ export function resolveGrokTaskProfile(config, request) {
   return { name: requestedName, reasoningEffort, maxTurns, expectedTurns, noPlan };
 }
 
+/** Resolve the opt-in, Delegate-only exploration recovery and carve its reserve from the initial attempt. */
+export function resolveGrokExplorationLoopPolicy(config, request, profile) {
+  const configured = request.mode === "delegate" ? config.delegate?.explorationLoop : undefined;
+  const enabled = configured?.enabled === true;
+  const reserveTurns = configured?.reserveTurns ?? 4;
+  if (enabled && profile.maxTurns <= reserveTurns) {
+    throw new RequestError(`Grok Build explorationLoop.reserveTurns (${reserveTurns}) must be lower than the effective Delegate maxTurns (${profile.maxTurns})`);
+  }
+  const initialMaxTurns = enabled ? profile.maxTurns - reserveTurns : profile.maxTurns;
+  return {
+    enabled,
+    reserveTurns,
+    minimumStructuredActivities: configured?.minimumStructuredActivities ?? 4,
+    minimumRepeatedKindCount: configured?.minimumRepeatedKindCount ?? 2,
+    initialProfile: {
+      ...profile,
+      maxTurns: initialMaxTurns,
+      expectedTurns: Math.min(profile.expectedTurns, initialMaxTurns),
+    },
+  };
+}
+
 /** Parse either JSON or text output from `grok models`. */
 export function parseGrokModelList(text) {
   const trimmed = String(text ?? "").trim();
@@ -629,14 +917,45 @@ export function parseGrokBuildPayload(stdout, stderr = "", providerId = "grok-bu
     payload,
     text: fallbackText,
     usage,
-    turns: findNumber(payload, ["turns", "turn_count", "turnCount"]),
-    modelCalls: findNumber(payload, ["model_calls", "modelCalls", "request_count", "requestCount"]),
+    trustedTerminalEnvelope: payload !== null && typeof payload === "object" && !Array.isArray(payload),
+    turns: findTopLevelNumber(payload, ["turns", "turn_count", "turnCount"]),
+    modelCalls: findTopLevelNumber(payload, ["model_calls", "modelCalls", "request_count", "requestCount"]),
     estimatedCostUsd: findMoney(payload, ["estimated_cost", "estimatedCost", "estimated_cost_usd", "cost", "cost_usd"]),
     reportedModel: findString(payload, ["model", "model_id", "modelId"]),
-    finishReason: findString(payload, ["finish_reason", "finishReason", "stop_reason", "stopReason"]),
-    errorCode: findErrorString(payload, ["error_code", "errorCode", "code"]),
-    errorMessage: findErrorString(payload, ["error_message", "errorMessage", "message"]),
+    finishReason: findTopLevelString(payload, ["finish_reason", "finishReason", "stop_reason", "stopReason"]),
+    errorCode: findStructuredErrorField(payload, ["error_code", "errorCode", "code"]),
+    errorMessage: findStructuredErrorField(payload, ["error_message", "errorMessage", "message"]),
+    errorStatus: findStructuredErrorField(payload, ["error_status", "errorStatus", "http_status", "httpStatus", "status_code", "statusCode", "status"]),
+    errorDiagnostic: findStructuredErrorField(payload, ["error_diagnostic", "errorDiagnostic", "diagnostic", "diagnostics"]),
+    sessionId: findTopLevelString(payload, ["session_id", "sessionId"]),
+    activities: findTopLevelStructuredActivityArray(payload),
   };
+}
+
+/** Resolve one physical Git-worktree queue key before any exploration-enabled writable attempt. */
+async function resolveExplorationWorkspaceKey(workspace) {
+  try {
+    const physicalWorkspace = await realpath(resolve(workspace));
+    const state = await inspectGitWorkspace(physicalWorkspace);
+    return physicalGitWorkspaceKey(state);
+  } catch (error) {
+    throw new RequestError("Grok Build exploration recovery requires an inspectable physical Git worktree identity", {
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** Bind an inspected Git state to its physical worktree/common-root identity. */
+async function physicalGitWorkspaceKey(state) {
+  if (!state?.topLevel || !state?.commonDir) throw new RequestError("Grok Build exploration recovery requires inspected Git state");
+  const [physicalTopLevel, physicalCommonDir] = await Promise.all([
+    realpath(state.topLevel),
+    realpath(state.commonDir),
+  ]);
+  const normalize = process.platform === "win32"
+    ? (value) => value.toLowerCase()
+    : (value) => value;
+  return `${normalize(physicalTopLevel)}\0${normalize(physicalCommonDir)}`;
 }
 
 /** Prepare the disposable Consult workspace or enforce the live Delegate worktree policy. */
@@ -648,14 +967,16 @@ async function prepareGrokWorkspace(config, request, logger) {
   }
   if (request.mode === "delegate") {
     if (!request.workspace) throw new RequestError("Grok Build Delegate requires a workspace");
-    const workspace = resolve(request.workspace);
+    let workspace = resolve(request.workspace);
     const bypassPermissions = permissionMode === "bypassPermissions";
+    const explorationRecovery = modeConfig.explorationLoop?.enabled === true;
     const gitBefore = await enforceGitWorkspacePolicy(workspace, {
-      requireGit: bypassPermissions || modeConfig.requireGit,
+      requireGit: explorationRecovery || bypassPermissions || modeConfig.requireGit,
       requireLinkedWorktree: bypassPermissions || modeConfig.requireLinkedWorktree,
       requireCleanStart: bypassPermissions || modeConfig.requireCleanStart,
       denyBranches: modeConfig.denyBranches,
     });
+    if (explorationRecovery) workspace = await realpath(gitBefore.topLevel);
     return { workspace, snapshot: undefined, emptyWorkspace: undefined, gitBefore };
   }
 
@@ -710,6 +1031,14 @@ function renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitB
   return `${boundary}\n\n${nestedAgentPolicy}\n\n${webPolicy}\n\n${memoryPolicy}${fleetNote}${snapshotNote}${gitNote}\n\nPROFILE\nname=${profile.name}\nreasoning_effort=${profile.reasoningEffort}\nmax_turns=${profile.maxTurns}\nexpected_model_turns=${profile.expectedTurns}${acceptance}\n\nAUTHORITATIVE THREAD PACKET\n${renderMessagesForAgent(request.messages, { ...renderOptions, purpose: "agent-prompt" })}`;
 }
 
+/** Render the one allowed same-session recovery without repeating the raw authoritative task packet. */
+function renderExplorationRecoveryPrompt(acceptanceCommands) {
+  const acceptance = acceptanceCommands.length > 0
+    ? `\nRun the already-authorized acceptance commands after the patch and report exact results:\n${acceptanceCommands.map((command) => `- ${command}`).join("\n")}`
+    : "\nRun the smallest relevant validation already authorized by the task packet and report exact results.";
+  return `PATCH-FIRST RECOVERY\nUse the existing session context and the same assigned workspace. Stop further broad planning, browsing, and repeated reads. Make the smallest in-scope patch now, then test it with the reserved budget. Do not restart the task, create a second worker, broaden authority, integrate, push, or claim acceptance you did not run.${acceptance}\nReturn changed files, exact validation, terminal results, and unresolved risks.`;
+}
+
 /** Build the Grok process environment with broad inheritance only by explicit opt-in. */
 function buildGrokEnvironment(config, bridgeEnvironment, baseEnvironment = process.env) {
   return buildChildEnvironment(config, config.env ?? {}, bridgeEnvironment, baseEnvironment);
@@ -741,17 +1070,16 @@ function expandConfiguredPath(value, environment) {
 
 /** Convert a nonzero CLI exit into a quota-, rate-, and entitlement-aware provider error. */
 function createGrokExitError(providerId, result, parsed) {
-  const combined = `${parsed.errorCode ?? ""}\n${parsed.errorMessage ?? ""}\n${result.stderr ?? ""}\n${result.stdout ?? ""}`;
-  const quota = /subscription:free-usage-exhausted|usage[-_ ]?exhausted|quota[-_ ]?exhausted/i.test(combined);
-  const rateLimited = /rate[-_ ]?limit|too many requests|\b429\b/i.test(combined);
-  const auth = /unauth|forbidden|login|required|entitlement|subscription/i.test(combined);
+  const { quota, rateLimited, paymentRequired, authenticationOrEntitlement } = classifyGrokErrorSignals(result, parsed);
   const message = quota
     ? "Grok Build usage is exhausted or the CLI account is not recognized at the expected entitlement"
-    : auth
+    : paymentRequired
+      ? "Grok Build payment or usage credits are required"
+    : authenticationOrEntitlement
       ? "Grok Build authentication or product entitlement was rejected"
       : `Grok Build exited with code ${result.exitCode ?? "null"}${result.exitSignal ? ` (${result.exitSignal})` : ""}${result.stderr ? ` — ${truncate(result.stderr, 2000)}` : ""}`;
   return new ProviderError(providerId, message, {
-    status: quota || rateLimited ? 429 : auth ? 401 : 502,
+    status: quota || rateLimited ? 429 : paymentRequired ? 402 : authenticationOrEntitlement ? 401 : 502,
     retryable: false,
     details: {
       exitCode: result.exitCode,
@@ -761,10 +1089,22 @@ function createGrokExitError(providerId, result, parsed) {
       stderr: truncate(result.stderr ?? "", 8000),
       quota,
       rateLimited,
-      authenticationOrEntitlement: auth,
+      paymentRequired,
+      authenticationOrEntitlement,
       retryPolicy: "no-automatic-retry",
     },
   });
+}
+
+/** Classify all provider error diagnostics once so recovery and terminal mapping cannot diverge. */
+function classifyGrokErrorSignals(result, parsed) {
+  const combined = `code ${parsed.errorCode ?? ""}\nmessage ${parsed.errorMessage ?? ""}\nstatus ${parsed.errorStatus ?? ""}\ndiagnostic ${parsed.errorDiagnostic ?? ""}\n${result.stderr ?? ""}`;
+  return {
+    quota: /subscription:free-usage-exhausted|(?:usage|quota)[-_ ]?(?:exhausted|exceeded)|usage[-_ ]?limit[-_ ]?exceeded|insufficient[-_ ]?quota|resource[-_ ]?exhausted/i.test(combined),
+    rateLimited: /rate[-_ ]?(?:limit(?:ed)?|exceeded)|too many requests|(?:http(?:\/\d(?:\.\d)?)?|status|code)\s*[:=]?\s*429\b/i.test(combined),
+    paymentRequired: /payment[-_ ]?(?:required|declined|failed)|billing[-_ ]?required|insufficient[-_ ]?(?:funds|credits?)|exhausted[-_ ]?credits?|(?:http(?:\/\d(?:\.\d)?)?|status|code)\s*[:=]?\s*402\b/i.test(combined),
+    authenticationOrEntitlement: /auth(?:entication)?[-_ ]?(?:failed|failure|required|rejected)|invalid[-_ ]?(?:credentials?|api[-_ ]?key|token)|(?:token|api[-_ ]?key)[-_ ]?expired|access[-_ ]?denied|unauthenticated|unauthorized|forbidden|login[-_ ]?required|(?:http(?:\/\d(?:\.\d)?)?|status|code)\s*[:=]?\s*(?:401|403)\b|(?:subscription|entitlement)[-_ ]?(?:inactive|expired|required|rejected|missing|invalid|not[-_ ]?recognized)/i.test(combined),
+  };
 }
 
 /** Convert an error-shaped successful payload into a provider error. */
@@ -822,16 +1162,29 @@ function protectedArgumentFlag(argument, protectedArguments, shortArguments) {
     ?? (protectedArguments.has(argument) ? argument : undefined);
 }
 
-/** Find an error field only inside an explicit error object or exact top-level error key. */
-function findErrorString(payload, keys) {
-  const error = payload && typeof payload === "object" ? payload.error : undefined;
-  const insideError = error && typeof error === "object" ? findString(error, keys) : typeof error === "string" ? error : undefined;
-  if (insideError) return insideError;
-  for (const key of keys) {
-    if (payload && typeof payload === "object" && !Array.isArray(payload) && Object.prototype.hasOwnProperty.call(payload, key)) {
-      const rendered = renderStringValue(payload[key]);
+/** Read a scalar diagnostic only from the top-level provider envelope or its direct error object. */
+function findStructuredErrorField(payload, keys) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const error = payload.error;
+  const sources = [payload, error && typeof error === "object" && !Array.isArray(error) ? error : undefined].filter(Boolean);
+  for (const source of sources) {
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+      const rendered = renderDiagnosticScalar(source[key]);
       if (rendered) return rendered;
     }
+  }
+  if (keys.includes("message") && typeof error === "string" && error.trim()) return error;
+  return undefined;
+}
+
+/** Render bounded scalar/flat-list diagnostics without traversing model-authored nested content. */
+function renderDiagnosticScalar(value) {
+  if (typeof value === "string") return truncate(value.trim(), 4000) || undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (Array.isArray(value)) {
+    const rendered = value.flatMap((entry) => typeof entry === "string" || typeof entry === "number" ? [String(entry)] : []).join("\n");
+    return truncate(rendered.trim(), 4000) || undefined;
   }
   return undefined;
 }
@@ -880,6 +1233,40 @@ function findValueByKey(root, targetKey) {
     seen.add(value);
     if (!Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, targetKey)) return value[targetKey];
     for (const child of Array.isArray(value) ? value : Object.values(value)) stack.push(child);
+  }
+  return undefined;
+}
+
+/** Extract only explicit top-level structured activity arrays from the provider-owned terminal envelope. */
+function findTopLevelStructuredActivityArray(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
+  for (const key of ["activities", "activity", "tool_activities", "toolActivities"]) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
+    const value = payload[key];
+    if (Array.isArray(value)) return value.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+    if (value && typeof value === "object" && !Array.isArray(value)) return [value];
+  }
+  return [];
+}
+
+/** Read one non-empty string only from exact top-level terminal-envelope keys. */
+function findTopLevelString(payload, keys) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
+/** Read one finite number only from exact top-level terminal-envelope keys. */
+function findTopLevelNumber(payload, keys) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
+    const number = toFiniteNumber(payload[key]);
+    if (number !== undefined) return number;
   }
   return undefined;
 }
@@ -940,16 +1327,94 @@ function metadataBoolean(value) {
   return value === true || value === "true" || value === 1 || value === "1";
 }
 
-/** Normalize optional string arrays originating in JSON metadata. */
-function normalizeStringArray(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map(String).map((entry) => entry.trim()).filter(Boolean);
+/** Bound acceptance commands before prompt rendering and expose only count/digests to metadata. */
+function normalizeAcceptanceCommands(value) {
+  if (value === undefined || value === null) return { commands: [], summary: { count: 0, digests: [] } };
+  if (!Array.isArray(value)) throw new RequestError("bridge_acceptance_commands must be an array of strings");
+  if (value.length > 32) throw new RequestError("bridge_acceptance_commands cannot contain more than 32 commands");
+  const commands = value.map((entry, index) => {
+    if (typeof entry !== "string") throw new RequestError(`bridge_acceptance_commands[${index}] must be a string`);
+    const command = entry.trim();
+    if (!command) throw new RequestError(`bridge_acceptance_commands[${index}] must not be empty`);
+    if (command.length > 2048) throw new RequestError(`bridge_acceptance_commands[${index}] exceeds 2048 characters`);
+    return command;
+  });
+  if (commands.reduce((sum, command) => sum + command.length, 0) > 16_384) {
+    throw new RequestError("bridge_acceptance_commands exceeds the 16384-character aggregate limit");
+  }
+  return {
+    commands,
+    summary: { count: commands.length, digests: commands.map((command) => sha256Text(command)) },
+  };
 }
 
 /** Reconcile terminal model calls/turns to a nonnegative integer admission weight. */
 function normalizeActualTurns(value, fallback) {
   if (Number.isFinite(value) && value > 0) return Math.max(1, Math.round(value));
   return fallback;
+}
+
+/** Summarize an attempt for metadata/ledger correlation without prompt or raw output. */
+function summarizeGrokAttempt(attempt) {
+  return {
+    attempt: attempt.attempt,
+    attemptOrdinal: attempt.ordinal,
+    evidenceId: attempt.evidenceId,
+    sessionOperation: attempt.nativeSession ? attempt.nativeSession.resume === true ? "resume" : "create" : undefined,
+    maxTurns: attempt.profile.maxTurns,
+    durationMs: attempt.result.durationMs,
+    exitCode: attempt.result.exitCode,
+    recoverableNonzeroExit: attempt.recoverableNonzeroExit,
+    finishReason: attempt.parsed.finishReason,
+    turns: attempt.parsed.turns,
+    modelCalls: attempt.parsed.modelCalls,
+    estimatedCostUsd: attempt.parsed.estimatedCostUsd,
+    structuredActivityCount: attempt.parsed.activities.length,
+    usage: attempt.parsed.usage,
+    promptSha256: attempt.evidence.promptSha256,
+    stdoutSha256: attempt.evidence.stdoutSha256,
+    stderrSha256: attempt.evidence.stderrSha256,
+  };
+}
+
+/** Treat only explicit provider terminal-limit states as incomplete; ordinary success never self-recovers. */
+function incompleteGrokFinishReason(value) {
+  return typeof value === "string" && /^(?:cancelled|canceled|incomplete|length|max[-_ ]?turns?|turn[-_ ]?limit)$/i.test(value.trim());
+}
+
+/** Permit only the initial trusted max-turn terminal envelope to continue into classification. */
+function recoverableNonzeroGrokMaxTurnExit({ allowed, attempt, result, parsed, nativeSession }) {
+  const errorSignals = classifyGrokErrorSignals(result, parsed);
+  return allowed === true
+    && attempt === "initial"
+    && result.exitCode !== 0
+    && !result.exitSignal
+    && parsed.trustedTerminalEnvelope === true
+    && typeof nativeSession?.id === "string"
+    && nativeSession.id.trim().length > 0
+    && parsed.sessionId === nativeSession.id
+    && parsed.errorMessage === undefined
+    && !errorSignals.quota
+    && !errorSignals.rateLimited
+    && !errorSignals.paymentRequired
+    && !errorSignals.authenticationOrEntitlement
+    && typeof parsed.finishReason === "string"
+    && /^(?:max[-_ ]?turns?|turn[-_ ]?limit)$/i.test(parsed.finishReason.trim())
+    && Number.isFinite(parsed.modelCalls ?? parsed.turns)
+    && (parsed.modelCalls ?? parsed.turns) > 0;
+}
+
+/** Sum usage across the bounded initial/recovery pair. */
+function combineUsage(values) {
+  const present = values.filter(Boolean);
+  if (present.length === 0) return undefined;
+  const fields = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningTokens", "totalTokens"];
+  return Object.fromEntries(fields.map((field) => [field, present.reduce((sum, usage) => sum + (Number(usage[field]) || 0), 0)]));
+}
+
+function sumOptionalNumbers(values) {
+  const present = values.filter(Number.isFinite);
+  return present.length > 0 ? present.reduce((sum, value) => sum + value, 0) : undefined;
 }
 
 /** Deduplicate model entries while preserving first-seen metadata. */
@@ -983,6 +1448,16 @@ function boundedError(error) {
     ...(error?.code ? { code: String(error.code) } : {}),
     ...(error?.status ? { status: Number(error.status) } : {}),
   };
+}
+
+function deferredPromise() {
+  let resolve;
+  let reject;
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }
 
 /** Truncate diagnostic text. */

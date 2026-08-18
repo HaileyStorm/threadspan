@@ -258,6 +258,8 @@ Behavior:
 - Expected model turns are reserved before launch and reconciled to reported `model_calls`/`turns`.
 - Terminal token classes, estimated cost, process identity, executable identity, Git summaries, and evidence hashes can be appended to a private JSONL ledger.
 - Quota, entitlement, authentication, rate-limit, malformed-output, timeout, and worker failures are terminal; no implicit retry occurs.
+- Optional Delegate exploration recovery is default-off and permits exactly one same-session continuation only after trusted top-level max-turn evidence, exact session echo, repeated structured plan/read activity, unchanged Git, and a reserved patch/test budget. Execution is serialized by canonical physical Git worktree and remains bound to that physical path even if a lexical symlink changes.
+- Structured provider diagnostics and bounded stderr fail closed on authentication, quota, rate, payment, subscription, or entitlement failures. Worker-authored `output_text` is not scanned as provider diagnostics, so a report discussing those topics cannot suppress or authorize recovery.
 
 Provider controls include `profiles`, `reasoningEffort`, `maxTurns`, `expectedTurns`, `noPlan`, `grokTools`, `disallowedTools`, `rules`, `allow`, `deny`, `permissionMode`, `sandbox`, `allowSubagents`, `noMemory`, `allowWebSearch` (legacy `noSubagents` / `disableWebSearch` opt-outs remain accepted), and optional `jsonSchema`/`resultSchema`.
 

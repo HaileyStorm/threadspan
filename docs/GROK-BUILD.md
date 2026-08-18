@@ -8,7 +8,7 @@ The `grok-build` adapter treats the official Grok Build CLI as a **managed codin
 - **Delegate:** Grok receives one bounded task in the supplied workspace. The recommended policy requires a clean linked Git worktree on a non-canonical branch. Grok may edit and run permitted commands, but it has no integration authority.
 - **Integrated:** unsupported. Use a direct xAI API provider through `openai-chat` when Codex or another host must own the tool loop.
 
-The adapter uses fresh finite one-shot outer sessions. ACP and resumable Grok sessions are not enabled by default. Under the requested operating policy, Grok web/search and nested subagents are enabled; cross-session memory remains disabled. Nested agents inherit the outer task's workspace, scope, authority, deadline, and acceptance contract.
+The adapter uses fresh finite one-shot outer sessions by default. ACP is not enabled. An optional Delegate-only exploration recovery can bind one adapter-generated native session ID and resume it exactly once inside the same admitted job; it is disabled by default and never applies to Consult. Under the requested operating policy, Grok web/search and nested subagents are enabled; cross-session memory remains disabled. Nested agents inherit the outer task's workspace, scope, authority, deadline, and acceptance contract.
 
 ## Research basis and account-specific observations
 
@@ -93,6 +93,12 @@ The package does **not** hard-code the report's observed executable hash, subscr
         "profile": "balanced",
         "maxTurns": 16,
         "expectedTurns": 4,
+        "explorationLoop": {
+          "enabled": false,
+          "reserveTurns": 4,
+          "minimumStructuredActivities": 4,
+          "minimumRepeatedKindCount": 2
+        },
         "requireGit": true,
         "requireLinkedWorktree": true,
         "requireCleanStart": true,
@@ -157,6 +163,27 @@ cursor-bridge delegate "Add characterization tests only" \
 ```
 
 Use low effort only when the task is genuinely mechanical. A failed low-effort pass plus correction can cost more than one medium-effort pass.
+
+## Optional exploration-loop recovery
+
+`delegate.explorationLoop.enabled` is `false` by default. When explicitly enabled, the adapter treats the effective selected Delegate profile/mode `maxTurns` as one overall ceiling and rejects a reserve that cannot fit that statically known ceiling. It subtracts `reserveTurns` from the initial invocation, includes that reserve in the admission reservation, supplies an adapter-owned `--session-id`, and holds the reserve for at most one sequential `--resume` invocation in the same logical job and workspace.
+
+Recovery is issued only when all gates pass:
+
+- the mode is Delegate, never Consult;
+- both the initial and any recovery terminal envelope echo the exact adapter-generated session ID; omission or mismatch is terminal;
+- the initial top-level finish reason explicitly reports an incomplete/turn-limit state;
+- top-level provider terminal JSON contains at least `minimumStructuredActivities` explicit plan/read activity records, includes both categories, and repeats one category at least `minimumRepeatedKindCount` times;
+- independently inspected Git commit, branch, cleanliness, and porcelain status are unchanged;
+- reported model calls/turns leave a positive bounded reserve below the overall ceiling.
+
+The classifier ignores free-form prose and never recursively searches model-authored nested objects for session, finish, turns/model calls, or activity fields. Only exact top-level fields in the provider-owned terminal envelope can authorize recovery; assistant text remains a separate parser concern. For a valid parsed envelope, failure classification inspects only direct structured error code/message/status/diagnostic fields plus bounded stderr—it does not scan `output_text` or the full raw stdout. Raw stdout is eligible only when terminal parsing itself fails. A narrowly classified nonzero initial max-turn exit may reach classification only for an exploration-enabled Delegate, with a nonempty exact adapter session ID, a valid trusted terminal envelope, positive turns/model calls, no top-level error message, and no quota/rate/payment/authentication/entitlement signal in those trusted diagnostics. The same shared signal classifier controls terminal error mapping and recovery eligibility so mixed diagnostics cannot bypass it. It recognizes explicit authentication failure/invalid-credential/access-denied wording, expired tokens/API keys, HTTP or status/code 401/402/403/429, insufficient or exhausted quota/usage including `RESOURCE_EXHAUSTED`, rate excess/limits, insufficient funds/credits, billing/payment requirements, and rejected/missing/expired subscription or entitlement states without treating bare issue numbers, filenames, or assistant discussion as failures. Consult, disabled Delegate, recovery-attempt nonzero exits, and every other nonzero exit are terminal.
+
+The recovery packet is patch-first, carries no new authority, reuses the same native session/workspace/thread/job identity, and asks for testing from the already-authorized acceptance contract. There is no third invocation: quota, rate, authentication, entitlement, malformed output, timeout, process failure, or an ordinary unsuccessful recovery remains terminal. Changed Git state or missing structured evidence also prevents recovery.
+
+To prevent duplicate writers, exploration-enabled Delegate jobs first resolve a read-only physical identity from `realpath` plus inspected Git top-level/common-root paths. A module-level queue shared by every Grok adapter instance serializes that physical worktree across root/subdirectory paths, symlink aliases, and case aliases on Windows. Git identity/policy is re-inspected under the queue before launch, and missing or changed identity fails closed. After that check, the canonical physical Git top-level—not the original lexical, subdirectory, or symlink path—is bound into child process cwd, adapter-owned `--cwd`, bridge workspace environment, and workspace fingerprinting. Retargeting the original symlink after admission therefore cannot redirect the worker. The queue covers Git-before preparation through optional recovery and final Git-after inspection. Different physical worktrees remain concurrent. Consult and configurations with exploration recovery disabled bypass this queue.
+
+Only the adapter emits `--session-id` and `--resume`; generic argument tails cannot supply or override them. Initial and recovery attempts receive separate ordinals/evidence IDs and hashes in provider metadata and the ledger. Acceptance commands are validated before ledger activity (maximum 32 commands, 2,048 characters each, and 16,384 characters total); lifecycle records expose only their count and SHA-256 digests. Failed attempts persist only evidence hashes actually available at their error boundary. A completed captured result can provide prompt/stdout/stderr hashes; `ManagedProcessError` currently exposes bounded stderr but not stdout, so its failed-attempt record contains prompt/stderr hashes and makes no stdout-hash claim. Raw stdout is not added to that error boundary merely to manufacture a hash. Raw prompts and output remain absent unless the operator separately enables the existing private `ledger.includeOutput` evidence option.
 
 ## Nested agents, web, and fleet identity
 
@@ -268,16 +295,16 @@ Cache-read tokens are kept separate and included in total accounting when report
 The default ledger path is:
 
 ```text
-~/.cursor-codex-bridge/ledgers/<provider-id>.jsonl
+~/.threadspan/ledgers/<provider-id>.jsonl
 ```
 
-Lifecycle events include `queued`, `admitted`, `running`, `completed`, `failed`, and `cancelled`, with timestamps, job/provider/mode/model/profile, bounded Git state, usage, process identity, and SHA-256 evidence hashes.
+Lifecycle events include `queued`, `admitted`, per-attempt `running`/`attempt-completed`/`attempt-failed`, `exploration-classified`, and terminal `completed`, `failed`, or `cancelled` records. They preserve job/thread/attempt identity, bounded Git state, usage, process identity, acceptance-command count/digests, and available SHA-256 evidence hashes without raw prompts by default.
 
 `ledger.includeOutput: true` also writes raw prompt/stdout/stderr evidence to private files under the configured/default evidence directory. This is useful for audits but materially increases confidentiality risk. It is off by default.
 
 No documented consumer API is assumed for the weekly subscription percentage. Before meaningful automatic batches, verify the CLI account/entitlement and Settings → Usage. Reconcile local ledger totals with that product meter; do not infer the percentage linearly from tokens.
 
-Quota, rate-limit, entitlement, malformed JSON, timeout, and process failures are terminal. The adapter never automatically retries. A coordinator may authorize one finite delayed retry only after diagnosing why it should produce a different result.
+Quota, rate-limit, entitlement, malformed JSON, timeout, and process failures are terminal. The exploration continuation is a narrowly classified completion step, not a retry; those failures never trigger it. A coordinator may authorize a separate finite delayed retry only after diagnosing why it should produce a different result.
 
 ## Direct xAI API alternative
 

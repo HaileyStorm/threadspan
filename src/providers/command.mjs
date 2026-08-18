@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { ProviderError, RequestError } from "../core/errors.mjs";
 import { renderMessagesForAgent } from "../core/policies.mjs";
-import { spawnManagedChild, terminateProcessTree } from "../core/managed-process.mjs";
+import { reapManagedProcessTree, spawnManagedChild } from "../core/managed-process.mjs";
 import { ProviderAdapter } from "./base.mjs";
 
 const DEFAULT_CHILD_ENVIRONMENT_ALLOWLIST = Object.freeze([
@@ -36,6 +36,7 @@ export class CommandProvider extends ProviderAdapter {
    */
   async *run(request) {
     this.assertMode(request.mode);
+    request.signal?.throwIfAborted();
     const command = this.config.command;
     if (typeof command !== "string" || command.length === 0) {
       throw new RequestError(`Command provider '${this.id}' is missing a command`);
@@ -64,11 +65,12 @@ export class CommandProvider extends ProviderAdapter {
     const configuredEnvironment = Object.fromEntries(
       Object.entries(this.config.env ?? {}).map(([key, value]) => [key, substitute(String(value), substitutions)]),
     );
+    const killTree = (this.config.killTree ?? this.config.killProcessTree) !== false;
     const child = spawnManagedChild(command, args, {
       cwd,
       shell: false,
       windowsHide: true,
-      killTree: (this.config.killTree ?? this.config.killProcessTree) !== false,
+      killTree,
       env: buildChildEnvironment(this.config, configuredEnvironment, {
         CURSOR_BRIDGE_MODE: request.mode,
         CURSOR_BRIDGE_MODEL: request.model,
@@ -82,12 +84,22 @@ export class CommandProvider extends ProviderAdapter {
     exitPromise.catch(() => undefined);
     let stdinError;
     child.stdin.on("error", (error) => { stdinError = error; });
-    const abort = () => { void terminateProcessTree(child, { graceMs: this.config.terminationGraceMs ?? 2000, killTree: (this.config.killTree ?? this.config.killProcessTree) !== false }); };
+    let cleanupTask;
+    const requestCleanup = () => {
+      cleanupTask ??= reapManagedProcessTree(child, {
+        graceMs: this.config.terminationGraceMs ?? 2000,
+        killTree,
+      });
+      cleanupTask.catch(() => undefined);
+      return cleanupTask;
+    };
+    exitPromise.then(() => { if (killTree) void requestCleanup(); }, () => undefined);
+    const abort = () => { void requestCleanup(); };
     request.signal?.addEventListener("abort", abort, { once: true });
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      void terminateProcessTree(child, { graceMs: this.config.terminationGraceMs ?? 2000, killTree: (this.config.killTree ?? this.config.killProcessTree) !== false });
+      void requestCleanup();
     }, timeoutMs);
     timer.unref?.();
     child.stdin.end(this.config.stdin === false ? undefined : prompt);
@@ -101,9 +113,9 @@ export class CommandProvider extends ProviderAdapter {
       }
     })();
 
-    yield { type: "status", status: "started" };
     let text = "";
     try {
+      yield { type: "status", status: "started" };
       if (outputFormat === "jsonl") {
         for await (const event of parseJsonLines(child.stdout, (count) => {
           outputBytes += count;
@@ -179,7 +191,7 @@ export class CommandProvider extends ProviderAdapter {
     } finally {
       clearTimeout(timer);
       request.signal?.removeEventListener("abort", abort);
-      if (child.exitCode === null && child.signalCode === null) await terminateProcessTree(child, { graceMs: this.config.terminationGraceMs ?? 2000, killTree: (this.config.killTree ?? this.config.killProcessTree) !== false }).catch(() => undefined);
+      await requestCleanup().catch(() => undefined);
       await stderrTask.catch(() => undefined);
     }
   }

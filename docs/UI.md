@@ -1,6 +1,6 @@
-# Threadspan sidecar UI
+# Threadspan Desktop HUD and sidecar UI
 
-**Status:** implemented as a static, offline-tested source UI. Not live-certified as a ChatGPT/Codex Desktop overlay, plugin host, or MCP UI renderer.
+**Status:** the compact Electron HUD is implemented and live-accepted in the installed ChatGPT/Codex Desktop builds on Linux and Windows. The larger browser sidecar remains available for detached use.
 
 Threadspan is the operator-facing route surface for this bridge: **one task, every model**, without collapsing Consult, Integrated, and Delegate into a single “use another model” switch.
 
@@ -19,19 +19,19 @@ Accent colors can be changed under the collapsed **Appearance** disclosure. The 
 
 No images, webfonts, CDNs, or JavaScript packages are required.
 
-## Host HUD injection is not assumed
+## App attachment
 
-Documented Desktop HUD injection is **not** implemented or assumed.
+Threadspan starts the unchanged Electron app with a loopback-only main-process attachment channel. The Desktop host supervises the largest visible ChatGPT/Codex window, inserts an isolated Shadow DOM HUD below the host status area, and reattaches it after renderer navigation. Provider credentials and bearer tokens stay in the owner process and are never copied into the renderer.
 
-The dark strip at the top of `ui/index.html` is an illustrative **host-agent placeholder** so the route bar’s intended position is obvious. A current ChatGPT/Codex Desktop build is not required to open this UI, and this package does not inject into Desktop chrome.
+The dark strip at the top of standalone `ui/index.html` remains an illustrative host placeholder. It is not used by the app-attached HUD in `src/desktop/host.mjs`.
 
-This UI can be:
+The larger sidecar can still be:
 
-1. **Served by the local daemon** as static files from `ui/` (when that serving path is wired);
+1. **Served by the local daemon** at `/threadspan/` from the static files in `ui/`;
 2. **Opened independently** in a desktop browser from `ui/index.html` (file open or any local static server);
 3. **Hosted through a supported plugin or MCP UI surface** that can display a local HTML document.
 
-Until a host actually provides a HUD, the placeholder remains visible. Do not treat the placeholder as a live agent-status feed.
+If attachment is unavailable after an app update, Compatibility Watch keeps the daemon and detachable sidecar usable while the exact build is rechecked.
 
 ## Routing-gate layout
 
@@ -46,7 +46,7 @@ Mode uses **non-color structure** as well as labels: dashed = Consult, dotted = 
 
 ## HUD route picker preferences
 
-The **Pick route** control is part of the existing route bar. It is not a second app and does not replace or inject into a native Desktop model picker. Selecting a row updates the browser-local displayed choice and exposes the exact Threadspan route string for copying. It does not call a routing mutation endpoint, change the daemon’s active route, or claim to change native Desktop selection.
+The app-attached picker is a real Threadspan routing control. Selecting a row immediately updates the HUD, calls the owner-authenticated `/v1/desktop/route` endpoint, persists the choice locally, and applies it to Threadspan `auto` requests and matching Consult/Delegate defaults. Explicit request mode/provider/account authority still wins. The host's native OpenAI picker remains independent and available. The detachable browser picker keeps browser-local presentation preferences and does not mutate native Desktop selection.
 
 The default list is capped to a compact set in the registry’s published smart order. Search and the collapsed-by-default **Advanced filters** combine with AND semantics across mode, provider, model, explicit free metadata, and favorites. A model name ending in `:free` is not enough: **Free only** includes a route only when its metadata explicitly says `free: true`. The daemon’s active route is always included even when search, filters, hidden state, or unavailability would otherwise remove it.
 
@@ -72,6 +72,14 @@ Qualified fallbacks are **capability-checked alternatives**, not automatic failo
 
 The collapsed **Copy review** panel stays local. The separate **External copy check** panel is owner-token POST only, off by default, and starts Pangram, Sapling, or Winston only from an explicit button. Pangram copies selected text and opens `https://www.pangram.com/`; it never submits or scrapes the page. Results are advisory and cannot prove authorship.
 
+## Needs you
+
+The expanded drawer includes a compact sticky **Needs you** rail on wide viewports and places it immediately below Continuity on narrow viewports. Open items are actionable owner work; completed, stale, and closed entries are available only through explicit filters and are labeled as history rather than diagnostics or a ready queue.
+
+Items live in a separate owner-private durable store. The public model contains only opaque action handles, bounded titles/summaries, sanitized project keys/labels, status, revision, and canonical timestamps. Native task IDs, owner references, paths, prompts, receipts, credentials, and delivery details remain server-side. `GET /v1/action-items` and `POST /v1/action-items/:handle/complete` require the main owner token on loopback; the connector token cannot call either route. Completion is revision-bound and durably enqueues one exact-owner delivery. There is no scheduled wake, polling, or acknowledgement loop.
+
+The store's delivered records intentionally retain bounded audit capacity. Capacity exhaustion and abandoned locks fail closed as typed operator-visible errors; retention and lock recovery require a separately reviewed owner procedure.
+
 ## Synthetic state and the adapter
 
 `ui/adapt-state.js` exposes:
@@ -92,6 +100,8 @@ ui/index.html?state=./route-state.json
 Only relative same-origin paths are accepted (`./` or `/`). Parent segments (`..`), backslashes, and absolute URLs are rejected. Failed live loads surface an error; the UI does not silently fall back to synthetic data.
 
 Live JSON should use the same shape as `SYNTHETIC_STATE`. Unknown or missing fields fail closed (empty or error), including missing route IDs and non-Consult/Integrated/Delegate modes.
+
+The tracked screenshots and GIF under `docs/media/` are captured only from `SYNTHETIC_STATE`. `docs/media/MANIFEST.json` binds each asset to its dimensions, viewport, SHA-256, tool versions, and privacy review. Browser acceptance remains separate from static Node tests; it covers desktop and narrow layouts, picker/drawer disclosures, Escape behavior, console errors, and visible sensitive-data review without invoking providers.
 
 Quota copy in the demo is a **manual consumer-week meter**. Local token counts cannot reconstruct provider weekly usage. Utilization numbers are **canary values**, not Grok or Cursor service guarantees. Retained Cursor agents are daemon-keyed local agents, not an official Cloud Agent pool.
 

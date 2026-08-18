@@ -376,6 +376,14 @@
         "maxTurns": 16,
         "expectedTurns": 4,
         "noPlan": true,
+        // Opt-in only: reserve four turns for at most one same-session patch/test recovery
+        // after structured repeated plan/read activity leaves Git unchanged.
+        "explorationLoop": {
+          "enabled": false,
+          "reserveTurns": 4,
+          "minimumStructuredActivities": 4,
+          "minimumRepeatedKindCount": 2
+        },
         "permissionMode": "bypassPermissions",
         "requireGit": true,
         "requireLinkedWorktree": true,

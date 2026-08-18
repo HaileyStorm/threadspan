@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { applyModePolicy } from "../core/policies.mjs";
 import { asBridgeError, ProviderError, RequestError } from "../core/errors.mjs";
@@ -26,6 +28,7 @@ import { AutomaticTakeoverController } from "../core/automatic-takeover-controll
 import { naturalizeCopy } from "../core/copy-naturalizer.mjs";
 import { checkCopy, describeCopyCheck, sanitizeCopyCheckRecord } from "../core/copy-check.mjs";
 import { reviewReleaseCopy } from "../core/release-copy-review.mjs";
+import { ActionItemStore } from "../core/action-items.mjs";
 
 const TIP_CONVERSATION_TTL_MS = 30 * 60 * 1000;
 const TIP_CONVERSATION_LIMIT = 16;
@@ -36,7 +39,7 @@ const TIP_CONVERSATION_LIMIT = 16;
 export class BridgeService {
   /**
    * @param {Record<string, any>} config Validated bridge configuration.
-   * @param {{logger?: Logger, registry?: ProviderRegistry, sessions?: SessionStore, accountStore?: AccountStore, continuityController?: CodexContinuityController, automaticTakeoverController?: AutomaticTakeoverController, maximumUtilizationController?: any, maximumUtilizationCapabilities?: Record<string, Function>, maximumUtilizationJournal?: MaximumUtilizationJournal}} [dependencies] Injectable dependencies.
+   * @param {{logger?: Logger, registry?: ProviderRegistry, sessions?: SessionStore, accountStore?: AccountStore, actionItemStore?: ActionItemStore, actionItemDeliveryAdapter?: Function|{deliver: Function}, continuityController?: CodexContinuityController, automaticTakeoverController?: AutomaticTakeoverController, maximumUtilizationController?: any, maximumUtilizationCapabilities?: Record<string, Function>, maximumUtilizationJournal?: MaximumUtilizationJournal}} [dependencies] Injectable dependencies.
    */
   constructor(config, dependencies = {}) {
     this.config = config;
@@ -46,6 +49,11 @@ export class BridgeService {
     this.sessions = dependencies.sessions ?? new SessionStore(config.sessions);
     this.usageLedger = dependencies.usageLedger ?? new UsageLedger({ ...(config.usageLedger ?? {}), enabled: config.usageLedger?.enabled === true });
     this.accountStore = dependencies.accountStore ?? dependencies.registry?.accountStore ?? new AccountStore(config.accounts);
+    const actionItemLocation = dependencies.actionItemStore ? null : actionItemStateLocation(config);
+    this.actionItemStore = dependencies.actionItemStore ?? new ActionItemStore({ path: actionItemLocation.path });
+    this.actionItemTemporaryDirectory = actionItemLocation?.temporaryDirectory ?? null;
+    this.actionItemDeliveryAdapter = dependencies.actionItemDeliveryAdapter;
+    this.actionItemsReady = null;
     this.registry = dependencies.registry ?? new ProviderRegistry(config, { logger: this.logger, usageLedger: this.usageLedger, accountStore: this.accountStore });
     this.automaticTakeoverTargets = new Map();
     this.inlineTakeovers = new Map();
@@ -82,6 +90,9 @@ export class BridgeService {
           command: config.providers?.["openai-codex"]?.command ?? "codex",
         }, { logger: this.logger })
       : null;
+    if (!this.actionItemDeliveryAdapter && this.continuityController?.deliverActionItem) {
+      this.actionItemDeliveryAdapter = { deliver: (entry) => this.continuityController.deliverActionItem(entry) };
+    }
     this.maximumUtilizationController = config.maximumUtilization?.enabled === true && dependencies.maximumUtilizationController
       ? dependencies.maximumUtilizationController
       : createMaximumUtilizationController(config, { ...dependencies, accountStore: this.accountStore }, this.logger);
@@ -106,6 +117,7 @@ export class BridgeService {
     this.tipConversations = new Map();
     this.tipConversationTimers = new Map();
     this.tipRefinementLastAt = 0;
+    this.desktopRouteSelection = null;
     this.closed = false;
   }
 
@@ -113,7 +125,48 @@ export class BridgeService {
   async initialize() {
     this.#assertOpen();
     this.maximumUtilizationReady ??= this.#initializeMaximumUtilization();
-    await Promise.all([this.maximumUtilizationReady, this.automaticTakeoverController?.initialize?.()]);
+    this.actionItemsReady ??= this.#initializeActionItems();
+    await Promise.all([this.maximumUtilizationReady, this.automaticTakeoverController?.initialize?.(), this.actionItemsReady]);
+  }
+
+  async #initializeActionItems() {
+    await this.actionItemStore.initialize();
+    await this.#drainActionItemOutbox();
+  }
+
+  async #ensureActionItems() {
+    this.actionItemsReady ??= this.#initializeActionItems();
+    await this.actionItemsReady;
+  }
+
+  /** Drain one bounded initialization batch only when an exact-owner adapter was injected. */
+  async #drainActionItemOutbox() {
+    const deliver = typeof this.actionItemDeliveryAdapter === "function"
+      ? this.actionItemDeliveryAdapter
+      : this.actionItemDeliveryAdapter?.deliver?.bind(this.actionItemDeliveryAdapter);
+    if (!deliver) return;
+    const claimed = await this.actionItemStore.claimOutbox({ limit: 20, leaseMs: 30_000 });
+    for (const entry of claimed) {
+      try {
+        const result = await deliver(structuredClone(entry));
+        if (result?.supported === false) {
+          await this.actionItemStore.failOutbox(entry.idempotencyKey, {
+            claimToken: entry.claimToken,
+            error: "Exact-owner delivery is unsupported",
+          });
+          continue;
+        }
+        await this.actionItemStore.ackOutbox(entry.idempotencyKey, {
+          claimToken: entry.claimToken,
+          ...(result?.deliveryRef ? { deliveryRef: result.deliveryRef } : {}),
+        });
+      } catch {
+        await this.actionItemStore.failOutbox(entry.idempotencyKey, {
+          claimToken: entry.claimToken,
+          error: "Exact-owner delivery failed",
+        });
+      }
+    }
   }
 
   async #initializeMaximumUtilization() {
@@ -151,12 +204,14 @@ export class BridgeService {
       throw new RequestError(`Unknown or expired previous_response_id '${request.previous_response_id}'`);
     }
 
-    const route = this.registry.resolveRoute({
-      model: request.model,
-      mode: request.metadata?.bridge_mode,
-      providerId: request.metadata?.bridge_provider,
-      accountId: request.metadata?.bridge_account_id ?? request.metadata?.bridge_account,
-    });
+    const route = this.registry.resolveRoute(shouldUseDesktopRouteSelection(request, this.desktopRouteSelection)
+      ? desktopRouteInput(request, this.desktopRouteSelection)
+      : {
+          model: request.model,
+          mode: request.metadata?.bridge_mode,
+          providerId: request.metadata?.bridge_provider,
+          accountId: request.metadata?.bridge_account_id ?? request.metadata?.bridge_account,
+        });
     const routeChange = previousRecord ? continuationRouteChange(previousRecord, route) : undefined;
     if (routeChange && !metadataBoolean(request.metadata?.bridge_continuity_handoff)) {
       throw new RequestError(
@@ -588,10 +643,13 @@ export class BridgeService {
     return this.#runConvenienceMode("delegate", input, options);
   }
 
-  /** Return provider capabilities and discovered/configured models. */
-  async describeProviders() {
+  /**
+   * Return provider capabilities and discovered/configured models.
+   * @param {{refreshCatalog?: boolean}} [options] Catalog refresh policy.
+   */
+  async describeProviders(options = {}) {
     this.#assertOpen();
-    const providers = await this.registry.describe();
+    const providers = await this.registry.describe(options);
     return providers.map((item) => {
       const provider = this.registry.providers.get(item.id);
       const observed = this.connectionHealth.get(connectionKey(item.id, item.accountId));
@@ -669,12 +727,110 @@ export class BridgeService {
     return removed;
   }
 
+  /** Return the closed public action queue; native owner references remain server-side. */
+  async actionItemsState(options = {}) {
+    this.#assertOpen();
+    await this.#ensureActionItems();
+    return sanitizeActionItemsReadModel(await this.actionItemStore.readModel(options));
+  }
+
+  /** Complete one opaque action item and durably enqueue its exact-owner delivery. */
+  async completeActionItem(handle, input) {
+    this.#assertOpen();
+    await this.#ensureActionItems();
+    const receipt = await this.actionItemStore.complete(handle, input);
+    await this.#drainActionItemOutbox().catch((error) => this.logger.warn("Could not drain action-item owner delivery", {
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return receipt;
+  }
+
+  /** @internal Publish a source-owned action item; this is intentionally absent from HTTP and MCP. */
+  async publishActionItem(input) {
+    this.#assertOpen();
+    await this.#ensureActionItems();
+    return this.actionItemStore.upsert(input);
+  }
+
+  /** Select the route used by Threadspan auto requests and convenience-mode defaults. */
+  selectDesktopRoute(input) {
+    this.#assertOpen();
+    const routeId = typeof input?.routeId === "string" ? input.routeId.trim() : "";
+    if (!routeId) throw new RequestError("Desktop route selection requires routeId");
+    const route = this.registry.resolveRoute({ model: routeId });
+    this.desktopRouteSelection = {
+      routeId: canonicalRouteId(route),
+      mode: route.mode,
+      provider: route.providerId,
+      accountId: route.accountId,
+      model: route.model,
+    };
+    return this.desktopRouteState();
+  }
+
+  /** Return the current sanitized Desktop route selection. */
+  desktopRouteState() {
+    return this.desktopRouteSelection ? structuredClone(this.desktopRouteSelection) : { routeId: null };
+  }
+
+  /** Return a non-discovering Desktop bootstrap snapshot for cold app startup. */
+  desktopState() {
+    this.#assertOpen();
+    const pickerRoutes = [];
+    const nodes = [];
+    for (const [id, provider] of this.registry.providers) {
+      const capabilities = provider.capabilities();
+      const configuredModels = Array.isArray(provider.config.models) ? provider.config.models : [provider.config.model ?? "auto"];
+      const models = configuredModels.map((model) => typeof model === "string" ? model : model?.id).filter(Boolean);
+      const modes = Object.entries(capabilities.modes ?? {}).filter(([, entry]) => entry?.supported).map(([mode]) => mode);
+      nodes.push({ id, availability: "configured", modes, models });
+      for (const mode of modes) for (const model of models) {
+        pickerRoutes.push({ id: `${mode}/${id}/${model}`, mode, provider: id, model, availability: "configured", free: provider.config.free === true });
+      }
+    }
+    const selected = this.desktopRouteSelection;
+    return {
+      status: "ready",
+      route: selected ? { id: selected.routeId, mode: selected.mode, provider: selected.provider, accountId: selected.accountId, model: selected.model } : null,
+      desktopRouteSelection: this.desktopRouteState(),
+      routeMap: { nodes },
+      pickerRoutes,
+      evidence: "configured-fast-path",
+    };
+  }
+
   /** Return sanitized live state for the loopback-only Threadspan sidecar. */
   async threadspanState() {
     this.#assertOpen();
-    const providers = await this.describeProviders();
-    const registryRouteMap = await this.registry.routeMap(providers);
+    const mode = this.desktopRouteSelection?.mode ?? this.config.defaults?.mode ?? "consult";
+    const requestedProvider = this.desktopRouteSelection?.provider ?? this.config.defaults?.provider ?? "threadspan";
+    const requestedModel = this.desktopRouteSelection?.routeId ?? this.config.defaults?.model ?? "auto";
+    const routedModels = await this.registry.listRoutedModels();
+    const routing = this.registry.routingSnapshot({
+      routedModels,
+      mode,
+      providerId: requestedProvider,
+      model: requestedModel,
+      accountId: this.desktopRouteSelection?.accountId ?? this.config.defaults?.accountId,
+    });
+    const providers = routing.providers.map((item) => {
+      const provider = this.registry.providers.get(item.id);
+      const observed = this.connectionHealth.get(connectionKey(item.id, item.accountId));
+      return {
+        ...item,
+        ...(provider?.providerWebMetadata?.() ?? {}),
+        effectiveSettings: provider?.effectiveSettings?.(),
+        connectionLifecycle: provider?.connectionLifecycle?.({
+          accountId: item.accountId,
+          health: item.health,
+          accountHealth: observed?.accountHealth ?? item.health?.status ?? "unknown",
+          transportHealth: observed?.transportHealth ?? "not-probed",
+          lastFailure: observed?.failure ?? null,
+        }),
+      };
+    });
     const providersById = new Map(providers.map((provider) => [provider.id, provider]));
+    const registryRouteMap = routing.routeMap;
     const routeMap = {
       ...registryRouteMap,
       nodes: registryRouteMap.nodes.map((node) => ({
@@ -682,23 +838,16 @@ export class BridgeService {
         ...publicProviderWebMetadata(providersById.get(node.id)),
       })),
     };
-    const usageSummary = await this.registry.usageSummary({ recentLimit: 50 });
-    const accounts = await this.describeAccounts();
-    const mode = this.config.defaults?.mode ?? "consult";
-    const requestedProvider = this.config.defaults?.provider ?? "threadspan";
-    let route;
-    let routeError;
-    try {
-      route = this.registry.resolveRoute({ mode, providerId: requestedProvider, model: this.config.defaults?.model ?? "auto", accountId: this.config.defaults?.accountId });
-    } catch (error) {
-      routeError = error instanceof Error ? error.message : String(error);
-      route = {
-        providerId: requestedProvider,
-        accountId: UNKNOWN_ACCOUNT_ID,
-        mode,
-        model: this.config.providers?.[requestedProvider]?.model ?? this.config.defaults?.model ?? "auto",
-      };
-    }
+    const pickerRoutes = routing.routedModels
+      .map((entry) => publicPickerRoute(entry, providersById.get(entry?.metadata?.provider)))
+      .filter(Boolean);
+    const route = routing.route;
+    const routeError = routing.routeError;
+    const [usageSummary, accounts, actionItems] = await Promise.all([
+      this.registry.usageSummary({ recentLimit: 50 }),
+      this.describeAccounts(),
+      this.actionItemsState({ status: "open", sort: "updated-desc", limit: 100 }),
+    ]);
     const activeAccount = accounts.accounts.find((account) => account.providerId === route.providerId && account.id === route.accountId);
     const activeForecast = activeAccount?.forecast
       ?? usageSummary.forecasts?.accounts?.find((forecast) => forecast.scope.provider === route.providerId && forecast.scope.accountId === route.accountId)
@@ -723,7 +872,7 @@ export class BridgeService {
     const tip = this.config.tips?.enabled === true
       ? selectTip({
           mode,
-          routeVerified: selected?.health?.status === "available",
+          routeVerified: route.health?.status === "available",
           qualifiedFallbackCount: candidates.filter((edge) => routeMap.nodes.find((node) => node.id === edge.provider)?.availability !== "unavailable").length,
           compatibilityChanged: compatibility.changed === true,
         })
@@ -752,8 +901,8 @@ export class BridgeService {
         provider: route.providerId,
         accountId: route.accountId,
         model: route.model,
-        verified: selected?.health?.status === "available",
-        verifiedAt: selected?.health?.catalogCheckedAt ? new Date(selected.health.catalogCheckedAt).toISOString() : "",
+        verified: route.health?.status === "available",
+        verifiedAt: route.health?.catalogCheckedAt ? new Date(route.health.catalogCheckedAt).toISOString() : "",
         verificationSource: routeError ?? (selected?.modelError ? "Configured fallback; live catalog unavailable." : "Live daemon catalog and capability check."),
         ...publicProviderWebMetadata(selected),
         effectiveSettings: selected?.effectiveSettings ?? null,
@@ -773,9 +922,12 @@ export class BridgeService {
       reroute: null,
       filters: { mode: "all", verifiedOnly: false },
       routeMap,
+      pickerRoutes,
+      desktopRouteSelection: this.desktopRouteState(),
       accounts,
       compatibility,
       continuity,
+      actionItems,
       automaticTakeover: this.automaticTakeoverController ? await this.automaticTakeoverController.readModel() : { phase: "disabled", counts: { targets: 0, monitors: 0, queued: 0, active: 0, unsupported: 0, blocked: 0 }, monitors: [] },
       branching: this.branchingPolicy(),
       connectionRecovery: this.connectionRecoveryPolicy(),
@@ -998,6 +1150,7 @@ export class BridgeService {
     if (this.closed) return;
     this.closed = true;
     await this.maximumUtilizationReady?.catch(() => undefined);
+    await this.actionItemsReady?.catch(() => undefined);
     await this.maximumUtilizationController?.close?.();
     await this.automaticTakeoverController?.close?.();
     this.compatibilityPolling?.stop();
@@ -1006,6 +1159,7 @@ export class BridgeService {
     this.tipConversations.clear();
     await this.registry.close();
     await this.usageLedger.flush();
+    if (this.actionItemTemporaryDirectory) await rm(this.actionItemTemporaryDirectory, { recursive: true, force: true });
   }
 
   async #observeCodexNativeUsageLimit(route, error) {
@@ -1057,9 +1211,10 @@ export class BridgeService {
         ? await this.#authorizeTipCall(mode, input, threadId)
         : null;
       const effectiveInput = tipCall ? tipCall.input : input;
-      const provider = effectiveInput.provider ?? this.config.defaults?.provider;
+      const desktop = this.desktopRouteSelection?.mode === mode ? this.desktopRouteSelection : null;
+      const provider = effectiveInput.provider ?? desktop?.provider ?? this.config.defaults?.provider;
       if (!provider) throw new RequestError(`No provider supplied and no defaults.provider configured`);
-      const resolved = this.registry.resolveRoute({ providerId: provider, mode, model: effectiveInput.model, accountId: effectiveInput.accountId ?? effectiveInput.account_id });
+      const resolved = this.registry.resolveRoute({ providerId: provider, mode, model: effectiveInput.model ?? desktop?.model, accountId: effectiveInput.accountId ?? effectiveInput.account_id ?? desktop?.accountId });
       const model = resolved.model;
       const priorThread = tipCall?.kind === "ask"
         ? this.tipConversations.get(threadId)
@@ -1462,13 +1617,37 @@ function publishedTipModel(config, providers) {
 function summarizeCompatibility(config, report) {
   if (config?.enabled !== true) return { status: "disabled", changed: false, products: [], changes: [] };
   if (!report) return { status: "loading", changed: false, products: [], changes: [] };
+  const statuses = new Set(["ok", "attention", "error", "disabled", "unknown"]);
+  const productStatuses = new Set(["detected", "missing", "error", "unknown"]);
+  const changeKinds = new Set(["baseline", "changed", "removed"]);
   return {
-    status: report.status ?? "unknown",
+    status: statuses.has(report.status) ? report.status : "unknown",
     changed: report.changed === true,
-    observedAt: report.observedAt,
-    products: (report.products ?? []).map((product) => ({ id: product.id, label: product.label, status: product.status, version: product.version })),
-    changes: (report.changes ?? []).slice(0, 20),
+    observedAt: validIsoTimestamp(report.observedAt) ?? null,
+    products: Array.isArray(report.products) ? report.products.slice(0, 12).flatMap((product) => {
+      if (!product || typeof product !== "object" || Array.isArray(product)) return [];
+      const id = safeCompatibilityText(product.id, 80);
+      if (!id) return [];
+      return [{
+        id,
+        label: safeCompatibilityText(product.label, 120) || id,
+        status: productStatuses.has(product.status) ? product.status : "unknown",
+        version: safeCompatibilityText(product.version, 120) || null,
+      }];
+    }) : [],
+    changes: Array.isArray(report.changes) ? report.changes.slice(0, 20).flatMap((change) => {
+      if (!change || typeof change !== "object" || Array.isArray(change)) return [];
+      const productId = safeCompatibilityText(change.productId, 80);
+      if (!productId || !changeKinds.has(change.kind)) return [];
+      return [{ productId, kind: change.kind }];
+    }) : [],
   };
+}
+
+function safeCompatibilityText(value, maximum) {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum && !/[\u0000-\u001f\u007f]/.test(value)
+    ? value
+    : "";
 }
 
 /** Conditionally publish validated provider links without adding account or quota state. */
@@ -1477,6 +1656,44 @@ function publicProviderWebMetadata(provider) {
   return Object.fromEntries(["officialUrl", "accountUrl", "usageUrl"]
     .filter((key) => typeof provider[key] === "string")
     .map((key) => [key, provider[key]]));
+}
+
+/** Publish the registry's executable model catalog without account labels or provider-private data. */
+function publicPickerRoute(entry, provider) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.id !== "string") return null;
+  const metadata = entry.metadata && typeof entry.metadata === "object" && !Array.isArray(entry.metadata) ? entry.metadata : {};
+  const mode = typeof metadata.bridge_mode === "string" ? metadata.bridge_mode : "";
+  const providerId = typeof metadata.provider === "string" ? metadata.provider : "";
+  const model = typeof metadata.upstream_model === "string" ? metadata.upstream_model : "";
+  if (!mode || !providerId || !model) return null;
+  const availability = ["available", "degraded", "unavailable", "unknown"].includes(metadata.availability)
+    ? metadata.availability
+    : "unknown";
+  const contextWindow = Number(metadata.context_window);
+  const reasoningLevels = Array.isArray(metadata.supported_reasoning_levels)
+    ? metadata.supported_reasoning_levels.slice(0, 12).flatMap((level) => {
+        if (typeof level === "string") return [{ effort: level.slice(0, 40), description: "" }];
+        if (!level || typeof level !== "object" || Array.isArray(level) || typeof level.effort !== "string") return [];
+        return [{ effort: level.effort.slice(0, 40), description: typeof level.description === "string" ? level.description.slice(0, 240) : "" }];
+      })
+    : [];
+  return {
+    id: entry.id,
+    mode,
+    provider: providerId,
+    accountId: typeof metadata.account_id === "string" ? metadata.account_id.slice(0, 160) : UNKNOWN_ACCOUNT_ID,
+    model,
+    availability,
+    catalogDegraded: metadata.catalog_degraded === true,
+    configuredFallback: metadata.configured_fallback === true,
+    ...(typeof metadata.catalog_reason === "string" ? { catalogReason: metadata.catalog_reason.slice(0, 240) } : {}),
+    ...(typeof metadata.free === "boolean" ? { free: metadata.free } : {}),
+    ...(Number.isSafeInteger(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
+    ...(reasoningLevels.length > 0 ? { supportedReasoningLevels: reasoningLevels } : {}),
+    ...(typeof metadata.default_reasoning_level === "string" ? { defaultReasoningLevel: metadata.default_reasoning_level.slice(0, 40) } : {}),
+    ...(metadata.images === true ? { images: true } : {}),
+    ...publicProviderWebMetadata(provider),
+  };
 }
 
 /** Keep authoritative quota facts separate, and collapse wholly unknown snapshots to null. */
@@ -1621,6 +1838,66 @@ function nonNegativeIntegerOrNull(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+function actionItemStateLocation(config) {
+  const configPath = typeof config.configPath === "string" ? config.configPath : "";
+  if (configPath && !/^<[^>]+>$/.test(configPath)) {
+    return { path: join(dirname(configPath), "state", "action-items.json"), temporaryDirectory: null };
+  }
+  const temporaryDirectory = join(tmpdir(), `threadspan-action-items-${process.pid}-${createId("state")}`);
+  return { path: join(temporaryDirectory, "action-items.json"), temporaryDirectory };
+}
+
+/** Project only the documented public action-item schema, even for injected stores. */
+function sanitizeActionItemsReadModel(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const sanitizeItem = (item, projectKey, projectLabel) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const handle = typeof item.handle === "string" && /^act_[0-9a-f]{32}$/.test(item.handle) ? item.handle : "";
+    const status = ["open", "completed", "stale", "closed"].includes(item.status) ? item.status : "";
+    const revision = Number.isSafeInteger(item.revision) && item.revision > 0 ? item.revision : 0;
+    const title = safeActionItemText(item.title, 240);
+    const summary = item.summary === null ? null : safeActionItemText(item.summary, 2_000);
+    const createdAt = canonicalActionItemTimestamp(item.createdAt);
+    const updatedAt = canonicalActionItemTimestamp(item.updatedAt);
+    const completedAt = item.completedAt === null ? null : canonicalActionItemTimestamp(item.completedAt);
+    if (!handle || !status || !revision || !title || summary === undefined || !createdAt || !updatedAt || completedAt === undefined) return null;
+    return { handle, projectKey, projectLabel, title, summary, status, revision, createdAt, updatedAt, completedAt };
+  };
+  const globalSource = source.global && typeof source.global === "object" ? source.global.items : [];
+  const globalItems = Array.isArray(globalSource)
+    ? globalSource.slice(0, 500).map((item) => sanitizeItem(item, null, null)).filter(Boolean)
+    : [];
+  const projects = Array.isArray(source.projects) ? source.projects.slice(0, 200).flatMap((project) => {
+    const key = safeActionItemKey(project?.key);
+    const label = safeActionItemText(project?.label, 120);
+    if (!key || !label || !Array.isArray(project?.items)) return [];
+    const items = project.items.slice(0, 500).map((item) => sanitizeItem(item, key, label)).filter(Boolean);
+    return [{ key, label, count: items.length, items }];
+  }) : [];
+  const returned = globalItems.length + projects.reduce((sum, project) => sum + project.items.length, 0);
+  return {
+    schemaVersion: 1,
+    total: Math.min(1_000, Math.max(returned, Number.isSafeInteger(source.total) && source.total >= 0 ? source.total : 0)),
+    global: { count: globalItems.length, items: globalItems },
+    projects,
+  };
+}
+
+function safeActionItemText(value, maximum) {
+  if (typeof value !== "string" || value.length < 1 || value.length > maximum || /[\u0000-\u001f\u007f]/.test(value)) return undefined;
+  return value;
+}
+
+function safeActionItemKey(value) {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(value) ? value : "";
+}
+
+function canonicalActionItemTimestamp(value) {
+  if (typeof value !== "string") return undefined;
+  const time = new Date(value);
+  return Number.isFinite(time.getTime()) && time.toISOString() === value ? value : undefined;
+}
+
 function createMaximumUtilizationController(config, dependencies, logger) {
   if (config.maximumUtilization?.enabled !== true) return null;
   const journal = maximumUtilizationJournal(config, dependencies);
@@ -1694,4 +1971,24 @@ function providerVisibleMetadata(metadata) {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return {};
   const { bridge_intent_brief: _intentBrief, bridge_intent_updates: _intentUpdates, ...visible } = metadata;
   return visible;
+}
+
+function canonicalRouteId(route) {
+  return `${route.mode}/${route.providerId}/${route.accountId === UNKNOWN_ACCOUNT_ID ? "" : `@${route.accountId}/`}${route.model}`;
+}
+
+function shouldUseDesktopRouteSelection(request, selection) {
+  if (!selection) return false;
+  if (request.metadata?.bridge_provider || request.metadata?.bridge_account_id || request.metadata?.bridge_account) return false;
+  return request.model === undefined || /^(consult|integrated|delegate)\/threadspan\/auto$/.test(request.model);
+}
+
+function desktopRouteInput(request, selection) {
+  const modelMode = /^(consult|integrated|delegate)\//.exec(request.model ?? "")?.[1];
+  return {
+    mode: request.metadata?.bridge_mode ?? modelMode ?? selection.mode,
+    providerId: selection.provider,
+    accountId: selection.accountId,
+    model: selection.model,
+  };
 }

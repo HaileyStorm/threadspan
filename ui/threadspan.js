@@ -32,6 +32,8 @@
   let showAllPickerRoutes = false;
   let draggedPickerRouteId = "";
   let activeCopyCheckPolicy = { permissionMode: "off", maxInputChars: 12000 };
+  let actionItemsModel = api.adaptActionItems(sourceModel.actionItems);
+  const knownActionItemProjects = new Map();
 
   function readTipPreferences() {
     try {
@@ -642,6 +644,7 @@
 
     const ready = next.status === "ready" && next.route;
     toggle.disabled = !ready;
+    renderNeedsYou(next.actionItems);
 
     if (!ready) {
       setExpanded(false);
@@ -805,6 +808,7 @@
             action.disabled = true;
             action.textContent = "Pending";
             document.dispatchEvent(new CustomEvent("threadspan:continuity-requested", { detail: { operationId: result.operationId } }));
+            await refreshContinuity(status);
           } catch (error) {
             status.textContent = error instanceof Error ? error.message : String(error);
           }
@@ -814,13 +818,18 @@
       item.append(head, generations, actions);
       tree.appendChild(item);
     }
+    const pending = tasks.find((task) => task.pendingRecovery);
+    if (pending) {
+      const recovery = pending.recovery ?? {};
+      status.textContent = ["Recovery pending", recovery.phase, recovery.blocker, recovery.action].filter(Boolean).join(" · ");
+    }
   }
 
   async function continuityAction(path, body, status) {
     try {
       const result = await continuityRequest(path, body);
       status.textContent = result.title ? `Renamed to ${result.title}.` : "Continuity action accepted.";
-      setTimeout(() => location.reload(), 350);
+      await refreshContinuity(status);
     } catch (error) {
       status.textContent = error instanceof Error ? error.message : String(error);
     }
@@ -837,6 +846,155 @@
     const value = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(value?.error?.message || `Continuity request failed (${response.status}).`);
     return value;
+  }
+
+  async function refreshContinuity(status) {
+    if (!localToken) throw new Error("Owner token is required to refresh Continuity.");
+    const response = await fetch("/v1/continuity", {
+      credentials: "same-origin",
+      headers: { authorization: `Bearer ${localToken}` },
+    });
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(value?.error?.message || `Continuity refresh failed (${response.status}).`);
+    renderContinuity(api.adaptContinuity(value));
+    if (!value?.tasks?.some((task) => task?.pendingRecovery)) status.textContent ||= "Continuity state refreshed.";
+  }
+
+  function renderNeedsYou(value) {
+    const list = root.querySelector("[data-field='needs-you-list']");
+    const count = root.querySelector("[data-field='needs-you-count']");
+    const empty = root.querySelector("[data-field='needs-you-empty']");
+    const scope = root.querySelector("select[name='needs-scope']");
+    if (!list || !count || !empty || !scope) return;
+    actionItemsModel = api.adaptActionItems(value);
+    for (const project of actionItemsModel.projects) knownActionItemProjects.set(project.key, project.label);
+    const selectedScope = scope.value;
+    scope.replaceChildren(new Option("Global + projects", "all"), new Option("Global only", "global"));
+    for (const [key, label] of [...knownActionItemProjects].sort((left, right) => left[1].localeCompare(right[1]))) {
+      scope.appendChild(new Option(label, `project:${key}`));
+    }
+    scope.value = [...scope.options].some((option) => option.value === selectedScope) ? selectedScope : "all";
+    const items = [
+      ...actionItemsModel.global.items,
+      ...actionItemsModel.projects.flatMap((project) => project.items),
+    ].slice(0, 100);
+    list.replaceChildren();
+    count.textContent = String(items.length);
+    empty.hidden = items.length > 0;
+    for (const item of items) list.appendChild(actionItemCard(item));
+  }
+
+  function actionItemCard(item) {
+    const card = document.createElement("article");
+    card.className = "needs-you__item";
+    card.dataset.status = item.status;
+    card.setAttribute("role", "listitem");
+    const title = document.createElement("h3");
+    title.textContent = item.title;
+    const meta = document.createElement("div");
+    meta.className = "needs-you__meta";
+    const scope = document.createElement("span");
+    scope.textContent = item.projectLabel || "Global";
+    const state = document.createElement("span");
+    state.textContent = `${item.status} · ${formatUtc(item.updatedAt)}`;
+    meta.append(scope, state);
+    card.append(title, meta);
+    if (item.summary) card.appendChild(noteEl(item.summary));
+    if (item.status === "open") card.appendChild(actionItemCompletionForm(item));
+    else card.appendChild(noteEl(item.status === "completed" ? "Completed owner action." : "Historical visibility only; this item is not actionable."));
+    return card;
+  }
+
+  function actionItemCompletionForm(item) {
+    const form = document.createElement("form");
+    form.className = "needs-you__completion";
+    const noteLabel = document.createElement("label");
+    noteLabel.textContent = "Completion note (optional)";
+    const note = document.createElement("input");
+    note.name = "note";
+    note.maxLength = 500;
+    note.autocomplete = "off";
+    noteLabel.appendChild(note);
+    const checkLabel = document.createElement("label");
+    checkLabel.className = "needs-you__check";
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.setAttribute("aria-label", `Mark ${item.title} complete`);
+    checkLabel.append(check, document.createTextNode(" Mark complete"));
+    check.addEventListener("change", async () => {
+      if (!check.checked) return;
+      check.disabled = true;
+      note.disabled = true;
+      try {
+        await completeActionItem(item, note.value.trim());
+      } catch {
+        check.checked = false;
+        check.disabled = false;
+        note.disabled = false;
+      }
+    });
+    form.addEventListener("submit", (event) => event.preventDefault());
+    form.append(noteLabel, checkLabel);
+    return form;
+  }
+
+  function bindNeedsYouControls() {
+    root.querySelector("[data-field='needs-you-filters']")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void refreshActionItems();
+    });
+  }
+
+  async function refreshActionItems() {
+    const status = root.querySelector("[data-field='needs-you-status']");
+    if (!localToken) {
+      if (status) status.textContent = "Owner token required for filtered actions and completion.";
+      return;
+    }
+    const form = root.querySelector("[data-field='needs-you-filters']");
+    const params = new URLSearchParams({ limit: "100", sort: form?.elements["needs-sort"]?.value || "updated-desc" });
+    const selectedScope = form?.elements["needs-scope"]?.value || "all";
+    if (selectedScope === "global") params.set("scope", "global");
+    else if (selectedScope.startsWith("project:")) {
+      params.set("scope", "project");
+      params.set("projectKey", selectedScope.slice("project:".length));
+    }
+    const selectedStatus = form?.elements["needs-status"]?.value || "open";
+    if (selectedStatus !== "all") params.set("status", selectedStatus);
+    const filter = form?.elements["needs-filter"]?.value?.trim();
+    if (filter) params.set("filter", filter);
+    if (status) status.textContent = "Loading owner actions…";
+    try {
+      const response = await fetch(`/v1/action-items?${params}`, {
+        credentials: "same-origin",
+        headers: { authorization: `Bearer ${localToken}` },
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(json.error?.message || `Action-item request failed (${response.status}).`);
+      renderNeedsYou(json);
+      if (status) status.textContent = "Owner action queue updated.";
+    } catch (error) {
+      if (status) status.textContent = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function completeActionItem(item, note) {
+    const status = root.querySelector("[data-field='needs-you-status']");
+    if (!localToken) throw new Error("Owner token is required for completion.");
+    const response = await fetch(`/v1/action-items/${encodeURIComponent(item.handle)}/complete`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { authorization: `Bearer ${localToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ revision: item.revision, ...(note ? { note } : {}) }),
+    });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = json.error?.message || `Completion failed (${response.status}).`;
+      if (status) status.textContent = message;
+      throw new Error(message);
+    }
+    if (status) status.textContent = "Completion recorded for exact-owner delivery.";
+    await refreshActionItems();
   }
 
   /**
@@ -1192,6 +1350,7 @@
   bindPickerControls();
   bindAppearance();
   bindAccountControls();
+  bindNeedsYouControls();
   bindMaximumUtilizationControls();
   bindCopyReviewControls();
   bindCopyCheckControls();
@@ -1212,6 +1371,7 @@
     history.replaceState(null, "", `${location.pathname}${location.search}`);
   }
   try { localToken = sessionStorage.getItem("threadspan-token") || ""; } catch {}
+  void refreshActionItems();
   fetch(requested, { credentials: "same-origin", headers: localToken ? { authorization: `Bearer ${localToken}` } : {} })
     .then((response) => {
       if (!response.ok) throw new Error("State request failed.");

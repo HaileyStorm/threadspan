@@ -1,10 +1,17 @@
 # Implementation package delivery report
 
-**Package:** `threadspan` 0.4.2 development
+**Package:** `threadspan` 0.5.0 release candidate
 
 **Snapshot:** 2026-08-18
 
-**State:** 0.4.2 is source-verified, signed, public, and live-accepted on the configured Linux and Windows hosts. It adds the explicit Cursor-only credential allowlist required by the minimal child environment. The exact full and sanitized-share commits passed self-hosted CI, and both signed releases include tar/ZIP assets plus checksums and Ed25519 signatures.
+**State:** 0.4.2 remains the signed public release. The 0.5.0 candidate is source-verified on Linux and ready for a clean commit/publication pass; it is not yet described as signed or native-Windows/live-provider accepted.
+
+## Current 0.5.0 delta
+
+- One bounded same-session Grok exploration recovery behind a default-off Delegate policy, with canonical physical-worktree execution and terminal provider/account failures.
+- Durable owner-private action items plus a compact owner-only global/per-project Needs-you surface and exact-owner completion delivery.
+- Deterministic route scoring and a frozen catalog/health snapshot shared by auto routing, the route map, and canonical picker entries.
+- Streaming Command/Claude descendant reaping, Continuity post-control read-back, Compatibility Watch publication hardening, and refreshed hash-bound synthetic media.
 
 ## Current 0.4.2 hotfix
 
@@ -28,9 +35,7 @@
 
 ## Verification evidence
 
-On Linux, the complete 0.4.1 release-candidate source gate reports **517 tests, 517 passed, 0 failed, and 0 skipped**. Coverage includes routing/account isolation, provider protocol transforms, MCP/HTTP authorization, Continuity/takeover controls, copy review, external copy checks, process and worktree boundaries, child-environment isolation, snapshot secret exclusions, transport safety, installer/recovery behavior, release provenance, and documentation/config parity. The deployed native Windows 0.4.1 source passed **43 focused tests** selected for the changed cross-platform surfaces. Revision-bound live checks then accepted Cursor Consult, Grok Build, Nous Consult/Integrated/Delegate, OpenRouter routing, Continuity state, and durable daemon restart on both configured hosts. The Windows rollout preserved the already-running Codex process.
-
-The current signed artifact is 0.4.0. Both-host acceptance for 0.4.1 is closed; the signed 0.4.1 artifact is the next publication step.
+On Linux, the complete 0.5.0 candidate source gate reports **610 tests, 610 passed, 0 failed, and 0 skipped**. The focused release-bundle gate passes **23/23**, and the npm dry-run package boundary includes the intended source and refreshed media. Synthetic loopback browser smoke covers the desktop drawer, picker, route map, and narrow Needs-you/Continuity ordering without invoking providers or Desktop applications. The earlier 0.4.1 source passed **43 focused native Windows tests** and the configured two-host live matrix; those results are retained as provenance, not promoted to 0.5.0 acceptance.
 
 AgentRouter's dated two-host success does not establish a permanent free offer. Generic Claude remains Preview, and the four additional provider entries are setup candidates pending fresh account/card/model/region checks. Threadspan is not partnered with, sponsored by, or endorsed by any listed provider. Signup, credentials, installs, billing, probes, and route enablement remain explicit reviewed user actions.
 
