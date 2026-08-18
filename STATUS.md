@@ -1,8 +1,8 @@
 # Implementation status
 
 **Snapshot date:** 2026-08-18
-**Package version:** 0.4.2 release candidate
-**Assessment:** 0.4.1 is the current signed public release. Version 0.4.2 preserves Cursor API-key authentication through an explicit provider-only allowlist after the 0.4.1 child-environment hardening. The listed provider routes, native Continuity state, and daemon restart behavior are live-accepted on the configured Linux and Windows hosts; 0.4.2 source verification and signed publication remain release gates.
+**Package version:** 0.4.2
+**Assessment:** 0.4.2 is the current signed public release. It preserves Cursor API-key authentication through an explicit provider-only allowlist after the 0.4.1 child-environment hardening. The 517-test source gate and self-hosted CI pass, and Cursor, Grok Build, Nous, OpenRouter, native Continuity state, and durable daemon restart are live-accepted on the configured Linux and Windows hosts.
 
 ## What is complete
 

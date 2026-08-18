@@ -4,7 +4,7 @@
 
 **Snapshot:** 2026-08-18
 
-**State:** 0.4.1 is source-verified, signed, public, and live-accepted on the configured Linux and Windows hosts. Version 0.4.2 adds the explicit Cursor-only credential allowlist required by the minimal child environment; source verification and signed publication remain its release gates.
+**State:** 0.4.2 is source-verified, signed, public, and live-accepted on the configured Linux and Windows hosts. It adds the explicit Cursor-only credential allowlist required by the minimal child environment. The exact full and sanitized-share commits passed self-hosted CI, and both signed releases include tar/ZIP assets plus checksums and Ed25519 signatures.
 
 ## Current 0.4.2 hotfix
 

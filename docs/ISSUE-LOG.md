@@ -59,6 +59,7 @@
 | A daemon launched under SSH disappeared when the SSH job ended. | Replaced it with a per-user scheduled task and proved the listener survived the initiating session. | Recheck task ownership after installer updates. |
 | A startup-script regex/quoting change failed before activation. | Restored the exact backup, moved nontrivial deployment logic into a transferred `.ps1`, and re-applied only after local parse checks. | Keep rollback-first deployment and avoid nested shell quoting for script bodies. |
 | Remote `Get-CimInstance` inspection hung and rich-object projection produced noisy output. | Replaced it with bounded scalar process inspection and exact PID/command-line projection. | Prefer process-specific native queries over broad WMI inventory. |
+| The first Windows 0.4.2 deployment reached the new daemon but a ten-second Continuity acceptance timeout expired while enumerating the native task tree. | The deployment automatically restored the prior app/config/task, preserved the active Codex PID, then repeated with a 60-second bounded Continuity timeout and passed with 100 tasks. | Keep rollback automatic and set endpoint-specific timeouts from measured native behavior rather than generic HTTP defaults. |
 
 ## Design corrections
 
