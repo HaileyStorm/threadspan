@@ -23,6 +23,7 @@
 | OpenAI-compatible routes allowed remote plaintext HTTP and automatic redirects carrying prompts or authorization. | Permit HTTP only for verified loopback hosts and use manual redirect handling so 3xx responses fail rather than crossing origins. | Other adapters retain their own transport contracts and require separate review. |
 | The full-access description understated the authority of `danger-full-access` plus no approvals. | State plainly that existing tools may read/write, execute, and use the network without approval; keep selection explicit-only and application separately confirmed. | The component still does not install or enable new tools, apps, plugins, or servers. |
 | Release signing could package dirty or release-eligible untracked source. | Require an exact clean Git commit before and after source reads, reject eligible untracked files, and publish the path-free source commit in bundle metadata. | Direct npm publication remains a separate future hardening surface; official releases use the signed bundle path. |
+| Minimal child environments removed a Cursor CLI credential that this host intentionally supplied through `CURSOR_API_KEY`. | Added only `CURSOR_API_KEY` to the starter Cursor provider's explicit `envAllowlist`; native Cursor login remains supported and unrelated daemon credentials stay excluded. | Other providers must name their own required credential variables rather than inheriting the daemon environment. |
 
 ## Linux
 

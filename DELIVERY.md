@@ -1,10 +1,14 @@
 # Implementation package delivery report
 
-**Package:** `threadspan` 0.4.1 development
+**Package:** `threadspan` 0.4.2 development
 
 **Snapshot:** 2026-08-18
 
-**State:** 0.4.0 is source-verified, signed, public, and live-accepted on the configured Linux and Windows hosts. The 0.4.1 Continuity/takeover/copy-review/privacy delta is source-verified; the listed provider routes, native Continuity state, and daemon restart behavior are live-accepted on both configured hosts. Signed publication is the remaining release gate.
+**State:** 0.4.1 is source-verified, signed, public, and live-accepted on the configured Linux and Windows hosts. Version 0.4.2 adds the explicit Cursor-only credential allowlist required by the minimal child environment; source verification and signed publication remain its release gates.
+
+## Current 0.4.2 hotfix
+
+- Preserve `CURSOR_API_KEY` authentication for the starter Cursor CLI without restoring broad process-environment inheritance.
 
 ## Current 0.4.1 delta
 

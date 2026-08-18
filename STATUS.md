@@ -1,8 +1,8 @@
 # Implementation status
 
 **Snapshot date:** 2026-08-18
-**Package version:** 0.4.1 release candidate
-**Assessment:** 0.4.0 is the current signed public release. Native Continuity controls, automatic account-first takeover, copy review, privacy hardening, and the first-class provider routes are source-verified for 0.4.1. The listed provider routes, native Continuity state, and daemon restart behavior are live-accepted on the configured Linux and Windows hosts; signed publication remains the release gate.
+**Package version:** 0.4.2 release candidate
+**Assessment:** 0.4.1 is the current signed public release. Version 0.4.2 preserves Cursor API-key authentication through an explicit provider-only allowlist after the 0.4.1 child-environment hardening. The listed provider routes, native Continuity state, and daemon restart behavior are live-accepted on the configured Linux and Windows hosts; 0.4.2 source verification and signed publication remain release gates.
 
 ## What is complete
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2 - 2026-08-18
+
+- Added `CURSOR_API_KEY` to the starter Cursor CLI's explicit child-environment allowlist. This preserves API-key authentication under the 0.4.1 minimal-environment hardening without restoring broad daemon credential inheritance.
+
 ## 0.4.1 - 2026-08-18
 
 - Added a compact native Continuity task tree with opaque handles, task naming, goal-free promotion, and source-matched successor/Goal reconciliation through the certified supervisor.

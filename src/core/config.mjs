@@ -1349,6 +1349,7 @@ export function createExampleConfig() {
         command: "cursor-agent",
         model: "auto",
         capabilities: ["consult", "delegate"],
+        envAllowlist: ["CURSOR_API_KEY"],
         maxPromptChars: 24000,
         sandbox: "disabled",
         consult: {

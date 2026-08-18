@@ -217,6 +217,9 @@
       "command": "cursor-agent",
       "model": "auto",
       "capabilities": ["consult", "delegate"],
+      // The Cursor CLI may use its native login, or this explicitly named key.
+      // No unrelated daemon credential is inherited.
+      "envAllowlist": ["CURSOR_API_KEY"],
       "maxPromptChars": 24000,
       "sandbox": "disabled",
       "consult": {
