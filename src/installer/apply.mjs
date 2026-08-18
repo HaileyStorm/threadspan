@@ -482,8 +482,16 @@ async function applyDaemonServiceUninstallPlanClaimed(plan, options) {
     throw error;
   }
   const receipt = lifecycleUninstallReceipt(plan, manifest, uninstallCommandReceipts);
+  const preTerminalManifestSha256 = sha256Bytes(Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8"));
   manifest.status = "uninstalled";
   manifest.terminalUninstallReceipt = receipt;
+  manifest.terminalUninstallTransition = {
+    schemaVersion: 1,
+    uninstallPlanId: plan.planId,
+    uninstallPlanDigest: plan.digest,
+    approvedManifestSha256: plan.manifestSha256,
+    preTerminalManifestSha256,
+  };
   await atomicJsonWrite(plan.manifestPath, manifest, 0o600);
   await lifecycleCheckpoint(options, "uninstall-terminal-persisted");
   return receipt;
@@ -1208,14 +1216,41 @@ function lifecycleUninstallReceipt(plan, manifest, commands) {
 }
 
 async function readTerminalUninstallReceipt(plan) {
+  await assertAbsoluteTargetSafe(plan.stateRoot, { directoryTarget: true });
+  await assertAbsoluteTargetSafe(plan.manifestPath);
+  const canonicalStateRoot = await realpath(plan.stateRoot);
+  if (canonicalPathKey(canonicalStateRoot) !== canonicalPathKey(resolve(plan.stateRoot))) {
+    throw new Error("Terminal uninstall state root is not canonical");
+  }
+  const expectedPath = resolve(canonicalStateRoot, "manifests", `${plan.installPlanId}.json`);
+  if (canonicalPathKey(resolve(plan.manifestPath)) !== canonicalPathKey(expectedPath)) {
+    throw new Error("Terminal uninstall manifest identity is not canonical");
+  }
   const stats = await safeLstat(plan.manifestPath);
   if (!stats) return undefined;
   if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Daemon lifecycle manifest must be a regular canonical file");
+  if (canonicalPathKey(await realpath(plan.manifestPath)) !== canonicalPathKey(expectedPath)) {
+    throw new Error("Terminal uninstall manifest realpath is not canonical");
+  }
   const manifest = parseLifecycleManifest(await readFile(plan.manifestPath));
   if (manifest.status !== "uninstalled") return undefined;
-  const expectedPath = resolve(manifest.stateRoot, "manifests", `${manifest.planId}.json`);
-  if (resolve(plan.manifestPath) !== expectedPath || resolve(plan.stateRoot) !== resolve(manifest.stateRoot)) {
+  if (canonicalPathKey(resolve(manifest.stateRoot)) !== canonicalPathKey(canonicalStateRoot)
+    || manifest.planId !== plan.installPlanId) {
     throw new Error("Terminal uninstall receipt is outside its canonical state root");
+  }
+  validateTerminalUninstallTransition(manifest.terminalUninstallTransition);
+  const transition = manifest.terminalUninstallTransition;
+  if (transition.uninstallPlanId !== plan.planId || transition.uninstallPlanDigest !== plan.digest
+    || transition.approvedManifestSha256 !== plan.manifestSha256) {
+    throw new Error("Terminal uninstall transition does not match the approved plan");
+  }
+  const reconstructed = structuredClone(manifest);
+  delete reconstructed.terminalUninstallReceipt;
+  delete reconstructed.terminalUninstallTransition;
+  reconstructed.status = "uninstalling";
+  const reconstructedSha256 = sha256Bytes(Buffer.from(`${JSON.stringify(reconstructed, null, 2)}\n`, "utf8"));
+  if (reconstructedSha256 !== transition.preTerminalManifestSha256) {
+    throw new Error("Terminal uninstall transition preimage hash is invalid");
   }
   const receipt = manifest.terminalUninstallReceipt;
   validateTerminalUninstallReceipt(receipt);
@@ -1243,8 +1278,37 @@ async function readTerminalUninstallReceipt(plan) {
       throw new Error(`Terminal uninstall receipt ${receiptPhase} provenance is invalid`);
     }
   }
+  await validateTerminalRestoredEntries(manifest.entries);
   return receipt;
 }
+
+function validateTerminalUninstallTransition(transition) {
+  const keys = ["approvedManifestSha256", "preTerminalManifestSha256", "schemaVersion", "uninstallPlanDigest", "uninstallPlanId"];
+  if (!transition || stableStringify(Object.keys(transition).sort()) !== stableStringify(keys)
+    || transition.schemaVersion !== 1 || typeof transition.uninstallPlanId !== "string"
+    || !/^[0-9a-f]{64}$/.test(transition.uninstallPlanDigest ?? "")
+    || !/^[0-9a-f]{64}$/.test(transition.approvedManifestSha256 ?? "")
+    || !/^[0-9a-f]{64}$/.test(transition.preTerminalManifestSha256 ?? "")) {
+    throw new Error("Invalid terminal daemon lifecycle uninstall transition");
+  }
+}
+
+async function validateTerminalRestoredEntries(entries) {
+  for (const entry of entries) {
+    await assertAbsoluteTargetSafe(entry.target);
+    const stats = await safeLstat(entry.target);
+    if (!entry.existed) {
+      if (stats) throw new Error(`Terminal uninstall target was recreated: ${entry.role}`);
+      continue;
+    }
+    if (!stats?.isFile() || stats.isSymbolicLink() || await sha256File(entry.target) !== entry.originalSha256
+      || (process.platform !== "win32" && (stats.mode & 0o777) !== entry.originalMode)) {
+      throw new Error(`Terminal uninstall preimage is not restored: ${entry.role}`);
+    }
+  }
+}
+
+function canonicalPathKey(path) { return process.platform === "win32" ? path.toLowerCase() : path; }
 
 function validateTerminalUninstallReceipt(receipt) {
   const allowed = ["apiVersion", "schemaVersion", "kind", "status", "planId", "digest", "installPlanId", "installPlanDigest", "platform", "sourceRevision", "ownerFingerprint", "evidenceClass", "runtimeOwnershipVerified", "commands", "files"];

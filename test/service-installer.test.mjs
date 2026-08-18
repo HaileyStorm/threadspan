@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { copyFile, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -567,6 +568,11 @@ test("terminal uninstall receipt replays identically after return-path interrupt
   const forgedProjection = JSON.parse(terminalBytes.toString("utf8"));
   forgedProjection.entries[0].role = "forged-role";
   forgedProjection.terminalUninstallReceipt.files[0].role = "forged-role";
+  const forgedPreimage = structuredClone(forgedProjection);
+  delete forgedPreimage.terminalUninstallReceipt;
+  delete forgedPreimage.terminalUninstallTransition;
+  forgedPreimage.status = "uninstalling";
+  forgedProjection.terminalUninstallTransition.preTerminalManifestSha256 = createHash("sha256").update(`${JSON.stringify(forgedPreimage, null, 2)}\n`).digest("hex");
   await writeFile(manifestPath, `${JSON.stringify(forgedProjection, null, 2)}\n`);
   await assert.rejects(
     applyDaemonServiceUninstallPlan(uninstall, { approvedDigest: uninstall.digest, commandRunner: fake.runner }),
@@ -579,6 +585,84 @@ test("terminal uninstall receipt replays identically after return-path interrupt
     applyDaemonServiceUninstallPlan(uninstall, { approvedDigest: uninstall.digest, commandRunner: fake.runner }),
     /verifyAbsent provenance is invalid/,
   );
+  const unrelatedMutation = JSON.parse(terminalBytes.toString("utf8"));
+  unrelatedMutation.unrelatedTerminalMutation = "changed-after-terminal";
+  await writeFile(manifestPath, `${JSON.stringify(unrelatedMutation, null, 2)}\n`);
+  await assert.rejects(
+    applyDaemonServiceUninstallPlan(uninstall, { approvedDigest: uninstall.digest, commandRunner: fake.runner }),
+    /preimage hash is invalid/,
+  );
+  assert.equal(fake.calls.length, commandCount);
+  await assert.rejects(readFile(join(fake.runner.testClaimRoot, ".lifecycle.claim.json")), /ENOENT/);
+});
+
+test("terminal replay rejects a symlinked manifest ancestor before claims or commands", async (t) => {
+  const fixture = await lifecycleFixture(t, "linux", "terminal-parent-symlink");
+  const fake = lifecycleRunner(fixture.plan);
+  await applyDaemonServicePlan(fixture.plan, { approvedDigest: fixture.plan.digest, commandRunner: fake.runner });
+  const manifestPath = join(fixture.stateRoot, "manifests", `${fixture.plan.planId}.json`);
+  const uninstall = await createDaemonServiceUninstallPlan(manifestPath);
+  const realState = join(fixture.root, "real-state-after-preview");
+  await rename(fixture.stateRoot, realState);
+  await symlink(realState, fixture.stateRoot, "dir");
+  const callCount = fake.calls.length;
+  await assert.rejects(
+    applyDaemonServiceUninstallPlan(uninstall, { approvedDigest: uninstall.digest, commandRunner: fake.runner }),
+    /symbolic link/,
+  );
+  assert.equal(fake.calls.length, callCount);
+  for (const file of fixture.plan.files) assert.equal(await readFile(file.path, "utf8"), file.content);
+  await assert.rejects(readFile(join(fake.runner.testClaimRoot, ".lifecycle.claim.json")), /ENOENT/);
+});
+
+test("forged terminal-before-uninstall cannot replay while installed files remain", async (t) => {
+  const fixture = await lifecycleFixture(t, "linux", "forged-terminal-installed");
+  const fake = lifecycleRunner(fixture.plan);
+  await applyDaemonServicePlan(fixture.plan, { approvedDigest: fixture.plan.digest, commandRunner: fake.runner });
+  const manifestPath = join(fixture.stateRoot, "manifests", `${fixture.plan.planId}.json`);
+  const uninstall = await createDaemonServiceUninstallPlan(manifestPath);
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const receipt = {
+    apiVersion: 1,
+    schemaVersion: 1,
+    kind: "threadspan-service-uninstall-receipt",
+    status: "uninstalled",
+    planId: uninstall.planId,
+    digest: uninstall.digest,
+    installPlanId: uninstall.installPlanId,
+    installPlanDigest: uninstall.installPlanDigest,
+    platform: uninstall.platform,
+    sourceRevision: uninstall.sourceRevision,
+    ownerFingerprint: uninstall.ownerFingerprint,
+    evidenceClass: "verified-deactivation-and-file-preimage-restoration",
+    runtimeOwnershipVerified: false,
+    commands: {
+      deactivate: uninstall.commands.deactivate.map((command) => command.id),
+      verifyAbsent: uninstall.commands.verifyAbsent.map((command) => command.id),
+      finalize: uninstall.commands.finalize.map((command) => command.id),
+    },
+    files: manifest.entries.map((entry) => ({ role: entry.role, restoredPreimage: true })),
+  };
+  manifest.status = "uninstalling";
+  const preTerminalManifestSha256 = createHash("sha256").update(`${JSON.stringify(manifest, null, 2)}\n`).digest("hex");
+  manifest.status = "uninstalled";
+  manifest.terminalUninstallReceipt = receipt;
+  manifest.terminalUninstallTransition = {
+    schemaVersion: 1,
+    uninstallPlanId: uninstall.planId,
+    uninstallPlanDigest: uninstall.digest,
+    approvedManifestSha256: uninstall.manifestSha256,
+    preTerminalManifestSha256,
+  };
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const callCount = fake.calls.length;
+  await assert.rejects(
+    applyDaemonServiceUninstallPlan(uninstall, { approvedDigest: uninstall.digest, commandRunner: fake.runner }),
+    /target was recreated/,
+  );
+  assert.equal(fake.calls.length, callCount);
+  for (const file of fixture.plan.files) assert.equal(await readFile(file.path, "utf8"), file.content);
+  await assert.rejects(readFile(join(fake.runner.testClaimRoot, ".lifecycle.claim.json")), /ENOENT/);
 });
 
 test("explicit stale-claim recovery preserves claim evidence and resumes the same lifecycle", async (t) => {
