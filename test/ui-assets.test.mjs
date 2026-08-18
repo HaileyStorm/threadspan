@@ -307,13 +307,21 @@ test("adapter normalizes synthetic JSON and fails closed on bad state", async ()
     tasks: [{
       handle: "demo-continuity-handle-02", title: "Visible logical task", project: "Threadspan", action: "Pending",
       current: { generation: 2, status: "idle", goalStatus: "active" }, generations: [],
-      pendingRecovery: { active: true, phase: "successor-discovered", blocker: "Waiting for predecessor fence", action: "Recheck native state" },
+      pendingRecovery: { active: true, operationHandle: `cop_${"a".repeat(40)}`, phase: "successor-discovered", blocker: "Waiting for predecessor fence", action: "Recheck native state", authority: { lifecycle: "supervisor-owned", dispatch: "confirmed", successor: "exact-worker-rw", predecessor: "awaiting-read-back", goal: "awaiting-parity", receipts: "source-bound-private" } },
     }],
   });
   assert.equal(pendingContinuity.tasks[0].pendingRecovery, true);
   assert.equal(pendingContinuity.tasks[0].recovery.phase, "successor-discovered");
   assert.equal(pendingContinuity.tasks[0].recovery.blocker, "Waiting for predecessor fence");
   assert.equal(pendingContinuity.tasks[0].recovery.action, "Recheck native state");
+  assert.equal(pendingContinuity.tasks[0].recovery.authority.successor, "exact-worker-rw");
+
+  const contaminatedContinuity = api.adaptContinuity({
+    enabled: true,
+    tasks: [{ handle: "demo-continuity-handle-03", title: "Bad", project: "Private", nativeThreadId: "private-thread", current: {}, generations: [] }],
+  });
+  assert.equal(contaminatedContinuity.tasks.length, 0);
+  assert.doesNotMatch(JSON.stringify(contaminatedContinuity), /private-thread|nativeThreadId/);
 
   const filtered = api.applyFilters(ready, { mode: "consult", verifiedOnly: true });
   assert.equal(filtered.fallbacks.length, 2);

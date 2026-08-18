@@ -6,6 +6,7 @@ import { URL } from "node:url";
 import { asBridgeError, BridgeError, RequestError } from "../core/errors.mjs";
 import { CONNECTOR_TOOL_NAMES, dispatchMcpRequest } from "../mcp/server.mjs";
 import { InstallerGuiController } from "../installer/gui-controller.mjs";
+import { projectContinuityPublicResult, projectContinuityPublicView } from "../codex/continuity-controller.mjs";
 
 /**
  * Create the local HTTP surface for Responses API, model discovery, health, Consult, and Delegate.
@@ -189,7 +190,7 @@ export function createHttpServer(service, config, options = {}) {
       if (url.pathname === "/v1/continuity" || url.pathname.startsWith("/v1/continuity/")) {
         enforceAccountMutationAuthentication(request, authentication);
         if (request.method === "GET" && url.pathname === "/v1/continuity") {
-          writeJson(response, 200, await service.continuityState());
+          writeJson(response, 200, projectContinuityPublicView(await service.continuityState()));
           return;
         }
         if (request.method !== "POST") {
@@ -198,9 +199,9 @@ export function createHttpServer(service, config, options = {}) {
           return;
         }
         const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
-        if (url.pathname === "/v1/continuity/rename") writeJson(response, 200, await service.renameContinuityTask(body));
-        else if (url.pathname === "/v1/continuity/rollover/preview") writeJson(response, 200, await service.previewContinuityRollover(body));
-        else if (url.pathname === "/v1/continuity/rollover") writeJson(response, 202, await service.requestContinuityRollover(body));
+        if (url.pathname === "/v1/continuity/rename") writeJson(response, 200, projectContinuityPublicResult(await service.renameContinuityTask(body), "rename"));
+        else if (url.pathname === "/v1/continuity/rollover/preview") writeJson(response, 200, projectContinuityPublicResult(await service.previewContinuityRollover(body), "preview"));
+        else if (url.pathname === "/v1/continuity/rollover") writeJson(response, 202, projectContinuityPublicResult(await service.requestContinuityRollover(body), "rollover"));
         else writeJson(response, 404, errorEnvelope("not_found", `No Continuity control for ${url.pathname}`));
         return;
       }

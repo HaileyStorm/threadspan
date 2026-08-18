@@ -54,6 +54,7 @@
         project: "Threadspan",
         selected: true,
         enrolled: true,
+        controlsAvailable: true,
         action: "Rollover",
         pendingRecovery: false,
         current: { generation: 3, status: "idle", goalStatus: "active" },
@@ -563,9 +564,9 @@
   function adaptContinuity(raw) {
     if (!isObject(raw) || raw.enabled !== true) return { enabled: false, controlEnabled: false, tasks: [], reason: boundedText(raw?.reason, 160) || "disabled" };
     const tasks = Array.isArray(raw.tasks) ? raw.tasks.slice(0, 200).map((task) => {
-      if (!isObject(task) || !/^[A-Za-z0-9-]{16,80}$/.test(text(task.handle))) return null;
+      if (!isObject(task) || hasUnknownKeys(task, ["handle", "title", "project", "selected", "enrolled", "controlsAvailable", "action", "pendingRecovery", "current", "generations"]) || !continuityTaskHandle(task.handle)) return null;
       const generations = Array.isArray(task.generations) ? task.generations.slice(0, 128).map((generation) => {
-        if (!isObject(generation)) return null;
+        if (!isObject(generation) || hasUnknownKeys(generation, ["index", "role", "label", "status", "archived"])) return null;
         const role = ["origin", "current", "previous", "prepared"].includes(text(generation.role)) ? text(generation.role) : "previous";
         return {
           index: Math.max(1, Math.trunc(finiteNumber(generation.index, 1))),
@@ -576,19 +577,32 @@
         };
       }).filter(Boolean) : [];
       const recoverySource = isObject(task.pendingRecovery) ? task.pendingRecovery : isObject(task.recovery) ? task.recovery : {};
-      const pendingRecovery = task.pendingRecovery === true || isObject(task.pendingRecovery) || recoverySource.active === true;
+      if (isObject(recoverySource) && hasUnknownKeys(recoverySource, ["active", "operationHandle", "phase", "blocker", "action", "authority"])) return null;
+      if (isObject(recoverySource.authority) && hasUnknownKeys(recoverySource.authority, ["lifecycle", "dispatch", "successor", "predecessor", "goal", "receipts"])) return null;
+      const pendingRecovery = isObject(task.pendingRecovery) && recoverySource.active === true && continuityOperationHandle(recoverySource.operationHandle);
+      const authority = recoverySource.authority ?? {};
       return {
         handle: text(task.handle),
         title: boundedText(task.title, 120) || "Untitled task",
         project: boundedText(task.project, 120) || "Unknown project",
         selected: task.selected === true,
         enrolled: task.enrolled === true,
-        action: ["Promote", "Rollover", "Pending"].includes(text(task.action)) ? text(task.action) : "Promote",
+        controlsAvailable: raw.controlEnabled === true && task.controlsAvailable === true && !pendingRecovery,
+        action: ["Promote", "Rollover", "Pending", "Unsupported"].includes(text(task.action)) ? text(task.action) : "Unsupported",
         pendingRecovery,
         recovery: {
+          operationHandle: pendingRecovery ? text(recoverySource.operationHandle) : "",
           phase: boundedText(recoverySource.phase, 80),
           blocker: boundedText(recoverySource.blocker, 160),
           action: boundedText(recoverySource.action, 120) || (pendingRecovery ? "Await native Continuity supervisor" : ""),
+          authority: {
+            lifecycle: boundedText(authority.lifecycle, 40) || "unsupported",
+            dispatch: boundedText(authority.dispatch, 40) || "unsupported",
+            successor: boundedText(authority.successor, 40) || "unsupported",
+            predecessor: boundedText(authority.predecessor, 40) || "unsupported",
+            goal: boundedText(authority.goal, 40) || "unsupported",
+            receipts: boundedText(authority.receipts, 40) || "unsupported",
+          },
         },
         current: {
           generation: Math.max(1, Math.trunc(finiteNumber(task.current?.generation, generations.length || 1))),
@@ -612,6 +626,10 @@
       tasks,
     };
   }
+
+  function hasUnknownKeys(value, allowed) { return Object.keys(value).some((key) => !allowed.includes(key)); }
+  function continuityTaskHandle(value) { return /^ctask_[0-9a-f]{40}$/.test(text(value)) || /^demo-continuity-handle-[0-9]{2}$/.test(text(value)); }
+  function continuityOperationHandle(value) { return /^cop_[0-9a-f]{40}$/.test(text(value)); }
 
   /** Strictly project the closed public action-item schema and reject private-key contamination. */
   function adaptActionItems(raw) {

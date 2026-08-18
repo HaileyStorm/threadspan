@@ -14,8 +14,8 @@ Current 0.5.0 Linux release-candidate result:
 
 ```text
 npm run check: passed
-697 tests
-697 passed
+724 tests
+724 passed
 0 failed
 0 skipped
 ```
@@ -32,7 +32,7 @@ The suite uses local fakes, local HTTP servers, and isolated temporary paths. It
 | Routing | Mode/provider/model route parsing, defaults, capability errors, dynamic adapter registration, isolated account state, native Codex exact usage-limit fallback, OpenAI-compatible pre-output HTTP 429 fallback, one same-provider alternate before compatible cross-provider takeover, and explicit-route preservation. |
 | Responses | Text lifecycle, reasoning visibility, function-call events, terminal object, continuation linkage, and bounded opt-in body logs. |
 | OpenAI-compatible provider | SSE parsing, text/reasoning/tool calls/usage, streaming-unsupported buffered retry, safe error shaping, pre-output HTTP 429 account fallback, single-alternate enforcement, and split CRLF framing. |
-| Continuity/takeover | Opaque task trees, owner-only controls, goal-free promotion, externally monitored liveness, deduplicated account-first replacement, exact-reset cancellation, maximum-utilization protection, staggered child recovery, and restart replay. |
+| Continuity/takeover | Opaque task trees, closed HTTP/browser projection, source-bound App Server receipt validation, cooperative process-shared claim/revision conflict races, non-replayable indeterminate dispatch, schema migration, exact worker/rw successor and predecessor fencing, Goal-free/objective/status/accounting parity, owner-only controls, externally monitored liveness, deduplicated account-first replacement, exact-reset cancellation, maximum-utilization protection, staggered child recovery, and restart replay. |
 | DeepSeek | Thinking controls and required reasoning/content replay. |
 | Command provider | JSON/JSONL normalization, substitutions, timeout, malformed output, missing executable errors, environment allowlisting, and managed process-tree behavior. |
 | HTTP | Health/models, buffered/streaming Responses, auth/origin policy, CORS preflight, connector-only `/mcp`, owner-token rejection, legacy remote-route failure, and snake_case managed-worker control normalization. |

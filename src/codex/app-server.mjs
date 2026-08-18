@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { toCodexModelInfo } from "./catalog.mjs";
 import { normalizeManagedCommand } from "../core/managed-process.mjs";
 import { bindExecutable, resolveExecutablePath, verifyExecutableBinding } from "../core/executable.mjs";
@@ -197,6 +198,69 @@ export async function callCodexAppServerBatchWithReceipt(requests, options = {})
   });
 }
 
+/**
+ * Validate that an App Server receipt binds the exact requested methods,
+ * returned results, process source, and chronological execution window.
+ * Raw receipts remain caller-private; the returned digests are safe to retain.
+ */
+export function validateCodexAppServerReceipt(receipt, options = {}) {
+  const methods = normalizeReceiptMethods(options.methods);
+  const results = Array.isArray(options.results) ? options.results : null;
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) throw new Error("Codex App Server receipt is missing");
+  const expectedKeys = new Set([
+    "kind", "methods", "method", "processId", "startedAt", "completedAt", "executable", "argv",
+    "spawnArgv", "codexHome", "executableVerifiedAfterRead", "resultDigest", "id",
+  ]);
+  if (Object.keys(receipt).some((key) => !expectedKeys.has(key))) throw new Error("Codex App Server receipt contains unsupported fields");
+  if (receipt.kind !== "codex-app-server-process" || stableStringify(receipt.methods) !== stableStringify(methods)) {
+    throw new Error("Codex App Server receipt methods do not match the exact request");
+  }
+  if ((methods.length === 1 && receipt.method !== methods[0]) || (methods.length !== 1 && Object.hasOwn(receipt, "method"))) {
+    throw new Error("Codex App Server receipt single-method binding is invalid");
+  }
+  if (!Number.isSafeInteger(receipt.processId) || receipt.processId <= 0) throw new Error("Codex App Server receipt process identity is invalid");
+  const startedAt = Date.parse(receipt.startedAt);
+  const completedAt = Date.parse(receipt.completedAt);
+  const now = typeof options.now === "number" ? options.now : Date.now();
+  const maximumDurationMs = positiveInteger(options.maximumDurationMs, 120_000);
+  if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt) || completedAt < startedAt
+    || completedAt - startedAt > maximumDurationMs || completedAt > now + 30_000) {
+    throw new Error("Codex App Server receipt timestamps are invalid");
+  }
+  const executable = receipt.executable;
+  if (!executable || typeof executable !== "object" || Array.isArray(executable)
+    || !isAbsolute(String(executable.path ?? "")) || !hexDigest(executable.sha256)
+    || !hexDigest(executable.metadataDigest) || typeof executable.version !== "string" || !executable.version.trim()) {
+    throw new Error("Codex App Server receipt executable binding is invalid");
+  }
+  if (receipt.executableVerifiedAfterRead !== true || !isAbsolute(String(receipt.codexHome ?? ""))
+    || !validArgv(receipt.argv) || receipt.argv[0] !== executable.path || !validArgv(receipt.spawnArgv)) {
+    throw new Error("Codex App Server receipt process source binding is invalid");
+  }
+  if (!results || !hexDigest(receipt.resultDigest) || receipt.resultDigest !== digestStable(results)) {
+    throw new Error("Codex App Server receipt result binding is invalid");
+  }
+  const unsigned = { ...receipt };
+  delete unsigned.id;
+  if (!hexDigest(receipt.id) || receipt.id !== digestStable(unsigned)) throw new Error("Codex App Server receipt identity digest is invalid");
+  const sourceBindingDigest = digestStable({
+    executable: receipt.executable,
+    argv: receipt.argv,
+    spawnArgv: receipt.spawnArgv,
+    codexHome: receipt.codexHome,
+  });
+  if (options.sourceBindingDigest && options.sourceBindingDigest !== sourceBindingDigest) {
+    throw new Error("Codex App Server receipt source changed across Continuity evidence");
+  }
+  return Object.freeze({
+    receiptDigest: digestStable(receipt),
+    receiptId: receipt.id,
+    sourceBindingDigest,
+    startedAt: new Date(startedAt).toISOString(),
+    completedAt: new Date(completedAt).toISOString(),
+  });
+}
+
 function normalizeRequests(value) {
   if (!Array.isArray(value) || value.length === 0) throw new TypeError("Codex App Server requests must be a non-empty array");
   return value.map((request) => {
@@ -206,6 +270,13 @@ function normalizeRequests(value) {
     if (!params || typeof params !== "object" || Array.isArray(params)) throw new TypeError(`Codex App Server ${method} params must be an object`);
     return { method, params };
   });
+}
+
+function normalizeReceiptMethods(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.some((method) => typeof method !== "string" || !method.trim())) {
+    throw new TypeError("Codex App Server receipt validation requires exact methods");
+  }
+  return value.map((method) => method.trim());
 }
 
 async function canonicalDirectory(value, label) {
@@ -222,6 +293,13 @@ function stableStringify(value) {
   }
   return JSON.stringify(value) ?? "undefined";
 }
+
+function digestStable(value) {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function hexDigest(value) { return /^[0-9a-f]{64}$/u.test(String(value ?? "")); }
+function validArgv(value) { return Array.isArray(value) && value.length > 0 && value.every((part) => typeof part === "string" && part.length > 0); }
 
 /** Convert App Server's public camel-case model record to model-catalog ModelInfo. */
 export function appServerModelToCatalog(model) {

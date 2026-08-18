@@ -782,9 +782,10 @@
       }
       const actions = document.createElement("div");
       actions.className = "continuity-actions";
-      if (continuity.capabilities?.rename) {
+      if (continuity.controlEnabled && continuity.capabilities?.rename) {
         const rename = document.createElement("button");
         rename.type = "button";
+        rename.disabled = task.controlsAvailable !== true || task.pendingRecovery || task.action === "Unsupported";
         rename.textContent = "Rename";
         rename.addEventListener("click", async () => {
           const name = prompt("Task name", task.title);
@@ -793,10 +794,10 @@
         });
         actions.appendChild(rename);
       }
-      if (continuity.capabilities?.rollover) {
+      if (continuity.controlEnabled && continuity.capabilities?.rollover) {
         const action = document.createElement("button");
         action.type = "button";
-        action.disabled = task.action === "Pending";
+        action.disabled = task.controlsAvailable !== true || task.pendingRecovery || ["Pending", "Unsupported"].includes(task.action);
         action.textContent = task.action;
         action.addEventListener("click", async () => {
           try {
@@ -807,7 +808,7 @@
             status.textContent = `${task.action} requested. The native supervisor owns the handoff.`;
             action.disabled = true;
             action.textContent = "Pending";
-            document.dispatchEvent(new CustomEvent("threadspan:continuity-requested", { detail: { operationId: result.operationId } }));
+            document.dispatchEvent(new CustomEvent("threadspan:continuity-requested", { detail: { state: result.state } }));
             await refreshContinuity(status);
           } catch (error) {
             status.textContent = error instanceof Error ? error.message : String(error);
@@ -821,7 +822,9 @@
     const pending = tasks.find((task) => task.pendingRecovery);
     if (pending) {
       const recovery = pending.recovery ?? {};
-      status.textContent = ["Recovery pending", recovery.phase, recovery.blocker, recovery.action].filter(Boolean).join(" · ");
+      const authority = recovery.authority ?? {};
+      const authoritySummary = [authority.dispatch, authority.successor, authority.predecessor, authority.goal].filter(Boolean).join(" / ");
+      status.textContent = ["Recovery pending", recovery.phase, recovery.blocker, recovery.action, authoritySummary].filter(Boolean).join(" · ");
     }
   }
 

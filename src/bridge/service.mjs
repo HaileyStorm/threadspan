@@ -23,7 +23,7 @@ import { CodexNativeQuotaAdapter } from "../core/codex-native-quota.mjs";
 import { selectTip, tipById } from "../core/tips.mjs";
 import { renderVoiceInstruction, resolveVoiceProfile } from "../core/voice-profiles.mjs";
 import { applyIntentBriefUpdates, deriveIntentBrief } from "../core/intent-brief.mjs";
-import { CodexContinuityController } from "../codex/continuity-controller.mjs";
+import { CodexContinuityController, projectContinuityPublicView } from "../codex/continuity-controller.mjs";
 import { AutomaticTakeoverController } from "../core/automatic-takeover-controller.mjs";
 import { naturalizeCopy } from "../core/copy-naturalizer.mjs";
 import { checkCopy, describeCopyCheck, sanitizeCopyCheckRecord } from "../core/copy-check.mjs";
@@ -922,9 +922,10 @@ export class BridgeService {
     const compatibility = summarizeCompatibility(this.config.compatibilityWatch, this.compatibilityReport);
     let continuity;
     try {
-      continuity = this.continuityController ? await this.continuityController.view() : { enabled: false, tasks: [], reason: "disabled" };
+      continuity = projectContinuityPublicView(this.continuityController ? await this.continuityController.view() : { enabled: false, tasks: [], reason: "disabled" });
     } catch (error) {
-      continuity = { enabled: true, controlEnabled: false, provider: "codex", evidence: "unavailable", tasks: [], capabilities: { rename: false, rollover: false, nativeChatListGrouping: false }, reason: error instanceof Error ? error.message : String(error) };
+      this.logger?.warn?.("continuity-state-unavailable", { message: error instanceof Error ? error.message : String(error) });
+      continuity = { enabled: true, controlEnabled: false, provider: "codex", evidence: "unavailable", tasks: [], capabilities: { rename: false, rollover: false, nativeChatListGrouping: false }, reason: "Continuity state requires private owner review." };
     }
     const tip = this.config.tips?.enabled === true
       ? selectTip({
@@ -1000,7 +1001,7 @@ export class BridgeService {
   async continuityState() {
     this.#assertOpen();
     if (!this.continuityController) return { enabled: false, tasks: [], reason: "disabled" };
-    return this.continuityController.view();
+    return projectContinuityPublicView(await this.continuityController.view());
   }
 
   async renameContinuityTask(input) {

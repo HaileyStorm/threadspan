@@ -16,6 +16,9 @@ test("HUD exposes a compact Continuity task tree without native identifiers", as
   assert.match(source, /\/v1\/continuity\/rollover\/preview/);
   assert.match(source, /fetch\("\/v1\/continuity"/);
   assert.match(source, /Recovery pending/);
+  assert.match(source, /continuity\.controlEnabled/);
+  assert.match(source, /task\.controlsAvailable/);
+  assert.doesNotMatch(source, /operationId/);
   assert.match(adapter, /recoverySource/);
   assert.match(adapter, /blocker/);
   assert.match(source, /\/v1\/automatic-takeover\/disable/);
@@ -34,6 +37,22 @@ test("HUD exposes a compact Continuity task tree without native identifiers", as
   for (const forbidden of ["nativeThreadId", "nativeGoalId", "recoveryKey"]) {
     assert.doesNotMatch(html + source + adapter, new RegExp(forbidden));
   }
+});
+
+test("repeatable no-browser Continuity interaction fixture preserves preview-confirm-dispatch-refresh ordering", async () => {
+  const source = await readFile("ui/threadspan.js", "utf8");
+  const start = source.indexOf("function renderContinuity");
+  const end = source.indexOf("function renderNeedsYou", start);
+  const fixture = source.slice(start, end);
+  const preview = fixture.indexOf('continuityRequest("/v1/continuity/rollover/preview"');
+  const confirm = fixture.indexOf("if (!confirm", preview);
+  const rollover = fixture.indexOf('continuityRequest("/v1/continuity/rollover"', confirm);
+  const event = fixture.indexOf('CustomEvent("threadspan:continuity-requested"', rollover);
+  const refresh = fixture.indexOf("await refreshContinuity(status)", event);
+  assert.ok(preview >= 0 && preview < confirm && confirm < rollover && rollover < event && event < refresh);
+  assert.match(fixture, /action\.disabled = task\.controlsAvailable !== true \|\| task\.pendingRecovery/);
+  assert.match(fixture, /detail: \{ state: result\.state \}/);
+  assert.doesNotMatch(fixture, /operationId|recoveryKey|nativeThread|nativeGoal/);
 });
 
 test("HUD exposes a bounded owner action rail without polling or diagnostic queue conflation", async () => {

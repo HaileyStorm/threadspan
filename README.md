@@ -50,7 +50,7 @@ The setup window is source-run in an app-style Vivaldi/Chrome/Edge window, not a
 - Optional heuristic-first Tips: disabled by default, dismissible, cooldown-bound, and limited to one compact tip per browser session; cheap-model refinement and session-only Ask are separately gated and user-initiated.
 - Optional Copy review for every installation: local readability checks, protected-span enforcement, and an explicitly configured provider rewrite that never auto-applies.
 - Optional External copy check, off by default: user-started Pangram handoff plus documented Sapling/Winston API adapters. Results are advisory and never decide rewrite acceptance.
-- A collapsed Continuity task tree with origin/current/prior generations, native naming, guarded promotion/rollover controls, and Goal lifecycle delegated to the certified native supervisor.
+- A collapsed Continuity task tree with origin/current/prior generations, native naming, cooperative process-shared claim/revision conflict checks, source-bound read receipts, non-replayable indeterminate recovery, and guarded supervisor-owned Goal rollover controls.
 - Optional automatic takeover: certified same-provider account fallback first, then a compatible provider only when the task or smart route enables it and both routes publish the same explicit privacy class.
 - Compatibility Watch: recover, learn, harden across research, browser, document, media, operations, provider setup, and coding tasks through reuse-first capability discovery, bounded direct/meta/meta-meta improvement, reviewed rollback, and sanitized issue/PR intake.
 - An optional, disabled-by-default maximum-utilization controller with native-quota gating and a durable requested-action outbox.

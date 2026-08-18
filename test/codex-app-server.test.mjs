@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { callCodexAppServerWithReceipt, discoverNativeCodexCatalog } from "../src/codex/app-server.mjs";
+import { callCodexAppServerWithReceipt, discoverNativeCodexCatalog, validateCodexAppServerReceipt } from "../src/codex/app-server.mjs";
 import { AccountStore } from "../src/core/account-store.mjs";
 import { CodexNativeQuotaAdapter } from "../src/core/codex-native-quota.mjs";
 import { bindExecutable } from "../src/core/executable.mjs";
@@ -164,6 +164,21 @@ test("App Server receipt binds canonical executable hash version argv and isolat
   assert.deepEqual(receipt.argv, [executable, fixture]);
   assert.equal(receipt.codexHome, codexHome);
   assert.equal(receipt.executableVerifiedAfterRead, true);
+});
+
+test("App Server receipt validator binds exact methods results timestamps and process source", () => {
+  const results = [{ account: { type: "chatgpt" } }, { rateLimitsByLimitId: {} }];
+  const receipt = nativeProcessReceipt(tmpdir(), results);
+  const evidence = validateCodexAppServerReceipt(receipt, {
+    methods: ["account/read", "account/rateLimits/read"],
+    results,
+    now: Date.parse("2026-08-18T00:00:00Z"),
+  });
+  assert.match(evidence.receiptDigest, /^[0-9a-f]{64}$/);
+  assert.match(evidence.sourceBindingDigest, /^[0-9a-f]{64}$/);
+  assert.throws(() => validateCodexAppServerReceipt(receipt, { methods: ["account/read"], results, now: Date.parse("2026-08-18T00:00:00Z") }), /methods do not match/);
+  assert.throws(() => validateCodexAppServerReceipt({ ...receipt, resultDigest: "c".repeat(64) }, { methods: receipt.methods, results, now: Date.parse("2026-08-18T00:00:00Z") }), /result binding/);
+  assert.throws(() => validateCodexAppServerReceipt({ ...receipt, processId: null }, { methods: receipt.methods, results, now: Date.parse("2026-08-18T00:00:00Z") }), /process identity/);
 });
 
 test("native quota fails closed when App Server identity or source receipt is not bindable", async (t) => {

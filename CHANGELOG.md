@@ -7,11 +7,11 @@
 - Added a durable owner-private action-item store and compact global/per-project **Needs you** rail with strict public projection, owner-only loopback controls, revision-bound idempotent completion, and exact-owner delivery outbox.
 - Added deterministic provider scoring and one frozen routing snapshot shared by smart selection, the route map, and canonical picker routes; browser preferences remain presentation-only and quota does not silently affect ranking.
 - Reaped POSIX descendants left by exited streaming-provider leaders while preserving Windows `taskkill` behavior and intentional `killTree: false` processes.
-- Strengthened Continuity presentation with pending-recovery status and an owner read-back after rename/rollover without adding native mutation or exposing native identifiers.
+- Strengthened Continuity with a closed schema-v2 private journal, cooperative exact-owner process-shared claim/revision conflict checks, source-bound receipt-plus-exact-request validation, stable operation/recovery binding, non-replayable indeterminate dispatch, exact worker/rw successor and predecessor fencing, Goal-free or supported identity/objective/status/accounting parity, and closed identifier-free HTTP/browser projections. Exact native Linux/Windows builds remain separately unverified for this delta.
 - Added Compatibility Watch exact N→N+1 identities, atomic artifact/version rechecks, retained last-known-working/sidecar state, separate non-mutating attach/protocol/routing/provider/settings evidence, cross-process transition/target claims, transition-bound repair/rollback truth, and compact sanitized Needs-review/Diagnostics queues. Linux/Windows coverage for this delta remains synthetic, not native acceptance.
 - Refreshed the synthetic dashboard, picker, route-map screenshots and GIF, with a hash-bound privacy-reviewed media manifest and desktop/mobile browser smoke evidence.
 
-The 697-test Linux source gate passes, and the installed Linux and Windows ChatGPT/Codex Desktop renderers were captured live with the attached HUD and working picker. Compatibility Watch N→N+1 transition acceptance remains synthetic for this delta pending separate exact-build native checks.
+The 724-test Linux source gate passes, and the installed Linux and Windows ChatGPT/Codex Desktop renderers were captured live with the attached HUD and working picker. The strengthened Continuity controls have offline fake/source/VM evidence only; exact native App Server and true-browser interaction remain separate gates. Compatibility Watch N→N+1 transition acceptance remains synthetic for this delta pending separate exact-build native checks.
 
 ## 0.4.2 - 2026-08-18
 
