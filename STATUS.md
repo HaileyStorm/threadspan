@@ -25,7 +25,7 @@
 
 ## Verification completed
 
-On Linux, the complete 0.4.1 release-candidate source gate passes: `npm run check` succeeds and the Node suite reports **505 tests, 505 passed, 0 failed, and 0 skipped**. The deployed native Windows 0.4.1 source passed the 43 focused cross-platform tests selected for this delta. Live revision-bound acceptance then passed on both configured hosts for Cursor Consult, Grok Build, Nous Consult/Integrated/Delegate, OpenRouter routing, daemon restart durability, and native Continuity state. Windows deployment preserved the already-running Codex task. These are account-, revision-, and host-specific observations, not universal provider guarantees; Desktop visual acceptance remains separate.
+On Linux, the complete 0.4.1 release-candidate source gate passes: `npm run check` succeeds and the Node suite reports **517 tests, 517 passed, 0 failed, and 0 skipped**. The deployed native Windows 0.4.1 source passed the 43 focused cross-platform tests selected for this delta. Live revision-bound acceptance then passed on both configured hosts for Cursor Consult, Grok Build, Nous Consult/Integrated/Delegate, OpenRouter routing, daemon restart durability, and native Continuity state. Windows deployment preserved the already-running Codex task. These are account-, revision-, and host-specific observations, not universal provider guarantees; Desktop visual acceptance remains separate.
 
 ## Implemented but not live-certified
 

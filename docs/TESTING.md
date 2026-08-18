@@ -14,8 +14,8 @@ Current 0.4.1 Linux release-candidate result:
 
 ```text
 npm run check: passed
-505 tests
-505 passed
+517 tests
+517 passed
 0 failed
 0 skipped
 ```
