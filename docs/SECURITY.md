@@ -46,6 +46,19 @@ Policy:
 - CORS response headers are emitted only for explicitly allowed origins.
 - Preflight is answered before bearer auth because browsers cannot attach the application bearer to the preflight itself.
 
+### Owner and MCP connector credentials
+
+The owner main token and MCP connector token are separate authorization domains:
+
+- owner HTTP routes use the main token and never fall back to the connector token;
+- `/mcp` accepts only the connector token and always exposes the connector allowlist, without Delegate or filesystem workspace arguments;
+- the owner main token is rejected at `/mcp` rather than treated as an unrestricted MCP credential;
+- host and Codex connector installation reject the owner token file, canonical aliases of that file, hard-link identity, and token values equal to the resolved owner token;
+- remote MCP accepts only an absolute `/mcp` endpoint. Legacy `/v1` or root remotes fail closed instead of wrapping owner HTTP tools as MCP;
+- explicit `--embedded` / `--embedded-mcp` remains the local-process escape hatch and is rendered explicitly so ambient remote variables cannot override it.
+
+Credential comparisons never log token values. Keep both files owner-readable only and rotate both if either boundary is suspected to have been crossed.
+
 ### Recommended hardened local config
 
 ```jsonc
@@ -244,6 +257,16 @@ Prefer `apiKeyEnv` over `apiKey`.
 - Authorization headers and API keys are not logged.
 - Debug errors may include bounded provider response bodies; do not enable debug/body logging around secrets without reviewing provider behavior.
 - Hermes stores its own Portal OAuth state outside this package.
+
+## Explicit Codex full-access component
+
+`codex-full-access` is intentionally excluded from defaults and `selection: "all"`. Its unchecked GUI control warns that it removes command approval pauses and command sandboxing and preapproves app/MCP tools. It does not enable destructive/open-world capability or enable any tool, app, plugin, or server.
+
+The component mutates only the selected host's user-level `$CODEX_HOME/config.toml`, never project `.codex/config.toml`. A dedicated line-preserving TOML transform changes only the named execution/approval keys, preserves comments/order/unrelated settings, leaves per-tool overrides untouched, reports those overrides as bounded residual conflicts, and fails closed on duplicate or ambiguous target tables/keys.
+
+Raw config bytes, tokens, headers, and credential values are excluded from the plan, preview, manifest, recovery record, and logs. Apply resolves the host path again, rejects a symlink config or parent, compares the exact preimage hash and mode, recomputes the transform and next hash, stores an exact-byte backup under the installer backup root, atomically replaces the config, and restores exact bytes plus the original mode after a partial failure. Configuration that already matches is recorded as unchanged. See the [official Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) for current precedence and key semantics; project, profile, CLI, managed-requirement, and per-tool layers can remain more specific residual controls.
+
+The early code-work self-heal profile is configuration, not acceptance authority. It bounds direct repair, focused regression evidence, one recognizer/helper/process update, and one missed-detection/coordination check to depth 2. It excludes memory, prompts, credentials, and cross-host state; cannot silently override project policy; and treats all agent output as evidence. Reusable defects may be proposed to Compatibility Watch only as sanitized reviewed issues or PRs.
 
 ## Nous subscription proxy
 

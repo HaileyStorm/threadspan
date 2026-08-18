@@ -1,17 +1,25 @@
 import { createServer } from "node:http";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 import { asBridgeError, BridgeError, RequestError } from "../core/errors.mjs";
+import { CONNECTOR_TOOL_NAMES, dispatchMcpRequest } from "../mcp/server.mjs";
+import { InstallerGuiController } from "../installer/gui-controller.mjs";
 
 /**
  * Create the local HTTP surface for Responses API, model discovery, health, Consult, and Delegate.
  * @param {import("./service.mjs").BridgeService} service Bridge service.
  * @param {Record<string, any>} config Validated bridge configuration.
+ * @param {{installerGui?: InstallerGuiController}} [options] Testable runtime dependencies.
  * @returns {import("node:http").Server}
  */
-export function createHttpServer(service, config) {
+export function createHttpServer(service, config, options = {}) {
   const gate = new ConcurrencyGate(config.server?.maxConcurrentRequests ?? 4);
+  let installerGui = options.installerGui;
+  const getInstallerGui = () => (installerGui ??= new InstallerGuiController(config));
+  const authentication = resolveAuthentication(config);
+  const mcpActiveRequests = new Map();
   return createServer(async (request, response) => {
     const requestController = new AbortController();
     const requestTimeoutMs = config.server?.requestTimeoutMs ?? 30 * 60 * 1000;
@@ -34,15 +42,140 @@ export function createHttpServer(service, config) {
         writeOptionsResponse(request, response, config);
         return;
       }
+      if (url.pathname === "/threadspan/install/session" && request.method === "POST") {
+        enforceRequestAuthentication(request, config, authentication);
+        const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+        writeJson(response, 201, await getInstallerGui().createSession(body));
+        return;
+      }
+      if (url.pathname.startsWith("/threadspan/install/api/")) {
+        if (!isLoopbackAddress(request.socket.remoteAddress ?? "")) throw new BridgeError("Installer GUI is loopback-only", { status: 403, code: "loopback_required" });
+        const nonce = request.headers["x-threadspan-install-session"];
+        const action = url.pathname.slice("/threadspan/install/api/".length);
+        const activeInstallerGui = getInstallerGui();
+        const installSession = activeInstallerGui.authorize(nonce);
+        if (["complete", "cancelled"].includes(installSession.state)) {
+          writeJson(response, 410, errorEnvelope("installer_session_closed", "The one-time installer session is already closed"));
+          return;
+        }
+        if (request.method === "GET" && action === "bootstrap") {
+          writeJson(response, 200, await activeInstallerGui.bootstrap(nonce, { signal: requestController.signal }));
+          return;
+        }
+        if (request.method === "POST" && ["plan", "apply", "protect", "heartbeat", "close"].includes(action)) {
+          const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+          const result = action === "plan" ? await activeInstallerGui.plan(nonce, body)
+            : action === "apply" ? await activeInstallerGui.apply(nonce, body)
+              : action === "protect" ? await activeInstallerGui.protect(nonce, body)
+                : action === "heartbeat" ? await activeInstallerGui.heartbeat(nonce)
+                : await activeInstallerGui.close(nonce, body.intent);
+          writeJson(response, 200, result);
+          return;
+        }
+        writeJson(response, 404, errorEnvelope("not_found", `No installer GUI action for ${request.method} ${action}`));
+        return;
+      }
       if (request.method === "GET" && (url.pathname === "/threadspan" || (url.pathname.startsWith("/threadspan/") && url.pathname !== "/threadspan/state"))) {
         if (!isLoopbackAddress(request.socket.remoteAddress ?? "")) {
           writeJson(response, 403, errorEnvelope("loopback_required", "Threadspan UI is available only from the local host"));
           return;
         }
-        await handleThreadspanUiRequest(service, url.pathname, response);
+        await handleThreadspanUiRequest(service, url.pathname, response, installerGui);
         return;
       }
-      enforceRequestAuthentication(request, config);
+      if (url.pathname === "/mcp") {
+        if (request.method !== "POST") {
+          response.setHeader("allow", "POST");
+          writeJson(response, 405, errorEnvelope("method_not_allowed", "Streamable HTTP MCP accepts POST requests"));
+          return;
+        }
+        enforceConnectorAuthentication(request, config, authentication);
+        const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+        const mcpSessionId = String(request.headers["mcp-session-id"] ?? randomUUID());
+        if (body.method === "notifications/cancelled") {
+          mcpActiveRequests.get(mcpRequestKey(mcpSessionId, body.params?.requestId))?.abort(new Error(body.params?.reason ?? "MCP request cancelled"));
+          response.writeHead(202, { "cache-control": "no-store", "mcp-session-id": mcpSessionId });
+          response.end();
+          return;
+        }
+        if (body.id === undefined && String(body.method ?? "").startsWith("notifications/")) {
+          response.writeHead(202, { "cache-control": "no-store", "mcp-session-id": mcpSessionId });
+          response.end();
+          return;
+        }
+        const mcpController = new AbortController();
+        const mcpKey = mcpRequestKey(mcpSessionId, body.id);
+        if (mcpActiveRequests.has(mcpKey)) {
+          writeMcpJson(response, {
+            jsonrpc: "2.0",
+            id: body.id ?? null,
+            error: { code: -32600, message: "Duplicate active JSON-RPC request id" },
+          }, mcpSessionId);
+          return;
+        }
+        const abortMcp = () => mcpController.abort(requestController.signal.reason ?? new Error("MCP HTTP request aborted"));
+        requestController.signal.addEventListener("abort", abortMcp, { once: true });
+        mcpActiveRequests.set(mcpKey, mcpController);
+        try {
+          release = await gate.acquire(mcpController.signal);
+          const result = await dispatchMcpRequest(service, body.method, body.params ?? {}, mcpController.signal, {
+            serverName: "threadspan",
+            serverVersion: "0.4.0",
+            allowedTools: CONNECTOR_TOOL_NAMES,
+          });
+          writeMcpJson(response, { jsonrpc: "2.0", id: body.id ?? null, result }, mcpSessionId);
+        } catch (error) {
+          const bridgeError = asBridgeError(error);
+          writeMcpJson(response, {
+            jsonrpc: "2.0",
+            id: body.id ?? null,
+            error: { code: -32000, message: bridgeError.message, data: { code: bridgeError.code, status: bridgeError.status, details: bridgeError.details } },
+          }, mcpSessionId);
+        } finally {
+          requestController.signal.removeEventListener("abort", abortMcp);
+          if (mcpActiveRequests.get(mcpKey) === mcpController) mcpActiveRequests.delete(mcpKey);
+        }
+        return;
+      }
+      if (url.pathname.startsWith("/v1/maximum-utilization/")) {
+        if (request.method !== "POST") {
+          response.setHeader("allow", "POST");
+          writeJson(response, 405, errorEnvelope("method_not_allowed", "Maximum-utilization controls require POST"));
+          return;
+        }
+        enforceAccountMutationAuthentication(request, authentication);
+        const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+        if (url.pathname === "/v1/maximum-utilization/refresh-native") {
+          writeJson(response, 202, await service.refreshMaximumUtilizationNative());
+        } else if (url.pathname === "/v1/maximum-utilization/disable") {
+          writeJson(response, 200, await service.disableMaximumUtilization());
+        } else if (url.pathname === "/v1/maximum-utilization/manual/enter") {
+          writeJson(response, 200, await service.enterManualMaximumUtilization(body));
+        } else if (url.pathname === "/v1/maximum-utilization/manual/leave") {
+          writeJson(response, 200, await service.leaveManualMaximumUtilization());
+        } else {
+          writeJson(response, 404, errorEnvelope("not_found", `No maximum-utilization control for ${url.pathname}`));
+        }
+        return;
+      }
+      if (isAccountMutation(request.method, url.pathname)) {
+        enforceAccountMutationAuthentication(request, authentication);
+        if (request.method === "POST" && url.pathname === "/v1/accounts") {
+          const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+          writeJson(response, 201, await service.createAccount(body));
+          return;
+        }
+        if (request.method === "PUT" && url.pathname === "/v1/accounts/active") {
+          const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+          writeJson(response, 200, await service.selectAccount(body.accountId ?? body.account_id));
+          return;
+        }
+        if (request.method === "DELETE" && url.pathname.startsWith("/v1/accounts/")) {
+          writeJson(response, 200, await service.removeAccount(decodeURIComponent(url.pathname.slice("/v1/accounts/".length))));
+          return;
+        }
+      }
+      enforceRequestAuthentication(request, config, authentication);
       applyCorsResponseHeaders(request, response, config);
 
       if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/v1/health")) {
@@ -55,6 +188,11 @@ export function createHttpServer(service, config) {
       }
       if (request.method === "GET" && url.pathname === "/v1/bridge/providers") {
         writeJson(response, 200, { object: "list", data: await service.describeProviders() });
+        return;
+      }
+      if (request.method === "GET" && ["/v1/accounts", "/v1/accounts/descriptors"].includes(url.pathname)) {
+        const accounts = await service.describeAccounts();
+        writeJson(response, 200, url.pathname.endsWith("/descriptors") ? { descriptors: accounts.descriptors } : accounts);
         return;
       }
       if (request.method === "GET" && url.pathname === "/threadspan/state") {
@@ -91,6 +229,46 @@ export function createHttpServer(service, config) {
   });
 }
 
+/** Authenticate the public connector with a scoped token that cannot access `/v1`. */
+function enforceConnectorAuthentication(request, config, authentication) {
+  const supplied = parseBearerToken(request.headers.authorization);
+  const { main, connector } = authentication;
+  if (tokensEqual(supplied, connector)) return;
+  if (!main && !connector) throw new BridgeError("MCP connector authentication is not configured", { status: 503, code: "connector_auth_not_configured" });
+  throw new BridgeError("Missing or invalid MCP connector bearer token", { status: 401, code: "connector_unauthorized" });
+}
+
+/** Account mutation is always owner-authenticated and loopback-only, even in permissive dev mode. */
+function enforceAccountMutationAuthentication(request, authentication) {
+  if (!isLoopbackAddress(request.socket.remoteAddress ?? "")) throw new BridgeError("Account mutation is loopback-only", { status: 403, code: "loopback_required" });
+  if (!authentication.main) throw new BridgeError("Main account-mutation authentication is not configured", { status: 503, code: "auth_not_configured" });
+  if (!tokensEqual(parseBearerToken(request.headers.authorization), authentication.main)) throw new BridgeError("Missing or invalid account-mutation bearer token", { status: 401, code: "unauthorized" });
+}
+
+function isAccountMutation(method, pathname) {
+  return (method === "POST" && pathname === "/v1/accounts")
+    || (method === "PUT" && pathname === "/v1/accounts/active")
+    || (method === "DELETE" && pathname.startsWith("/v1/accounts/") && pathname !== "/v1/accounts/active");
+}
+
+/** Preserve JSON-RPC request id type within an MCP session. */
+function mcpRequestKey(sessionId, requestId) {
+  return `${sessionId}:${requestId === null ? "null" : typeof requestId}:${JSON.stringify(requestId)}`;
+}
+
+function writeMcpJson(response, body, sessionId) {
+  if (response.writableEnded) return;
+  const text = JSON.stringify(body);
+  response.writeHead(200, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(text),
+    "cache-control": "no-store",
+    "mcp-protocol-version": "2025-11-25",
+    "mcp-session-id": sessionId,
+  });
+  response.end(text);
+}
+
 const THREADSPAN_ASSETS = new Map([
   ["/threadspan/", ["index.html", "text/html; charset=utf-8"]],
   ["/threadspan/index.html", ["index.html", "text/html; charset=utf-8"]],
@@ -98,9 +276,13 @@ const THREADSPAN_ASSETS = new Map([
   ["/threadspan/threadspan.js", ["threadspan.js", "text/javascript; charset=utf-8"]],
   ["/threadspan/adapt-state.js", ["adapt-state.js", "text/javascript; charset=utf-8"]],
   ["/threadspan/mark.svg", ["mark.svg", "image/svg+xml"]],
+  ["/threadspan/install/", ["install.html", "text/html; charset=utf-8"]],
+  ["/threadspan/install/index.html", ["install.html", "text/html; charset=utf-8"]],
+  ["/threadspan/install/install.css", ["install.css", "text/css; charset=utf-8"]],
+  ["/threadspan/install/install.js", ["install.js", "text/javascript; charset=utf-8"]],
 ]);
 
-async function handleThreadspanUiRequest(service, pathname, response) {
+async function handleThreadspanUiRequest(service, pathname, response, installerGui) {
   if (pathname === "/threadspan") {
     response.writeHead(302, { location: "/threadspan/", "cache-control": "no-store" });
     response.end();
@@ -111,10 +293,27 @@ async function handleThreadspanUiRequest(service, pathname, response) {
     writeJson(response, 404, errorEnvelope("not_found", `No Threadspan UI asset for ${pathname}`));
     return;
   }
+  if (pathname.startsWith("/threadspan/install/") && !hasActiveInstallerSession(installerGui)) {
+    writeJson(response, 404, errorEnvelope("not_found", "The one-time installer UI is available only during an active installation session"));
+    return;
+  }
   const [name, contentType] = asset;
   const body = await readFile(new URL(`../../ui/${name}`, import.meta.url));
   response.writeHead(200, { "content-type": contentType, "content-length": body.byteLength, "cache-control": "no-store", "x-content-type-options": "nosniff" });
   response.end(body);
+}
+
+/** Keep installer-only assets outside the normal daemon UI once setup completes or expires. */
+function hasActiveInstallerSession(installerGui) {
+  if (!installerGui) return false;
+  for (const [nonce, session] of installerGui.sessions ?? []) {
+    if (["complete", "cancelled"].includes(session.state)) continue;
+    try {
+      installerGui.authorize(nonce);
+      return true;
+    } catch {}
+  }
+  return false;
 }
 
 /**
@@ -244,11 +443,11 @@ async function readJsonBody(request, maxBytes, signal) {
  * @param {import("node:http").IncomingMessage} request HTTP request.
  * @param {Record<string, any>} config Bridge configuration.
  */
-function enforceRequestAuthentication(request, config) {
+function enforceRequestAuthentication(request, config, authentication) {
   const remoteAddress = request.socket.remoteAddress ?? "";
   const loopback = isLoopbackAddress(remoteAddress);
   const tokenEnv = config.server?.authTokenEnv;
-  const expectedToken = typeof tokenEnv === "string" && tokenEnv ? process.env[tokenEnv] : undefined;
+  const expectedToken = authentication.main;
   const suppliedToken = parseBearerToken(request.headers.authorization);
   const origin = request.headers.origin;
   const allowedOrigins = new Set(config.server?.allowedOrigins ?? []);
@@ -262,6 +461,22 @@ function enforceRequestAuthentication(request, config) {
     throw new BridgeError(`Bridge authentication token is not configured; set ${tokenEnv ?? "CURSOR_BRIDGE_TOKEN"}`, { status: 503, code: "auth_not_configured" });
   }
   throw new BridgeError("Missing or invalid bearer token", { status: 401, code: "unauthorized" });
+}
+
+function resolveAuthentication(config) {
+  const tokenEnv = config.server?.authTokenEnv;
+  const connectorEnv = config.server?.connectorTokenEnv;
+  if (tokenEnv && connectorEnv && tokenEnv === connectorEnv) throw new Error("server.authTokenEnv and server.connectorTokenEnv must differ");
+  let main = tokenEnv ? process.env[tokenEnv] : undefined;
+  if (!main && config.server?.authTokenFile) {
+    try { main = readFileSync(config.server.authTokenFile, "utf8").trim(); } catch {}
+  }
+  let connector = connectorEnv ? process.env[connectorEnv] : undefined;
+  if (!connector && config.server?.connectorTokenFile) {
+    try { connector = readFileSync(config.server.connectorTokenFile, "utf8").trim(); } catch {}
+  }
+  if (main && connector && tokensEqual(main, connector)) throw new Error("Main and connector tokens must be distinct");
+  return Object.freeze({ main, connector });
 }
 
 /**
@@ -329,6 +544,9 @@ function normalizeConvenienceHttpInput(body) {
     allowWebSearch: body.allowWebSearch ?? body.allow_web_search,
     coordinatorId: body.coordinatorId ?? body.coordinator_id,
     workerGroup: body.workerGroup ?? body.worker_group,
+    accountId: body.accountId ?? body.account_id,
+    accountFallback: body.accountFallback ?? body.account_fallback,
+    continuityHandoff: body.continuityHandoff ?? body.continuity_handoff,
   };
 }
 

@@ -19,6 +19,15 @@
       be served by the local daemon, opened independently, or hosted through a
       supported plugin or MCP UI surface.
     </p>
+    <div data-field="tip" role="status" aria-live="polite" hidden>
+      <span data-field="tip-text"></span>
+      <a data-field="tip-link" href="#threadspan-glossary">Glossary</a>
+      <button type="button" data-action="dismiss-tip">Dismiss</button>
+      <button type="button" data-action="refine-tip" hidden>Refine</button>
+      <button type="button" data-action="ask-tip" hidden>Ask about this</button>
+      <button type="button" data-action="disable-tips">Disable tips</button>
+      <span data-field="tip-status" aria-live="polite"></span>
+    </div>
   </aside>
 
   <header id="threadspan-bar" class="route-bar">
@@ -39,9 +48,10 @@
       </span>
       <span class="route-bar__filament">
         <svg class="route-bar__braid" viewBox="0 0 120 18" aria-hidden="true" focusable="false">
-          <path fill="none" stroke="#1B1814" stroke-width="1.8" stroke-linecap="round" d="M2 9c8-6 12-6 20 0s12 6 20 0 12-6 20 0 12 6 20 0 12-6 18 0"/>
-          <path fill="none" stroke="#8A3F24" stroke-width="1.8" stroke-linecap="round" d="M2 9c8 6 12 6 20 0s12-6 20 0 12 6 20 0 12-6 20 0 12 6 18 0"/>
-          <path fill="none" stroke="#165E66" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="3 2" d="M2 5h116M2 13h116"/>
+          <path fill="none" stroke="#1B1814" stroke-width="2" stroke-linecap="round" d="M2 9h46"/>
+          <circle cx="54" cy="9" r="3.2" fill="none" stroke="#8A3F24" stroke-width="2"/>
+          <path fill="none" stroke="#165E66" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m57 6.5 14-4h47"/>
+          <path fill="none" stroke="#8A3F24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m57 11.5 14 4h47"/>
         </svg>
         <span class="route-bar__route mono" data-field="route">delegate / grok-build / grok-4.6</span>
       </span>
@@ -53,6 +63,80 @@
       </span>
       <span class="route-bar__chevron" aria-hidden="true">▾</span>
     </button>
+    <button
+      class="route-picker__toggle"
+      type="button"
+      id="route-picker-toggle"
+      aria-expanded="false"
+      aria-controls="threadspan-picker"
+      aria-haspopup="dialog"
+    >
+      Pick route
+    </button>
+    <section
+      class="route-picker"
+      id="threadspan-picker"
+      data-field="route-picker"
+      role="dialog"
+      aria-labelledby="route-picker-heading"
+      aria-describedby="route-picker-boundary"
+      hidden
+    >
+      <div class="route-picker__head">
+        <div>
+          <h2 id="route-picker-heading">Route picker</h2>
+          <p class="note">Local presentation choice; it does not change the native Desktop selection.</p>
+        </div>
+        <div class="route-picker__head-actions">
+          <label class="route-picker__recovery">
+            <input type="checkbox" name="picker-show-hidden">
+            <span>Show hidden/unavailable</span>
+          </label>
+          <button type="button" data-action="reset-picker-order">Reset smart order</button>
+        </div>
+      </div>
+
+      <div class="route-picker__search">
+        <label for="route-picker-search">Search routes</label>
+        <input id="route-picker-search" type="search" name="picker-query" autocomplete="off" placeholder="Model, provider, mode, or route">
+      </div>
+
+      <details class="route-picker__advanced" data-field="picker-advanced-filters">
+        <summary>Advanced filters</summary>
+        <div class="route-picker__filter-grid">
+          <label>Mode
+            <select name="picker-mode">
+              <option value="all">All modes</option>
+              <option value="consult">Consult</option>
+              <option value="integrated">Integrated</option>
+              <option value="delegate">Delegate</option>
+            </select>
+          </label>
+          <label>Provider
+            <select name="picker-provider"><option value="all">All providers</option></select>
+          </label>
+          <label>Model
+            <select name="picker-model"><option value="all">All models</option></select>
+          </label>
+          <label><input type="checkbox" name="picker-free-only"> <span>Free only</span></label>
+          <label><input type="checkbox" name="picker-favorites-only"> <span>Favorites only</span></label>
+        </div>
+      </details>
+
+      <div class="route-picker__selection">
+        <label for="route-picker-selected">Selected route string</label>
+        <input id="route-picker-selected" class="mono" data-field="picker-selected-route" type="text" readonly value="delegate/grok-build/grok-4.6">
+        <button type="button" data-action="copy-picker-route">Copy route</button>
+      </div>
+
+      <ol class="route-picker__list" data-field="picker-routes" aria-label="Threadspan routes"></ol>
+      <p class="route-picker__empty note" data-field="picker-empty" hidden>No routes match every active filter.</p>
+      <button class="route-picker__show-all" type="button" data-action="show-all-picker-routes" hidden>Show all matching routes</button>
+      <p class="route-picker__boundary note" id="route-picker-boundary">
+        Selecting here updates only this HUD’s displayed choice. Use or copy the exact route string in a supported Threadspan client; no server-side routing mutation is implied.
+      </p>
+      <p class="visually-hidden" data-field="picker-announcement" role="status" aria-live="polite" aria-atomic="true"></p>
+    </section>
   </header>
 
   <p id="state-banner" class="banner" data-field="banner" hidden></p>
@@ -61,9 +145,10 @@
     <div class="drawer__layout">
       <div class="drawer__spine" aria-hidden="true">
         <svg viewBox="0 0 18 200" focusable="false">
-          <path fill="none" stroke="#1B1814" stroke-width="2" stroke-linecap="round" d="M5 6c.2 18 8 18 8 36s-8 18-8 36 8 18 8 36-8 18-8 36 8 18 8 36"/>
-          <path fill="none" stroke="#8A3F24" stroke-width="2" stroke-linecap="round" d="M13 6c-.2 18-8 18-8 36s8 18 8 36-8 18-8 36 8 18 8 36-8 18-8 36"/>
-          <path fill="none" stroke="#165E66" stroke-width="2" stroke-linecap="round" stroke-dasharray="4 3" d="M9 6v188"/>
+          <path fill="none" stroke="#1B1814" stroke-width="2.2" stroke-linecap="round" d="M9 6v68"/>
+          <circle cx="9" cy="80" r="3.2" fill="none" stroke="#8A3F24" stroke-width="2"/>
+          <path fill="none" stroke="#165E66" stroke-width="2.2" stroke-linecap="round" d="M11.4 82.4c2.6 3.2 3.6 7 3.6 12V194"/>
+          <path fill="none" stroke="#8A3F24" stroke-width="2.2" stroke-linecap="round" d="M6.6 82.4C4 85.6 3 89.4 3 94v100"/>
         </svg>
       </div>
       <div class="drawer__body">
@@ -159,6 +244,36 @@
                 </li>
               </ul>
             </div>
+            <div class="field" data-field="accounts">
+              <div class="util__head">
+                <h3 class="kicker">Accounts</h3>
+                <button type="button" data-action="add-account">+ Account</button>
+              </div>
+              <p data-field="active-account">Default / unknown account</p>
+              <p class="note" data-field="account-telemetry">0 combined attempts. Quota, reset, renewal, and charge are unknown until a provider publishes authoritative observations.</p>
+              <ul class="util-list" data-field="account-list"></ul>
+              <p class="note">Threadspan stores opaque local IDs and refs only. Sign in through the provider's native OAuth, device, or CLI flow; never paste secrets here.</p>
+            </div>
+            <div class="field" data-field="maximum-utilization">
+              <h3 class="kicker">Maximum utilization</h3>
+              <p data-field="maximum-utilization-phase">Not configured</p>
+              <p class="note" data-field="maximum-utilization-detail">Optional controller state is not published.</p>
+              <div class="filter-row" data-field="maximum-utilization-controls">
+                <button type="button" data-action="refresh-native-quota">Refresh native</button>
+                <button type="button" data-action="disable-maximum-utilization">Disable</button>
+                <label>Manual scope
+                  <select name="manual-scope-kind">
+                    <option value="provider">Provider</option>
+                    <option value="app">App</option>
+                    <option value="account">Account</option>
+                  </select>
+                </label>
+                <label>Scope label <input name="manual-scope-label" maxlength="80" autocomplete="off" placeholder="Owner-visible label"></label>
+                <button type="button" data-action="enter-manual-full-push">Enter manual full-push</button>
+                <button type="button" data-action="leave-manual-full-push" hidden>Leave manual full-push</button>
+              </div>
+              <p class="note" data-field="maximum-utilization-error" role="alert"></p>
+            </div>
             <div data-field="reroute" class="reroute" role="status">
               <span class="kicker">Reroute event</span>
               <p class="mono">2026-08-17 20:02 UTC · operator · delegate/grok-build/grok-4.6 → delegate/cursor-ultra/auto</p>
@@ -174,7 +289,19 @@
             <details class="route-map-disclosure">
               <summary>Route Map</summary>
               <p class="note">Weighted provider and model hierarchy. Open only when you want the machinery.</p>
-              <div class="route-map" data-field="route-map" role="img" aria-label="Provider hierarchy and mode routes"></div>
+              <div class="route-map" data-field="route-map" role="region" aria-label="Provider hierarchy and mode routes"></div>
+            </details>
+            <details id="threadspan-glossary" class="glossary-disclosure" data-field="glossary">
+              <summary>Glossary</summary>
+              <label>Search glossary <input type="search" data-field="glossary-search" autocomplete="off"></label>
+              <dl>
+                <div data-glossary-entry data-search="consult advice second opinion"><dt id="glossary-consult">Consult</dt><dd>Advisory output; the current host keeps judgment and execution.</dd></div>
+                <div data-glossary-entry data-search="integrated raw model tools"><dt id="glossary-integrated">Integrated</dt><dd>Raw model inference; the current host owns tools and approvals.</dd></div>
+                <div data-glossary-entry data-search="delegate worker execution"><dt id="glossary-delegate">Delegate</dt><dd>A bounded provider-owned execution task reviewed by the coordinator.</dd></div>
+                <div data-glossary-entry data-search="availability verified health"><dt id="glossary-availability">Availability</dt><dd>Observed route health, not a promise of future capacity.</dd></div>
+                <div data-glossary-entry data-search="fallback alternative route"><dt id="glossary-fallback">Fallback</dt><dd>A qualified alternative; never automatic failover by itself.</dd></div>
+                <div data-glossary-entry data-search="compatibility watch drift self heal"><dt id="glossary-compatibility-watch">Compatibility Watch</dt><dd>Local drift detection and bounded, reviewed repair evidence.</dd></div>
+              </dl>
             </details>
             <details class="appearance-disclosure" data-field="appearance">
               <summary>Appearance</summary>
@@ -207,6 +334,38 @@
       </div>
     </div>
   </main>
+
+  <dialog data-field="tip-dialog" aria-labelledby="tip-dialog-title">
+    <form method="dialog" data-field="tip-form">
+      <h2 id="tip-dialog-title">Ask about this tip</h2>
+      <p class="note">Session-only. It does not read the main prompt, memory, identifiers, or credentials.</p>
+      <div data-field="tip-transcript" role="log" aria-live="polite"></div>
+      <label>Question <input name="question" maxlength="240" autocomplete="off"></label>
+      <p data-field="tip-dialog-status" role="status"></p>
+      <menu>
+        <button type="button" data-action="escalate-tip">Escalate to main assistant</button>
+        <button type="button" data-action="close-tip-dialog">Close</button>
+        <button type="submit">Ask</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog data-field="account-dialog">
+    <form method="dialog" data-field="account-form">
+      <h2>+ Account</h2>
+      <p class="note" data-field="account-instructions">Choose a native sign-in or ref-only authentication source. This form never accepts tokens, cookies, emails, or raw profile paths.</p>
+      <label>Label <input name="label" required maxlength="80" autocomplete="off"></label>
+      <label>Provider <select name="providerId" required></select></label>
+      <label>Authentication <select name="authKind" required></select></label>
+      <label data-field="auth-source-row">Environment or secret-file ref <input name="authSourceRef" maxlength="160" autocomplete="off"></label>
+      <label>Opaque profile ref <input name="profileRef" maxlength="160" autocomplete="off"></label>
+      <menu>
+        <button type="button" data-action="cancel-account">Cancel</button>
+        <button type="submit">Add account</button>
+      </menu>
+      <p class="note" data-field="account-error" role="alert"></p>
+    </form>
+  </dialog>
 
   <script src="./adapt-state.js"></script>
   <script src="./threadspan.js"></script>

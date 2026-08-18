@@ -11,10 +11,11 @@ test("CLI parser handles values, booleans, equals, and repeated options", () => 
   assert.deepEqual(parsed.options.tag, ["x", "y"]);
 });
 
-import { chmod, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDirectCliInvocation, resolveExecutablePath } from "../src/cli.mjs";
+import { createWindowsNpmBinShim } from "./helpers.mjs";
 
 test("resolveExecutablePath searches PATH and rejects nonexistent commands", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cursor-bridge-cli-"));
@@ -47,14 +48,21 @@ test("resolveExecutablePath applies Windows PATHEXT semantics", async () => {
 });
 
 
-test("installed npm bin symlinks are recognized as direct CLI invocation", async () => {
+test("installed npm bin launchers are recognized as direct CLI invocation", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "cursor-bridge-cli-link-"));
   const modulePath = join(directory, "cli.mjs");
   const invocationPath = join(directory, "cursor-bridge");
   await writeFile(modulePath, "export {};\n", "utf8");
-  await symlink(modulePath, invocationPath);
+  const commandShim = await createWindowsNpmBinShim(t, modulePath, "cursor-bridge", { platform: "win32" });
+  assert.match(commandShim, /cursor-bridge\.cmd$/i);
+  assert.match(await readFile(commandShim.replace(/\.cmd$/i, ".ps1"), "utf8"), /\$input \| & .*\$args/);
 
-  assert.equal(isDirectCliInvocation(invocationPath, modulePath), true);
+  if (process.platform === "win32") {
+    assert.equal(isDirectCliInvocation(modulePath, modulePath), true);
+  } else {
+    await symlink(modulePath, invocationPath);
+    assert.equal(isDirectCliInvocation(invocationPath, modulePath), true);
+  }
   assert.equal(isDirectCliInvocation(undefined, modulePath), false);
 });
 
@@ -83,4 +91,3 @@ test("JSON CLI results include continuity ids without stderr output", () => {
   assert.equal(JSON.parse(stdout).threadId, "thread_2");
   assert.equal(stderr, "");
 });
-

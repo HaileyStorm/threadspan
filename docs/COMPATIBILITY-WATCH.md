@@ -1,6 +1,6 @@
 # Desktop Compatibility Watch
 
-Threadspan includes an optional, local-only observer for Codex CLI/Desktop and ChatGPT Desktop changes. It is implemented in `src/maintenance/desktop-update.mjs` but is not wired into the CLI, package root export, configuration loader, or Desktop UI.
+Threadspan includes an optional, local-only observer for Codex CLI/Desktop and ChatGPT Desktop changes. It is wired into configuration, daemon state, CLI doctor/intake commands, and the companion HUD. Repair remains a separately approved operation.
 
 The safe defaults are deliberate:
 
@@ -72,6 +72,29 @@ const polling = watch.startPolling((report) => {
 // Later:
 polling.stop();
 ```
+
+## All-task capability reuse and bounded self-heal
+
+The direct/meta/meta-meta self-heal contract applies to research, browser work, documents, media, operations, provider setup, and coding. It is a planning and repair policy, not an automatic capability installer or completion authority.
+
+At every task-planning or direct-repair checkpoint, first perform bounded discovery of already installed tools, skills, plugins, and provider capabilities. Discovery and selection evidence is keyed by host, provider, model, mode, and capability. Prefer provider-native strengths and tools; never transfer a tool/plugin/skill assumption across providers, models, or modes. Unknown remains Unknown until a bounded check. Select the smallest sufficient non-overlapping capability by capability fit, live availability, privacy, quota/cost, and expected coordination overhead, then stop discovery when it is sufficient. Do not repeat broad inventory searches, poll for unchanged results, or spend tokens merely to exhaust the catalog.
+
+The bounded phases remain:
+
+1. **Direct:** plan or repair the task with an existing capability first, then collect focused task-appropriate evidence.
+2. **Meta:** update the capability discovery/selection registry, selection rules, or instructions when the repair shows a reusable recognition gap.
+3. **Meta-meta:** analyze why an available capability was missed or why overlapping capability work was duplicated, then stop at depth 2.
+
+A new reusable helper, skill, or plugin is appropriate only for a recurring or generalizable need. It requires all of the following before creation or proposal:
+
+- a clear trigger and bounded scope;
+- regression tests or equivalent focused verification;
+- an owner;
+- rollback or an explicit expiry/removal condition;
+- portability expectations;
+- a no-overlap check against installed and already-proposed capabilities.
+
+One-off tasks never auto-create reusable capabilities. Third-party skill/plugin installation and any permission expansion still use the normal user approval flow. This policy does not add memory, carry prompts or credentials, copy cross-host state, silently override project policy, or turn agent output into completion authority. Generalizable defects may become reviewed sanitized Compatibility Watch issue/PR proposals; they are not auto-installed, auto-merged, or auto-applied.
 
 ## Repair planning and rollback
 
@@ -157,6 +180,10 @@ Do not patch undocumented Desktop internals to create, repair, or accelerate the
 
 The Compatibility Watch does not:
 
+- auto-create helpers, skills, or plugins for one-off tasks;
+- install third-party skills/plugins or expand permissions without normal user approval;
+- run unbounded or token-burning capability discovery loops;
+- store memory, prompts, credentials, or cross-host state for self-heal discovery;
 - download or install updates;
 - invoke package managers or app installers;
 - query online release feeds;

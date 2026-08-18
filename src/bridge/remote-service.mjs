@@ -1,4 +1,5 @@
 import { BridgeError } from "../core/errors.mjs";
+import { readFile } from "node:fs/promises";
 
 /**
  * Service-compatible HTTP client for MCP shims that share one persistent bridge daemon.
@@ -11,6 +12,7 @@ export class RemoteBridgeService {
    * @param {{
    *   baseUrl: string,
    *   tokenEnv?: string,
+   *   tokenFile?: string,
    *   timeoutMs?: number,
    *   fetchImpl?: typeof fetch,
    *   environment?: NodeJS.ProcessEnv,
@@ -20,6 +22,7 @@ export class RemoteBridgeService {
     if (!options?.baseUrl) throw new Error("RemoteBridgeService requires baseUrl");
     this.baseUrl = normalizeBridgeBaseUrl(options.baseUrl);
     this.tokenEnv = options.tokenEnv ?? "CURSOR_BRIDGE_TOKEN";
+    this.tokenFile = options.tokenFile;
     this.timeoutMs = positiveInteger(options.timeoutMs, 2 * 60 * 60 * 1000);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.environment = options.environment ?? process.env;
@@ -66,7 +69,7 @@ export class RemoteBridgeService {
     }, this.timeoutMs);
     timeout.unref?.();
     const signal = combineAbortSignals(options.signal, timeoutController.signal);
-    const token = this.environment[this.tokenEnv];
+    const token = await this.#resolveToken();
     const headers = { accept: "application/json" };
     if (options.body !== undefined) headers["content-type"] = "application/json";
     if (token) headers.authorization = `Bearer ${token}`;
@@ -110,6 +113,23 @@ export class RemoteBridgeService {
       });
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  /** Resolve a local bearer without ever logging or serializing its value. */
+  async #resolveToken() {
+    const environmentToken = this.environment[this.tokenEnv];
+    if (environmentToken) return environmentToken;
+    if (!this.tokenFile) return undefined;
+    try {
+      const value = (await readFile(this.tokenFile, "utf8")).trim();
+      if (!value) throw new Error("token file is empty");
+      return value;
+    } catch (error) {
+      throw new BridgeError(`Could not read remote bridge token file: ${error instanceof Error ? error.message : String(error)}`, {
+        status: 503,
+        code: "remote_bridge_auth_unavailable",
+      });
     }
   }
 }

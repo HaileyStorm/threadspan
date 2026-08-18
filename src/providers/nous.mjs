@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { ProviderError } from "../core/errors.mjs";
 
+const MAX_TOOL_CALLS_PER_TURN = 16;
+
 /**
  * Nous Portal adapter.
  * Direct API-key inference is the portable default. A Hermes subscription proxy remains
@@ -30,24 +32,30 @@ export class NousProvider extends OpenAiChatProvider {
         retryable: false,
       });
     }
+    const events = [];
     const toolCalls = new Set();
     try {
       for await (const event of super.run(request)) {
         if (event.type === "tool-call-delta") {
           toolCalls.add(Number.isInteger(event.index) ? event.index : 0);
-          if (toolCalls.size > 1) {
-            throw new ProviderError(this.id, "Nous returned more than one tool call in one assistant turn", { retryable: false });
+          if (toolCalls.size > MAX_TOOL_CALLS_PER_TURN) {
+            throw new ProviderError(this.id, `Nous returned more than ${MAX_TOOL_CALLS_PER_TURN} tool calls in one assistant turn`, { retryable: false });
           }
         }
-        if (event.type === "done" && (event.message?.toolCalls?.length ?? 0) > 1) {
-          throw new ProviderError(this.id, "Nous returned more than one tool call in one assistant turn", { retryable: false });
+        if (event.type === "done" && (event.message?.toolCalls?.length ?? 0) > MAX_TOOL_CALLS_PER_TURN) {
+          throw new ProviderError(this.id, `Nous returned more than ${MAX_TOOL_CALLS_PER_TURN} tool calls in one assistant turn`, { retryable: false });
         }
-        yield event;
+        events.push(event);
       }
+      for (const event of events) yield event;
     } catch (error) {
       if (isPaymentRequired(error)) writeStopMarker(this.stopMarkerPath);
       throw error;
     }
+  }
+
+  capabilities() {
+    return { ...super.capabilities(), streaming: false, bufferedProviderTurns: true };
   }
 
   runtimeStats() {
@@ -55,7 +63,8 @@ export class NousProvider extends OpenAiChatProvider {
       kind: "nous",
       stopped: existsSync(this.stopMarkerPath),
       stopMarkerPath: this.stopMarkerPath,
-      maxToolCallsPerTurn: 1,
+      maxToolCallsPerTurn: MAX_TOOL_CALLS_PER_TURN,
+      parallelToolCalls: true,
       maxProviderTurns: 17,
     };
   }

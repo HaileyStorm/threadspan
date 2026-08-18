@@ -20,7 +20,7 @@ async function startUpstream(t, handler) {
   return { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, requests };
 }
 
-test("Nous defaults to max effort and rejects multiple tool calls", async (t) => {
+test("Nous defaults to max effort and preserves ordered multiple tool calls", async (t) => {
   const upstream = await startUpstream(t, async (_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({
@@ -37,14 +37,46 @@ test("Nous defaults to max effort and rejects multiple tool calls", async (t) =>
     streaming: false,
     capabilities: ["integrated"],
   }, { logger: silentLogger() });
+  const events = [];
+  for await (const event of provider.run({
+    mode: "integrated",
+    model: "deepseek/deepseek-v4-flash-0731",
+    messages: [{ role: "user", content: "test" }],
+  })) events.push(event);
+  assert.equal(upstream.requests[0].reasoning_effort, "max");
+  assert.deepEqual(events.at(-1).message.toolCalls.map(({ id, name }) => ({ id, name })), [
+    { id: "one", name: "first" },
+    { id: "two", name: "second" },
+  ]);
+  assert.equal(provider.runtimeStats().maxToolCallsPerTurn, 16);
+  assert.equal(provider.runtimeStats().parallelToolCalls, true);
+});
+
+test("Nous rejects a provider turn above the bounded multi-call ceiling before exposing output", async (t) => {
+  const toolCalls = Array.from({ length: 17 }, (_, index) => ({
+    id: `call_${index}`,
+    function: { name: `tool_${index}`, arguments: "{}" },
+  }));
+  const upstream = await startUpstream(t, async (_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ choices: [{ message: { content: "", tool_calls: toolCalls }, finish_reason: "tool_calls" }] }));
+  });
+  const provider = new NousProvider("nous", {
+    adapter: "nous",
+    baseUrl: upstream.baseUrl,
+    apiKey: "test",
+    streaming: false,
+    capabilities: ["integrated"],
+  }, { logger: silentLogger() });
+  const exposed = [];
   await assert.rejects(async () => {
-    for await (const _event of provider.run({
+    for await (const event of provider.run({
       mode: "integrated",
       model: "deepseek/deepseek-v4-flash-0731",
       messages: [{ role: "user", content: "test" }],
-    })) {}
-  }, /more than one tool call/);
-  assert.equal(upstream.requests[0].reasoning_effort, "max");
+    })) exposed.push(event);
+  }, /more than 16 tool calls/);
+  assert.deepEqual(exposed, []);
 });
 
 test("Nous writes a persistent owner-cleared stop marker on HTTP 402", async (t) => {

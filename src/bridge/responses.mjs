@@ -176,6 +176,7 @@ export class ResponsesAssembler {
       role: "assistant",
       content: this.text,
       ...(this.reasoning ? { reasoningContent: this.reasoning } : {}),
+      ...(Array.isArray(this.reasoningDetails) ? { reasoningDetails: structuredClone(this.reasoningDetails) } : {}),
       ...(calls.length > 0 ? { toolCalls: calls } : {}),
     };
   }
@@ -309,6 +310,9 @@ export class ResponsesAssembler {
       const delta = terminalReasoning.startsWith(this.reasoning) ? terminalReasoning.slice(this.reasoning.length) : terminalReasoning;
       if (!terminalReasoning.startsWith(this.reasoning)) this.reasoning = "";
       events.push(...this.#acceptReasoningDelta(delta));
+    }
+    if (Array.isArray(message.reasoningDetails)) {
+      this.reasoningDetails = structuredClone(message.reasoningDetails);
     }
     for (const [index, terminalCall] of (message.toolCalls ?? []).entries()) {
       const current = this.toolCalls.get(index) ?? {

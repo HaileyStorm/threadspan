@@ -79,7 +79,17 @@ function appendInputItems(messages, items) {
         id: String(item.call_id ?? item.id ?? `call_${pendingAssistant.toolCalls.length + 1}`),
         name: String(item.name ?? "unknown_tool"),
         arguments: normalizeArguments(item.arguments),
+        ...(typeof item.arguments === "string" ? { argumentsText: item.arguments } : {}),
       });
+      continue;
+    }
+
+    if (item.type === "reasoning") {
+      pendingAssistant ??= { role: "assistant", content: "", toolCalls: [] };
+      const summary = Array.isArray(item.summary)
+        ? item.summary.map((part) => part?.text ?? "").filter(Boolean).join("\n")
+        : "";
+      if (summary) pendingAssistant.reasoningContent = summary;
       continue;
     }
 
@@ -142,7 +152,14 @@ function normalizeInlineToolCalls(toolCalls) {
     id: String(call?.id ?? call?.call_id ?? `call_${index + 1}`),
     name: String(call?.name ?? call?.function?.name ?? "unknown_tool"),
     arguments: normalizeArguments(call?.arguments ?? call?.function?.arguments),
+    ...(typeof (call?.arguments ?? call?.function?.arguments) === "string"
+      ? { argumentsText: call?.arguments ?? call?.function?.arguments }
+      : {}),
   }));
+}
+
+function isPlainTextMessage(message) {
+  return message && Object.keys(message).every((key) => ["role", "content"].includes(key));
 }
 
 function coalesceAdjacentMessages(messages) {
@@ -152,10 +169,8 @@ function coalesceAdjacentMessages(messages) {
     if (
       previous &&
       previous.role === message.role &&
-      !previous.toolCalls &&
-      !message.toolCalls &&
-      !previous.toolCallId &&
-      !message.toolCallId
+      isPlainTextMessage(previous) &&
+      isPlainTextMessage(message)
     ) {
       previous.content = `${previous.content}\n\n${message.content}`.trim();
     } else {
@@ -178,10 +193,11 @@ export function toOpenAiChatMessages(messages, options = {}) {
           type: "function",
           function: {
             name: call.name,
-            arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments ?? {}),
+            arguments: call.argumentsText ?? (typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments ?? {})),
           },
         })),
         ...(message.reasoningContent ? { reasoning_content: message.reasoningContent } : {}),
+        ...(Array.isArray(message.reasoningDetails) ? { reasoning_details: structuredClone(message.reasoningDetails) } : {}),
       };
     }
     if (role === "tool") {
@@ -192,6 +208,7 @@ export function toOpenAiChatMessages(messages, options = {}) {
       content: String(message.content ?? ""),
       ...(message.name ? { name: message.name } : {}),
       ...(message.reasoningContent ? { reasoning_content: message.reasoningContent } : {}),
+      ...(Array.isArray(message.reasoningDetails) ? { reasoning_details: structuredClone(message.reasoningDetails) } : {}),
     };
   });
 }

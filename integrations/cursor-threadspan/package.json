@@ -1,0 +1,30 @@
+{
+  "name": "threadspan-cursor",
+  "displayName": "Threadspan",
+  "description": "Provider routing, usage, and installer control for Cursor.",
+  "version": "0.4.0",
+  "publisher": "threadspan",
+  "license": "MIT",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onView:threadspan.control", "onCommand:threadspan.install", "onCommand:threadspan.refresh"],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": { "activitybar": [{ "id": "threadspan", "title": "Threadspan", "icon": "media/threadspan.svg" }] },
+    "views": { "threadspan": [{ "type": "webview", "id": "threadspan.control", "name": "Provider map" }] },
+    "commands": [
+      { "command": "threadspan.refresh", "title": "Threadspan: Refresh provider state" },
+      { "command": "threadspan.install", "title": "Threadspan: Open setup" }
+    ],
+    "configuration": {
+      "title": "Threadspan",
+      "properties": {
+        "threadspan.baseUrl": { "type": "string", "default": "http://127.0.0.1:8743", "description": "Loopback Threadspan daemon URL." },
+        "threadspan.tokenFile": { "type": "string", "default": "~/.threadspan/auth-token", "description": "Owner-private local daemon token file." },
+        "threadspan.command": { "type": "string", "default": "threadspan", "description": "Threadspan CLI command or absolute path." }
+      }
+    }
+  },
+  "scripts": { "package": "vsce package --no-dependencies" },
+  "devDependencies": { "@vscode/vsce": "^3.6.2" }
+}

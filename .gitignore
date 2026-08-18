@@ -2,6 +2,11 @@ node_modules/
 .cursor-bridge/
 *.log
 coverage/
+dist/
+.artifacts-temp/
+.working
+.working.*
+.working.registry.lock
 .DS_Store
 Thumbs.db
 .env

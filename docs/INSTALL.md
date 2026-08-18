@@ -1,107 +1,27 @@
-# Portable Threadspan installer
+# Installation
 
-The installer module plans and applies product-local Threadspan configuration on Node 22. It is intentionally not wired into `src/cli.mjs` yet.
+The deterministic installer is wired into the CLI and source-run setup window.
 
-## Fresh Codex task prompt
+Use `threadspan install gui` for the guided flow. Use `threadspan install plan` and `threadspan install apply` for automation. Both use the same component registry, digest, backups, atomic writes, and rollback manifest.
 
-> Install Threadspan from `<future-repository-url>` using the one-pass setup; show me the complete plan and prerequisites before applying it.
+The GUI is loopback-only and uses a short-lived installer session created through the authenticated daemon. It never receives provider credentials.
 
-That is the single README-facing prompt intended for use after the repository has a durable public or private URL.
+Host-specific MCP/plugin writes are generated from neutral descriptors and merged with existing configuration. Do not replace unrelated MCP servers. Back up the exact host file before mutation and keep credentials in environment/provider-native state.
 
-## Setup styles
+## Explicit provider discovery
 
-Broad-permission one-pass setup selects every component in one noninteractive plan. It is useful when the operator already intends to install the daemon, Cursor, Grok Build, optional Claude Code, Nous, OpenRouter, native Codex integration, monitoring/fallback, sidecar UI, context profiles, product-local Continuity, and Compatibility Watch. The plan still surfaces filesystem, local-port, executable, and authentication prerequisites before approval. Broad permission does not allow Threadspan to collect or store credentials.
+`agentrouter-free`, `mistral-api-free`, `groqcloud-free`, `cloudflare-workers-ai-free`, and `gemini-api-free` are explicit-only. Defaults and `selection: "all"` exclude them. Without recent ready evidence they stay collapsed under **Add providers**. Selecting one adds only a disabled, digest-bound component document and prerequisites; it does not sign up, create credentials, install an app, open a browser, change billing, enable a route, or send a live probe.
 
-Prompted setup builds incremental plans from an explicit component list. Apply one reviewed plan, then create another when the operator chooses the next component. This keeps permission and authentication decisions close to the integration that needs them.
+Every candidate has `paidUpgradeAllowed: false`, no assumed end date, seven-day visibility freshness, an official URL, and an environment-variable name without a value. AgentRouter additionally requires a separate hard-capped token per host and a fresh live probe. Cloudflare remains a setup candidate using the generic OpenAI-compatible surface; no custom adapter is installed. Threadspan is not partnered with, sponsored by, or endorsed by any listed provider and does not promise permanent free access.
 
-Both styles use the same safety contract:
+## Optional Codex full access
 
-- planning is read-only;
-- the complete preview includes writes, backup root, rollback manifest, and prerequisite states;
-- apply requires the exact digest returned by the preview;
-- every existing target receives a product-local backup;
-- replacements use a temporary file and same-directory atomic rename;
-- targets, backups, and manifests are bounded to the explicit install root;
-- a partial failure restores prior files and removes files created by the failed plan;
-- environment-variable names and manual sign-in requirements may be recorded, but credential values are never collected or stored.
+`codex-full-access` is an explicit-only component. It is never selected by installer defaults or by `selection: "all"`; in the setup window its checkbox starts unchecked with a full-access warning. Selecting it updates only the selected host's user-level `$CODEX_HOME/config.toml` (normally `~/.codex/config.toml`). It does not touch a project's `.codex/config.toml`.
 
-## Module API
+The reviewed plan contains the target path, transform identifier, hashes, modes, setting names, effects, and bounded per-tool conflict descriptors—never raw TOML, tokens, headers, or credential values. Apply resolves the current user config path again, rejects a symlinked config or parent, requires the exact reviewed preimage, recomputes the transform and next hash, backs up the exact prior bytes under the installer backup root, and writes atomically. A matching config is a visible no-op.
 
-One-pass planning:
+The component sets `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`, and user-reviewed/preapproved app and MCP defaults. This removes command approval pauses and command sandboxing and preapproves app/MCP tools. It does **not** enable destructive/open-world capability, tools, apps, plugins, or servers. Existing per-tool overrides remain untouched and are reported as residual conflicts. See the [official Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
-```js
-import {
-  applyInstallerPlan,
-  createInstallerPlan,
-  previewInstallerPlan,
-} from "./src/installer/index.mjs";
+The Compatibility Watch configuration also includes a bounded early code-work self-heal profile. Deterministic code/test/build failures, CLI drift, quoting or command-length failures, locks, subagent interruptions, and cross-platform divergence trigger direct repair first, focused regression evidence, one recognizer/helper/process update, and one meta-meta detection/coordination check. Depth stops at 2; agent output is evidence rather than completion authority, project policy is not silently overridden, and reusable defects may only become sanitized reviewed issue/PR proposals.
 
-const plan = createInstallerPlan({
-  installRoot: "/absolute/codex-home",
-  selection: "all",
-  longContextProfiles: "all", // optional; omit for standard profiles only
-});
-const preview = previewInstallerPlan(plan);
-process.stdout.write(preview.text);
-
-// Only after the operator has seen and approved the preview:
-await applyInstallerPlan(plan, { approvedDigest: preview.digest });
-```
-
-Incremental planning:
-
-```js
-const plan = createInstallerPlan({
-  installRoot: "/absolute/codex-home",
-  selection: ["daemon", "codex-native", "context-profiles"],
-});
-```
-
-The install root must already exist. Use `CODEX_HOME` as the root when the generated `*.config.toml` files should be immediately discoverable by Codex; Threadspan's own artifacts remain below that same bounded root. The planner never asks for a secret. Nous and OpenRouter prerequisite checks inspect only whether `NOUS_API_KEY` or `OPENROUTER_API_KEY` is present; their values are not copied into the plan. Cursor, Grok Build, and Codex use existing product sign-ins.
-
-## Components
-
-| Component | Planned product-local artifact | Early prerequisite |
-|---|---|---|
-| daemon | loopback daemon configuration | local port and state permission |
-| Cursor | Consult/Delegate integration descriptor | existing Cursor sign-in |
-| Grok Build | bounded-worker integration descriptor | installed, signed-in CLI |
-| Claude Code | optional managed-worker descriptor | untested; install, sign in, then pass the local capability probe |
-| Nous | OpenAI-compatible provider descriptor | `NOUS_API_KEY` in runtime environment |
-| OpenRouter | OpenAI-compatible provider descriptor | `OPENROUTER_API_KEY` in runtime environment |
-| native Codex | native picker/catalog descriptor | existing Codex sign-in |
-| monitoring/fallback | health and explicit fallback policy | local status read/write permission |
-| sidecar UI | loopback, read-only-default UI descriptor | local UI port permission |
-| context profiles | named Codex profile files | profile-directory write permission |
-| Continuity | checkpoint/rollover descriptor | product-local state permission |
-
-Grok Delegate is a separately disclosed high-authority lane: current Grok Build requires `bypassPermissions` for unattended tools. Threadspan applies it only inside an isolated linked worktree, keeps Grok's strict sandbox, denies integration authority, and requires independent acceptance. Grok Consult does not receive that permission mode.
-| Compatibility Watch | report-only compatibility policy | version reads; separate approval for live checks |
-
-Continuity is optional because it appears only when selected (or as part of explicit `selection: "all"`). Its scope is product-local checkpoints and rollover metadata. It explicitly excludes memory, multi-host synchronization, and cross-host communications.
-
-Compatibility Watch is report-only. It does not silently rewrite profiles, replace the native model catalog, install updates, or perform a live network check without a separate approval.
-
-## Codex context profiles
-
-The generated profiles use the official Codex keys `model_context_window` and `model_auto_compact_token_limit`. Codex documents profile files at `$CODEX_HOME/<name>.config.toml` and selection with `--profile`; see the [official configuration reference](https://developers.openai.com/codex/config-reference).
-
-Standard profiles are always generated when `context-profiles` is selected:
-
-| Profile | Model | Context | Auto-compact |
-|---|---|---:|---:|
-| `gpt-5.6-default` | `gpt-5.6-sol` | 271,500 | 192,000 |
-| `spark` | `gpt-5.3-codex-spark` | 128,000 | 80,000 |
-
-Optional long-context profiles:
-
-| Profile | Model | Context | Auto-compact |
-|---|---|---:|---:|
-| `gpt-5.6-600k` | `gpt-5.6-sol` | 600,000 | 480,000 |
-| `gpt-5.6-1m` | `gpt-5.6-sol` | 1,000,000 | 800,000 |
-
-Every profile is rejected if its auto-compact threshold exceeds 90% of the context window. The installer preserves the native Codex picker/catalog rather than installing a replacement catalog.
-
-## Rollback evidence
-
-Each apply creates `.threadspan-installer/rollbacks/<plan-id>.json`. Every entry identifies the product-relative target, whether it existed, its original SHA-256 when applicable, and its product-relative backup path. The manifest transitions from `prepared` to `applied`; if an apply fails after preparation, the installer restores targets it actually wrote and records `rolled-back-after-error`. A failed restoration is reported as `rollback-incomplete` with the affected product-relative targets rather than being presented as a successful rollback.
+See [INSTALLER-GUI.md](INSTALLER-GUI.md) and [HOST-SURFACES.md](HOST-SURFACES.md).

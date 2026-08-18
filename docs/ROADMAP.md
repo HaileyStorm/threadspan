@@ -1,6 +1,16 @@
 # Roadmap
 
-Priorities are ordered by risk reduction and usefulness. Items already implemented through 0.2.1—command environment allowlisting, managed descendant termination, supplied-worktree policy enforcement, Grok admission, and local worker ledgers—are not repeated as future claims.
+Priorities are ordered by risk reduction and usefulness. This roadmap starts after 0.4; the older 0.2.1-era sections below remain only as historical design context and may include shipped work.
+
+## P0 — post-0.4 safe maintenance
+
+1. Expand Compatibility Watch into one plan-first maintenance surface for Threadspan, provider apps, and safe user-owned PC upkeep.
+2. Require an allowlist, exact preview, active-work check, rollback, bounded runtime, and post-health proof before any automatic action.
+3. Never surprise-upgrade, restart apps, touch projects or credentials, or turn a provider on because a newer version exists.
+4. Refresh dated provider, model, card-free, and host evidence; keep Unknown visible when a live check is absent.
+5. Rebuild, sign, clean-install, and verify every public release artifact.
+6. Retire shipped or superseded 0.2.1 roadmap items after preserving useful provenance.
+7. Add a collapsed, host-neutral Continuity task tree: logical/origin task first, selected active generation highlighted, prior and successor mains nested, and navigation/rollover controls only behind verified native host authority. Never rewrite an undocumented native chat list.
 
 ## P0 — live certification and release packaging
 

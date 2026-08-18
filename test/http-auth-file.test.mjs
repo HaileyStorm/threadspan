@@ -1,0 +1,8 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { closeHttpServer, createHttpServer, listenHttpServer } from "../src/bridge/http-server.mjs";
+test("daemon accepts file-only main auth while keeping connector scope distinct",async(t)=>{const root=await mkdtemp(join(tmpdir(),"threadspan-http-auth-")),tokenFile=join(root,"token");await writeFile(tokenFile,"file-main\n",{mode:0o600});t.after(()=>rm(root,{recursive:true,force:true}));const config={server:{host:"127.0.0.1",port:0,authTokenEnv:"THREADSPAN_ABSENT_MAIN",authTokenFile:tokenFile,connectorTokenEnv:"THREADSPAN_ABSENT_CONNECTOR",allowUnauthenticatedLoopback:false}};const server=createHttpServer({stats(){return{status:"ok"}}},config);t.after(()=>closeHttpServer(server));const bound=await listenHttpServer(server,{host:"127.0.0.1",port:0});assert.equal((await fetch(`http://127.0.0.1:${bound.port}/health`,{headers:{authorization:"Bearer file-main"}})).status,200)});
+test("daemon fails closed when public connector and main bearer values coincide",()=>{const oldMain=process.env.THREADSPAN_SAME_MAIN,oldConnector=process.env.THREADSPAN_SAME_CONNECTOR;process.env.THREADSPAN_SAME_MAIN="same";process.env.THREADSPAN_SAME_CONNECTOR="same";try{assert.throws(()=>createHttpServer({},{server:{authTokenEnv:"THREADSPAN_SAME_MAIN",connectorTokenEnv:"THREADSPAN_SAME_CONNECTOR"}}),/must be distinct/)}finally{if(oldMain===undefined)delete process.env.THREADSPAN_SAME_MAIN;else process.env.THREADSPAN_SAME_MAIN=oldMain;if(oldConnector===undefined)delete process.env.THREADSPAN_SAME_CONNECTOR;else process.env.THREADSPAN_SAME_CONNECTOR=oldConnector}});

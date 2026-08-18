@@ -51,7 +51,7 @@ export class RunLedger {
    * Hash prompt/stdout/stderr and optionally persist the raw evidence in a private JSON file.
    * @param {string} jobId Stable job id.
    * @param {{prompt?: string, stdout?: string, stderr?: string, metadata?: Record<string, any>}} evidence Evidence content.
-   * @returns {Promise<{promptSha256?: string, stdoutSha256?: string, stderrSha256?: string, evidencePath?: string}>}
+   * @returns {Promise<{promptSha256?: string, stdoutSha256?: string, stderrSha256?: string, evidencePath?: string, evidenceArtifact?: {path: string, size: number, sha256: string}}>}
    */
   async captureEvidence(jobId, evidence) {
     const result = {
@@ -64,14 +64,23 @@ export class RunLedger {
     const path = join(this.evidenceDirectory, `${sanitizeFileSegment(jobId)}.json`);
     try {
       await mkdir(this.evidenceDirectory, { recursive: true, mode: 0o700 });
-      await writeFile(path, `${JSON.stringify({
+      const serialized = Buffer.from(`${JSON.stringify({
         schemaVersion: 1,
         timestamp: new Date().toISOString(),
         provider: this.providerId,
         jobId,
         ...evidence,
-      }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-      return { ...result, evidencePath: path };
+      }, null, 2)}\n`, "utf8");
+      await writeFile(path, serialized, { mode: 0o600 });
+      return {
+        ...result,
+        evidencePath: path,
+        evidenceArtifact: {
+          path,
+          size: serialized.length,
+          sha256: createHash("sha256").update(serialized).digest("hex"),
+        },
+      };
     } catch (error) {
       await this.#handleFailure("persist provider run evidence", error);
       return result;

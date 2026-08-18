@@ -1,3 +1,5 @@
+import { summarizeRepetitiveOutput } from "./output-summary.mjs";
+
 /**
  * System instruction used when a secondary provider is acting as an in-thread consultant.
  * The consultant may inspect supplied context but must return advice rather than claim ownership of execution.
@@ -48,16 +50,90 @@ export function applyModePolicy(messages, mode) {
 /**
  * Render provider-neutral messages into a stable text transcript for agent-harness and command adapters.
  * @param {Array<Record<string, any>>} messages Provider-neutral messages.
+ * @param {{outputSummary?: Record<string, any>, providerId?: string, adapter?: string, purpose?: string, path?: string, replayCritical?: boolean}} [options] Render-only summary policy.
  * @returns {string}
  */
-export function renderMessagesForAgent(messages) {
+export function renderMessagesForAgent(messages, options = {}) {
   return messages.map((message) => {
     const role = String(message.role ?? "user").toUpperCase();
-    const sections = [`[${role}]`, String(message.content ?? "")];
+    const content = renderMessageContent(message, options);
+    const sections = [`[${role}]`, content];
+    if (message.reasoningContent !== undefined) {
+      sections.push(`REASONING CONTENT\n${String(message.reasoningContent)}`);
+    }
     if (Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
-      sections.push(`TOOL CALLS\n${message.toolCalls.map((call) => `${call.name}(${JSON.stringify(call.arguments ?? {})}) [${call.id}]`).join("\n")}`);
+      sections.push(`TOOL CALLS\n${message.toolCalls.map(renderToolCall).join("\n")}`);
     }
     if (message.toolCallId) sections.push(`TOOL CALL ID: ${message.toolCallId}`);
+    const metadata = messageMetadata(message);
+    if (Object.keys(metadata).length > 0) sections.push(`MESSAGE METADATA\n${safeJson(metadata)}`);
     return sections.filter(Boolean).join("\n");
   }).join("\n\n");
+}
+
+/** Summarize only successful tool-result/output content on the derived agent-facing view. */
+function renderMessageContent(message, options) {
+  const content = String(message.content ?? "");
+  if (!isSuccessfulToolOutput(message)) return content;
+  return summarizeRepetitiveOutput(content, {
+    ...(options.outputSummary ?? {}),
+    providerId: options.providerId,
+    adapter: options.adapter,
+    purpose: options.purpose ?? "agent-prompt",
+    path: options.path,
+    replayCritical: options.replayCritical === true,
+  }).content;
+}
+
+/** Recognize only explicit successful tool output; errors always remain exact. */
+function isSuccessfulToolOutput(message) {
+  const role = String(message.role ?? "").toLowerCase();
+  const type = String(message.type ?? "").toLowerCase();
+  const status = String(message.status ?? "").toLowerCase();
+  const toolOutput = role === "tool" || Boolean(message.toolCallId) || /tool[-_ ]?(result|output)/.test(type);
+  const failed = message.isError === true || message.error !== undefined || message.errors !== undefined || ["error", "failed", "failure", "cancelled"].includes(status);
+  return toolOutput && !failed;
+}
+
+/** Render tool calls in original array order while retaining raw string arguments verbatim. */
+function renderToolCall(call, index) {
+  const rawArguments = typeof call?.arguments === "string"
+    ? call.arguments
+    : safeJson(call?.arguments ?? {});
+  return [
+    `TOOL CALL ${index + 1}`,
+    `ID: ${String(call?.id ?? "")}`,
+    `NAME: ${String(call?.name ?? "")}`,
+    "RAW ARGUMENTS:",
+    rawArguments,
+  ].join("\n");
+}
+
+/** Retain all non-transcript fields as exact structured metadata in the derived render. */
+function messageMetadata(message) {
+  return Object.fromEntries(Object.entries(message).filter(([key, value]) => (
+    !["role", "content", "reasoningContent", "toolCalls", "toolCallId"].includes(key)
+    && value !== undefined
+  )));
+}
+
+/** Serialize metadata without dropping Error fields or throwing on BigInt/cycles. */
+function safeJson(value) {
+  const seen = new WeakSet();
+  return JSON.stringify(value, (_key, entry) => {
+    if (typeof entry === "bigint") return entry.toString();
+    if (entry instanceof Error) {
+      return {
+        name: entry.name,
+        message: entry.message,
+        ...(entry.code === undefined ? {} : { code: entry.code }),
+        ...(entry.status === undefined ? {} : { status: entry.status }),
+      };
+    }
+    if (entry && typeof entry === "object") {
+      if (seen.has(entry)) return "[Circular]";
+      seen.add(entry);
+    }
+    return entry;
+  });
 }

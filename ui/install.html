@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-theme-mode="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Threadspan Setup</title>
+  <script>
+    (()=>{const key="threadspanInstallerTheme",allowed=new Set(["system","dark","light"]);let mode="system",dark=true;try{const stored=localStorage.getItem(key);if(allowed.has(stored))mode=stored}catch{}try{if(typeof matchMedia==="function")dark=matchMedia("(prefers-color-scheme: dark)").matches}catch{}const effective=mode==="system"?(dark?"dark":"light"):mode;document.documentElement.dataset.themeMode=mode;document.documentElement.dataset.theme=effective;document.documentElement.style.colorScheme=effective})();
+  </script>
+  <link rel="stylesheet" href="/threadspan/install/install.css">
+</head>
+<body>
+  <main class="shell" aria-labelledby="page-title">
+    <header class="topbar">
+      <div class="brand"><img src="/threadspan/mark.svg" alt=""><span>THREADSPAN</span></div>
+      <nav class="steps" aria-label="Setup progress"></nav>
+      <button class="quiet" id="monitor-toggle" type="button" aria-expanded="true">Monitor</button>
+    </header>
+    <section class="workspace">
+      <article class="stage" id="stage" aria-live="polite" data-installer-first-state="stable-update">
+        <p class="eyebrow" id="step-label">Step 1 of 6</p>
+        <h1 id="page-title">Checking for updates</h1>
+        <p class="lede" id="page-lede">Use the latest public release when one is available.</p>
+        <div id="origin" class="origin" hidden></div>
+        <div id="content"></div>
+        <footer class="actions">
+          <button class="secondary" id="cancel" type="button">Cancel</button>
+          <span class="action-spacer"></span>
+          <button class="secondary" id="back" type="button" disabled>Back</button>
+          <button class="primary" id="next" type="button">Next</button>
+        </footer>
+      </article>
+      <aside class="monitor" id="monitor" aria-label="Live setup monitor">
+        <div class="monitor-head"><h2>Live monitor</h2><span class="status-dot"></span></div>
+        <ol id="events" class="events"></ol>
+      </aside>
+    </section>
+    <footer class="statusbar">
+      <div><span>Usage</span><strong id="usage">Calculating</strong></div>
+      <div><span>Time</span><strong id="time">2-8 min</strong></div>
+      <div><span>Rollback</span><strong class="good">Ready</strong></div>
+      <fieldset class="theme-picker" aria-label="Installer theme">
+        <legend class="sr-only">Installer theme</legend>
+        <label><input type="radio" name="installer-theme" value="system">System</label>
+        <label><input type="radio" name="installer-theme" value="dark">Dark</label>
+        <label><input type="radio" name="installer-theme" value="light">Light</label>
+      </fieldset>
+      <span id="theme-status" class="sr-only" aria-live="polite"></span>
+      <button class="quiet" id="appearance" type="button" title="Change installer accent colors">Accents</button>
+    </footer>
+  </main>
+  <template id="donation-card-template">
+    <section class="donation-card" data-donation-card aria-labelledby="donation-title">
+      <header>
+        <div><p class="eyebrow">Optional</p><h2 id="donation-title">Support Threadspan</h2></div>
+        <button class="quiet" type="button" data-dismiss-donation>Dismiss</button>
+      </header>
+      <p>Donations support Hailey's open AI work, from chess and Mamba research to Threadspan, Maestro Continuum, and related tools. This note appears once. Support never changes access, routing, or provider priority.</p>
+      <details>
+        <summary>Show donation options</summary>
+        <div class="donation-grid">
+          <article><strong>Bitcoin</strong><code>1K628QLEh3sS8sEdzZfvuqqHRecVckSgaJ</code></article>
+          <article><strong>Cardano</strong><code>addr1q9fd05jktgv49094z8hvjp6cqvn7npt8hfzjna4dvhezmvpgl92x5cevqghl4ng0we2es4xjp59gvm3nttdzwf9ym6lqr3628x</code></article>
+          <article><strong>Ethereum</strong><code>0x78b6adac22415568A7F725a865206ccFd1a82F4c</code></article>
+        </div>
+        <p>No available donation route is preferred. <strong>Vast.ai:</strong> transfer credit to <code>HaileyCollet@gmail.com</code>. Transfers are irreversible; double-check the recipient. <a href="https://docs.vast.ai/guides/reference/billing" target="_blank" rel="noreferrer">Billing guide</a> · <a href="https://docs.vast.ai/cli/reference/transfer-credit" target="_blank" rel="noreferrer">CLI guide</a></p>
+        <p><a href="https://buymeacoffee.com/threadspan" target="_blank" rel="noreferrer">Buy Me a Coffee</a> supports one-time contributions and memberships through the verified public Threadspan page.</p>
+        <p class="donation-note">Threadspan does not collect donation telemetry, request wallet keys, or set up financial accounts. QR codes and full details are in <a href="https://github.com/HaileyStorm/threadspan/blob/main/docs/DONATIONS.md" target="_blank" rel="noreferrer">the donation guide</a>.</p>
+      </details>
+    </section>
+  </template>
+  <dialog id="appearance-dialog">
+    <form method="dialog" aria-describedby="accent-help"><h2>Installer accents</h2><p id="accent-help">Applies to this installer window only. Installed HUD accents are unchanged.</p><label>Copper accent <input id="copper" type="color" value="#b65325"></label><label>Teal accent <input id="teal" type="color" value="#176f70"></label><menu><button value="cancel">Close</button><button id="save-appearance" value="default">Apply</button></menu></form>
+  </dialog>
+  <script type="module" src="/threadspan/install/install.js"></script>
+</body>
+</html>

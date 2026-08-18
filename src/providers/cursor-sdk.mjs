@@ -51,10 +51,12 @@ export class CursorSdkProvider extends ProviderAdapter {
       streaming: true,
       tools: false,
       images: false,
-      durableThreads: true,
+      durableThreads: false,
+      retainedWithinProcess: true,
       providerOwnsTools: true,
       localRuntime: true,
       hardReadOnlyAskMode: false,
+      settings: resolveCursorSdkSettings(this.config.local),
     };
   }
 
@@ -77,8 +79,7 @@ export class CursorSdkProvider extends ProviderAdapter {
         ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
       }));
     } catch (error) {
-      this.logger.warn("Cursor model discovery failed; using configured fallback", { error: error instanceof Error ? error.message : String(error) });
-      return [{ id: this.config.model ?? "auto" }];
+      throw new ProviderError(this.id, `Cursor model discovery failed: ${error instanceof Error ? error.message : String(error)}`, { retryable: true, cause: error });
     }
   }
 
@@ -109,6 +110,7 @@ export class CursorSdkProvider extends ProviderAdapter {
       pendingDelegateAgentCreations: this.delegateAgentCreations.size,
       maxDelegateAgents: this.config.delegate?.maxAgents ?? 16,
       delegateAgentTtlMs: this.config.delegate?.agentTtlMs ?? 60 * 60 * 1000,
+      settings: resolveCursorSdkSettings(this.config.local),
     };
   }
 
@@ -179,6 +181,7 @@ export class CursorSdkProvider extends ProviderAdapter {
           model: request.model,
           signal: request.signal,
           includeToolStatus: this.config.consult?.includeToolStatus === true,
+          settings: resolveCursorSdkSettings(this.config.local),
         });
       } finally {
         await disposeAgent(agent);
@@ -200,7 +203,16 @@ export class CursorSdkProvider extends ProviderAdapter {
     const release = await entry.lock.acquire(request.signal);
     try {
       entry.lastUsedAt = Date.now();
-      const prompt = this.#renderCursorPrompt(request, {
+      const continuation = entry.hasRun
+        ? retainedContinuationMessages(request.messages, entry.policySignature)
+        : {
+            messages: request.messages,
+            policySignature: policySignature(request.messages),
+          };
+      const prompt = this.#renderCursorPrompt({
+        ...request,
+        messages: continuation.messages,
+      }, {
         header: "Work directly in the live workspace. Complete the delegated subtask, validate it, and report exact evidence to the primary agent.",
       });
       yield* streamCursorRun(this.id, entry.agent, prompt, {
@@ -208,7 +220,10 @@ export class CursorSdkProvider extends ProviderAdapter {
         model: request.model,
         signal: request.signal,
         includeToolStatus: this.config.delegate?.includeToolStatus === true,
+        settings: resolveCursorSdkSettings(this.config.local),
       });
+      entry.hasRun = true;
+      entry.policySignature = continuation.policySignature;
     } catch (error) {
       if (isLikelyDeadCursorAgent(error)) {
         this.delegateAgents.delete(entry.key);
@@ -276,6 +291,8 @@ export class CursorSdkProvider extends ProviderAdapter {
       agent,
       lock: new AsyncLock(),
       lastUsedAt: Date.now(),
+      hasRun: false,
+      policySignature: "",
     };
     this.delegateAgents.set(key, entry);
     await this.#enforceDelegateLimit();
@@ -337,7 +354,32 @@ export class CursorSdkProvider extends ProviderAdapter {
   }
 }
 
-/** @typedef {{key: string, agent: any, lock: AsyncLock, lastUsedAt: number}} CursorDelegateEntry */
+/** @typedef {{key: string, agent: any, lock: AsyncLock, lastUsedAt: number, hasRun: boolean, policySignature: string}} CursorDelegateEntry */
+
+function retainedContinuationMessages(messages, previousPolicySignature) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { messages: [], policySignature: "[]" };
+  }
+  const policyMessages = messages.filter((message) =>
+    message?.role === "system" || message?.role === "developer"
+  );
+  const currentPolicySignature = JSON.stringify(policyMessages);
+  let start = messages.length - 1;
+  while (start > 0 && messages[start].role !== "user") start -= 1;
+  const latestTurn = messages.slice(start);
+  return {
+    messages: currentPolicySignature === previousPolicySignature
+      ? latestTurn
+      : [...policyMessages, ...latestTurn],
+    policySignature: currentPolicySignature,
+  };
+}
+
+function policySignature(messages) {
+  return JSON.stringify((messages ?? []).filter((message) =>
+    message?.role === "system" || message?.role === "developer"
+  ));
+}
 
 /**
  * Minimal FIFO async mutex used to serialize sends through one durable Cursor agent.
@@ -432,8 +474,8 @@ async function createCursorAgent(sdk, options) {
     local: {
       cwd: options.cwd,
       ...(Array.isArray(localConfig.settingSources) ? { settingSources: localConfig.settingSources } : {}),
-      ...(localConfig.autoReview === true ? { autoReview: true } : {}),
-      ...(localConfig.sandboxEnabled === true ? { sandboxOptions: { enabled: true } } : {}),
+      ...(typeof localConfig.autoReview === "boolean" ? { autoReview: localConfig.autoReview } : {}),
+      ...(typeof localConfig.sandboxEnabled === "boolean" ? { sandboxOptions: { enabled: localConfig.sandboxEnabled } } : {}),
     },
     ...(options.mcpServers && typeof options.mcpServers === "object" ? { mcpServers: options.mcpServers } : {}),
   };
@@ -449,7 +491,7 @@ async function createCursorAgent(sdk, options) {
  * @param {string} providerId Provider id.
  * @param {any} agent Cursor SDK agent.
  * @param {string} prompt Rendered prompt.
- * @param {{mode: string, model: string, signal?: AbortSignal, includeToolStatus?: boolean}} options Run options.
+ * @param {{mode: string, model: string, signal?: AbortSignal, includeToolStatus?: boolean, settings?: Record<string, any>}} options Run options.
  * @returns {AsyncIterable<Record<string, any>>}
  */
 async function* streamCursorRun(providerId, agent, prompt, options) {
@@ -522,6 +564,7 @@ async function* streamCursorRun(providerId, agent, prompt, options) {
         agentId: agent.agentId,
         runId: run.id,
         status: result?.status,
+        cursorSdk: options.settings,
       },
     };
   } catch (error) {
@@ -530,6 +573,25 @@ async function* streamCursorRun(providerId, agent, prompt, options) {
   } finally {
     if (abortListener) options.signal?.removeEventListener("abort", abortListener);
   }
+}
+
+/** Report native Cursor SDK settings separately from effective Threadspan overrides. */
+function resolveCursorSdkSettings(localConfig = {}) {
+  const hasSettingSources = Array.isArray(localConfig.settingSources);
+  const hasSandbox = typeof localConfig.sandboxEnabled === "boolean";
+  const hasAutoReview = typeof localConfig.autoReview === "boolean";
+  return {
+    nativeSettings: {
+      settingSources: !hasSettingSources,
+      sandbox: !hasSandbox,
+      autoReview: !hasAutoReview,
+    },
+    effectiveSettings: {
+      settingSources: hasSettingSources ? [...localConfig.settingSources] : "native",
+      sandbox: hasSandbox ? (localConfig.sandboxEnabled ? "enabled" : "disabled") : "native",
+      autoReview: hasAutoReview ? (localConfig.autoReview ? "enabled" : "disabled") : "native",
+    },
+  };
 }
 
 /**

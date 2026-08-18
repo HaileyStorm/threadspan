@@ -1,377 +1,201 @@
-# cursor-codex-bridge
+# Threadspan
 
-A local, provider-neutral bridge for using external model subscriptions, APIs, and coding-agent harnesses from Codex/ChatGPT Desktop, Cursor, MCP clients, and OpenAI-compatible clients.
+<img src="ui/mark.svg" alt="Threadspan routing gate" width="88" height="88">
 
-The project preserves three materially different workflows instead of hiding them behind a vague “use another model” switch:
+**One task. Every model.**
 
-| Mode | Authority | Intended use |
-|---|---|---|
-| **Consult** | The primary agent remains in charge. The secondary returns advice only. | Second opinions, design review, debugging, risk analysis, critique, and cross-model adjudication. |
-| **Integrated** | The secondary raw model is active, while the calling client owns tools, approvals, and the agent loop. | Run Codex's tool harness with DeepSeek, Nous Portal, xAI API, or another compatible raw model. |
-| **Delegate** | The secondary provider's agent owns one bounded execution task. The primary retains acceptance and integration authority. | Scoped implementation, tests, migration, investigation, and mechanical repository work. |
+Threadspan connects Codex, Grok, Cursor, Nous, OpenRouter, Claude Code gateways, and optional agent runtimes through one local daemon. It adds a compact model/provider picker, shared usage and availability state, safe Consult/Integrated/Delegate modes, and a companion HUD without replacing a host app's native model catalog.
 
-**Direct was renamed to Consult.** There is no second overlapping Consult feature.
+The point is practical: use the models and subscriptions you already have, see which ones are actually available, and keep work recoverable when one provider reaches a limit.
 
-## Surfaces
+## Install with one prompt
 
-The package exposes:
+> Install Threadspan from https://github.com/HaileyStorm/threadspan. Start its setup window, show me the component choices and estimated usage, ask early for any sign-ins or permissions you need, preserve rollback, and live-test only the providers I select.
 
-- an OpenAI **Responses API-compatible subset** over HTTP, including SSE;
-- an **MCP stdio server** with `consult`, `delegate`, `bridge_status`, and `bridge_models`;
-- a CLI for direct calls, diagnostics, configuration, Codex installation, and skill installation;
-- a reusable **Consult skill** for asking a secondary model inside an existing thread;
-- a **Managed Worker skill** for bounded provider-owned coding jobs with independent acceptance;
-- modular adapters for Cursor SDK, Grok Build, direct xAI API, Nous Portal, DeepSeek, generic OpenAI-compatible endpoints, and arbitrary command-backed agents.
+Paste that into Codex CLI, a Codex Desktop task, Grok Build, or another capable coding agent. The agent should launch the same setup window and then yield. You can also clone/download a release and run it directly:
 
-## Provider matrix
+```bash
+node src/cli.mjs install gui
+```
 
-| Provider path | Consult | Integrated | Delegate | Boundary |
-|---|:---:|:---:|:---:|---|
-| **Cursor SDK** | Yes | No | Yes | Consult uses a disposable workspace snapshot. Delegate retains one serial local agent per thread/model/workspace. Cursor exposes an agent harness rather than a caller-owned raw-model loop, so Integrated is explicitly rejected. |
-| **Grok Build CLI** | Yes | No | Yes | Fresh finite one-shot jobs. Consult uses a disposable snapshot or empty temporary workspace. Delegate can require a clean linked Git worktree on a non-canonical branch. Model/effort/turn/tool/permission/sandbox policy is explicit. |
-| **xAI API** via `openai-chat` | Yes | Yes | No built-in agent loop | Raw Chat Completions path. Reasoning usage and `cost_in_usd_ticks` are preserved as bridge metadata when returned. |
-| **Nous Portal** via Hermes proxy | Yes | Yes | No built-in agent loop | Raw inference through the local credential-attaching proxy; it does not run Hermes tools, memory, or skills. |
-| **DeepSeek V4** | Yes | Yes | No built-in agent loop | Includes thinking/tool history compatibility and reasoning replay. |
-| **Generic OpenAI-compatible Chat Completions** | Configurable | Configurable | Only when the endpoint genuinely owns an agent loop | Streaming, reasoning, usage, and function calls are normalized. |
-| **Command-backed agent** | Configurable | Configurable | Configurable | Structured argv, bounded output/time, process-tree cleanup, and optional environment allowlisting. |
+The setup window is source-run in an app-style Vivaldi/Chrome/Edge window, not a compiled installer.
 
-## Requirements
+## What it includes
+
+- One authenticated daemon per user, shared by every coordinator and MCP shim.
+- Live provider/model discovery with a compact picker instead of a wall of models.
+- `Consult`: a secondary opinion; the current host stays responsible.
+- `Integrated`: a raw secondary response; the current host owns tools.
+- `Delegate`: a bounded provider-owned worker in an isolated linked worktree.
+- Grok fleet admission, turn, cost, process, cancellation, and evidence accounting.
+- Cursor CLI/SDK agents with discovered models and retained-agent accounting.
+- Direct Nous Portal Consult/Integrated routes and a bounded Codex-worker Delegate path.
+- OpenRouter discovery, including currently free models.
+- Explicit-only AgentRouter/Claude Code support plus check-first Mistral API, GroqCloud, Cloudflare Workers AI, and Gemini API discovery candidates.
+- A companion HUD with health, utilization, usage, ranking, and a collapsed route map.
+- Optional heuristic-first Tips: disabled by default, dismissible, cooldown-bound, and limited to one compact tip per browser session; cheap-model refinement and session-only Ask are separately gated and user-initiated.
+- Continuity descriptors, context profiles, rollover metadata, and native-host recovery.
+- Compatibility Watch: recover, learn, harden across research, browser, document, media, operations, provider setup, and coding tasks through reuse-first capability discovery, bounded direct/meta/meta-meta improvement, reviewed rollback, and sanitized issue/PR intake.
+- An optional, disabled-by-default maximum-utilization controller with native-quota gating and a durable requested-action outbox.
+- Optional Beads and project-bootstrap modules that preserve existing policy, preview every write, and never auto-initialize or migrate a tracker.
+- Compatibility Watch intake for app/provider drift and new models/providers: official documentation controls compatibility, while trusted tester reports nominate bounded probes without changing established routes by default.
+- Linux and Windows lifecycle plans.
+
+Threadspan does not copy provider credentials into source, plans, logs, screenshots, or releases. It is not partnered with, sponsored by, or endorsed by any listed provider; public documentation and user-discovered routes are surfaced without promising permanent free access.
+
+## Support Threadspan
+
+Threadspan is free and donations are entirely optional. Donations help sustain Hailey's hands-on AI work: past chess and Mamba-model work, and current or future work around Maestro Continuum, Palimpsest, Loom/ScaFOLD, an experimental Qwen3.8-27B abliteration/efficient-reasoning model, other tools, and whatever comes next. Donations never privilege or discourage any model, provider, or host route, and no available donation method below is preferred:
+
+- **Bitcoin:** `1K628QLEh3sS8sEdzZfvuqqHRecVckSgaJ`
+- **Cardano:** `addr1q9fd05jktgv49094z8hvjp6cqvn7npt8hfzjna4dvhezmvpgl92x5cevqghl4ng0we2es4xjp59gvm3nttdzwf9ym6lqr3628x`
+- **Ethereum:** `0x78b6adac22415568A7F725a865206ccFd1a82F4c`
+- **Vast.ai credit:** transfer credit to `HaileyCollet@gmail.com`. Vast.ai says transfers are irreversible, so double-check the recipient before confirming.
+- **[Buy Me a Coffee](https://buymeacoffee.com/threadspan):** one-time support and memberships through the verified public Threadspan page.
+
+Threadspan never asks for wallet keys, configures financial accounts, tracks donors, or sends donation telemetry. See [Donations](docs/DONATIONS.md) for QR codes, Vast.ai instructions, and safety notes.
+
+## Host surfaces
+
+A host surface is the app/CLI that owns the user's current conversation. Reverse support makes Threadspan available inside that host instead of forcing everything through Codex.
+
+| Host | Tier | Reverse surface | HUD/control surface | Recovery |
+|---|---|---|---|---|
+| Codex | Primary | MCP + Responses profiles + App Server | Companion HUD and App Server state | App Server / `codex exec resume` |
+| Grok Build / Bot | Enhanced | MCP, plugin/skill, optional HTTPS connector | Grok dashboard/usage/tasks + companion | ACP / `grok --resume` |
+| Cursor | Standard | MCP + source webview extension | Cursor webview + companion | Cursor SDK `Agent.resume()` / `agent` |
+| Hermes Agent | Preview | Status, models, and conservative MCP Consult | Companion HUD | Planned; not implemented or live-certified |
+
+Recovery always uses the originating host's equivalent. A Grok, Cursor, or Hermes session is never resumed through Codex merely because Codex is installed.
+
+Grok Bot has no documented arbitrary HUD injection API. Its supported path is an authenticated public Streamable HTTP MCP connector plus the companion HUD. Cursor has a documented webview API but no documented native picker injection API, so its extension provides a separate Threadspan pane and leaves Cursor's picker intact.
+
+## Providers and modes
+
+| Provider | Consult | Integrated | Delegate | Notes |
+|---|---:|---:|---:|---|
+| OpenAI-compatible API | Yes | Yes | No | The caller owns tools in Integrated. |
+| Native Codex worker | No | No | Yes | Codex owns the bounded worker loop. |
+| Grok Build | Yes | No | Yes | Finite workers, native subagents/web, shared admission. |
+| Cursor CLI/SDK | Yes | No | Yes | SDK/CLI choice is host-specific; models are discovered live. |
+| Nous Portal | Yes | Yes | Yes | Delegate uses the bounded Codex-worker adapter. |
+| OpenRouter | Yes | Yes | No | Free-model discovery is optional and live. |
+| Hermes Agent | Preview | No | No | Status/models/Consult only; full-agent support is planned. |
+| Claude Code | Community preview | No | Preview | Optional and not live-certified here. |
+| AgentRouter via Claude Code | Conditional | No | Conditional | Explicit-only, hard-capped host token, dated two-host evidence; recheck after 7 days. |
+| Mistral / Groq / Cloudflare / Gemini candidates | Check first | Check first | No | Disabled generic setup candidates; current free/cardless/model eligibility must be rechecked. |
+
+Unsupported combinations fail closed. Threadspan does not silently turn Consult into Delegate or send work to a different third party.
+
+## Setup flow
+
+1. Check the official latest stable release, with Retry/Check again and Continue current when offline or blocked.
+2. Select components and providers.
+   **Codex full access** is an explicit-only unchecked option: it removes command approval pauses and command sandboxing and preapproves app/MCP tools, but does not enable destructive/open-world capability or enable tools, apps, plugins, or servers. Defaults and `selection: "all"` never select it. See the [official Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+   Card-free/free-credit candidates are also explicit-only and collapsed under **Add providers** without current ready evidence. Selection adds prerequisites only; signup, credential creation, app installation, billing changes, live probing, and route enablement each require user permission and a reviewed plan.
+3. Protect running tasks grouped by project. The default is **finish before install**; pausing is explicit.
+4. Review exact files, prerequisites, estimated usage, and plan digest.
+5. Separately approve Desktop closure and file writes.
+6. Run focused live checks and keep rollback with the evidence.
+
+CLI, Desktop, and direct-release launches use the same plan/preview/apply engine. If the window disappears, a product-local recovery record lets Threadspan notify the origin through that host's native resume path. Explicit Cancel suppresses that notification.
+
+## Prerequisites
 
 - Node.js 22 or newer.
-- Credentials or a local authenticated provider proxy for the providers you enable.
-- `@cursor/sdk` only when a Cursor provider is enabled. It is an optional dependency and dynamically imported.
-- Official Grok Build CLI only when the `grok-build` adapter is enabled.
-- Git when Grok Delegate worktree policy is enabled.
+- At least one supported host/provider app or API account.
+- Git for writable Delegate worktrees.
+- Vivaldi, Chrome, or Edge for the source-run app window.
+- Credentials kept in provider-native sign-in state or environment variables.
 
-A non-Cursor installation can use:
+| Variable | Purpose |
+|---|---|
+| `THREADSPAN_TOKEN` | Local daemon API token. |
+| `THREADSPAN_CONNECTOR_TOKEN` | Scoped `/mcp` server token; it cannot call `/v1` or owner controls. |
+| `NOUS_API_KEY` | Nous Portal. |
+| `OPENROUTER_API_KEY` | OpenRouter. |
+| `CURSOR_API_KEY` | Official Cursor SDK. |
+| `XAI_API_KEY` | Optional direct xAI API; Grok Build normally uses its login. |
 
-```bash
-npm install --omit=optional
-```
+Set machine-local `server.connectorTokenFile` to the connector token file used only when generating client commands/config. The daemon still reads the connector credential exclusively from `server.connectorTokenEnv`. Codex remote MCP installation always targets `/mcp`, requires that connector file, and never reuses the main-token file or value; use `--embedded-mcp` if no remote connector is intended.
 
-## Quick start
+## Estimated installation usage
 
-```bash
-npm install
-node src/cli.mjs config init
-```
+Deterministic planning, writes, service setup, and the GUI use **zero model tokens** after launch. Model usage comes from the driving agent, live provider checks, and any compatibility repair.
 
-The starter config is written to:
+| Selection | Typical agent/setup usage | Optional live acceptance per provider |
+|---|---:|---:|
+| Core + one existing provider | 40k-140k tokens | 8k-35k tokens |
+| Core + three providers + host surfaces | 120k-400k tokens | 20k-75k tokens |
+| Full both-platform certification | 350k-900k+ tokens | 25k-100k+ tokens |
 
-- Windows: `%USERPROFILE%\.cursor-codex-bridge\config.jsonc`
-- Linux/macOS: `~/.cursor-codex-bridge/config.jsonc`
+These are planning ranges, not billing promises. Provider CLIs account differently, and some subscription quota has no public API. Unknown remaining quota is shown as unknown, never invented.
 
-Set credentials in the environment rather than embedding them in JSONC:
+## Voice profiles
 
-```bash
-export CURSOR_API_KEY='...'
-export DEEPSEEK_API_KEY='...'
-export XAI_API_KEY='...'
-export CURSOR_BRIDGE_TOKEN='use-a-long-random-value'
-```
+Threadspan includes five presentation-only Voice profiles: Technical partner (the local default), Concise operator, Teaching explainer, Diagnostic reviewer, and Calm guide. Setup provides preset cards plus advanced customization, live preview, reset, and digest-bound managed configuration with rollback.
 
-PowerShell:
+Voice affects only user-facing assistant prose and optional progress cadence. It never changes protocols, tools/results, schemas, evidence, required formats, permissions, provider/native settings, or factual confidence, and it is attached only for safe raw Consult through adapters that explicitly support a transient prose-policy hook. Request-local intent briefs can formalize explicitly supplied objectives and constraints without becoming memory or provider/session metadata. See [Voice and request-local intent](docs/VOICE.md).
 
-```powershell
-$env:CURSOR_API_KEY = '...'
-$env:DEEPSEEK_API_KEY = '...'
-$env:XAI_API_KEY = '...'
-$env:CURSOR_BRIDGE_TOKEN = 'use-a-long-random-value'
-```
+## Context profiles
 
-Check configuration, credentials, optional SDKs, command paths, and Grok version/hash policy without paid inference:
+| Profile | Model | Context | Auto-compact |
+|---|---|---:|---:|
+| `gpt-5.6-default` | `gpt-5.6-sol` | 271,500 | 192,000 |
+| `spark` | `gpt-5.3-codex-spark` | 128,000 | 80,000 |
+| `gpt-5.6-600k` | `gpt-5.6-sol` | 600,000 | 480,000 |
+| `gpt-5.6-1m` | `gpt-5.6-sol` | 1,000,000 | 800,000 |
 
-```bash
-node src/cli.mjs doctor
-```
+The first two are standard. Longer profiles are optional capability unlocks, not automatic answers to frequent compaction. Auto-compact is never generated above 90% of context. Switching to a model that cannot hold the current thread should create a Continuity task rather than truncate silently.
 
-`doctor --live` may query configured `/v1/models` endpoints. It still cannot prove a Grok consumer account's subscription entitlement or remaining weekly percentage without an authenticated product request/manual usage check.
+## Compatibility Watch
 
-Start the HTTP bridge:
+Compatibility Watch fingerprints bounded allowlisted app/CLI artifacts and records drift. It is read-only by default. A repair requires an exact plan ID/digest, verified backups, unchanged preimages, explicit shutdown confirmation, and a one-shot claim.
 
-```bash
-node src/cli.mjs serve
-```
+At task-planning and direct-repair checkpoints across all task types, Compatibility Watch first discovers and reuses installed tools, skills, plugins, and provider capabilities, then stops once a sufficient non-overlapping option is found. Evidence is scoped to host/provider/model/mode/capability; provider-native strengths come first, and Unknown stays Unknown pending a bounded check. Selection balances fit, live availability, privacy, quota/cost, and coordination overhead. Recurring/generalizable gaps may justify a bounded helper, skill, or plugin with a clear trigger, tests, owner, rollback or expiry, portability, and no-overlap evidence; one-offs never auto-create them. Meta updates discovery/selection guidance, and meta-meta checks why capability was missed or duplicated before stopping at depth 2. Third-party installs and permission expansion still require normal user approval. No memory or token-burning discovery loops are introduced. See [Compatibility Watch](docs/COMPATIBILITY-WATCH.md#all-task-capability-reuse-and-bounded-self-heal).
 
-Default address:
+It never reads browser auth, cookies, provider credentials, or private account APIs, and it does not patch undocumented Desktop binaries. Public issues and PRs are untrusted input: local monitors never automatically checkout, build, merge, or execute them.
 
-```text
-http://127.0.0.1:8743
-```
+## Optional maximum utilization
 
-## Codex / ChatGPT Desktop integration
+Maximum-utilization mode is a current optional controller/policy and is disabled by default. Only an authoritative native Codex quota observation for the controlling account and exact bucket/window can open it at 96% used; forecasts, local usage, reset timers, generic 429s, and caller authority flags do not gate it. Direct first exhaustion suppresses launch actions, and recovery requires a newer same-bucket native read with available capacity.
 
-Install a marker-scoped provider/MCP block and the packaged skills:
+The daemon persists reducer state and requested actions before dispatch. Host adapters execute only the capabilities they document. Unsupported task notices, protection, monitor, manifest, Fast, inbox, output-phase, and rollover effects remain pending or unsupported and are never claimed executed. The HUD is count-only and identifier-free. See [Maximum utilization](docs/MAXIMUM-UTILIZATION.md).
 
-```bash
-node src/cli.mjs codex install
-node src/cli.mjs skill install --skill all
-```
+## Glossary and optional Tips
 
-The managed Codex block adds:
+The searchable [Threadspan glossary](docs/GLOSSARY.md) defines modes, providers/core hosts, Continuity, Beads, Compatibility Watch/self-heal, branching, account routing, maximum utilization, context profiles, and the local-model roadmap. It also includes practical "Try" ideas for Consult, Integrated, and Delegate.
 
-- a Responses provider pointing at the local daemon;
-- `bridge_consult`, `bridge_integrated`, and `bridge_delegate` profiles;
-- a stdio MCP server for Consult/Delegate tools;
-- no replacement model catalog;
-- no modification outside the marked block.
+[Optional Tips](docs/TIPS.md) can surface one heuristic, glossary-linked hint in the runtime HUD. They are disabled by default. No model call happens unless the user explicitly invokes a separately configured cheap-model refinement or opens and submits to the session-only "Ask about this" conversation; provider, privacy, live-availability, token, latency, call/turn, and cooldown gates fail closed.
 
-The installer creates a timestamped backup and updates only:
+## Local models: major future support
 
-```text
-# >>> cursor-codex-bridge managed block >>>
-...
-# <<< cursor-codex-bridge managed block <<<
-```
+Threadspan does not implement local-model routing today. Major future support is planned for owner-run models across multiple backends, especially Qwen 3.8 27B, with backend-neutral capability, context, tool-use, performance, and privacy checks. This roadmap does not enable, download, or route to a local model.
 
-The HTTP profiles and the default MCP entry use the **same persistent daemon**. Each Desktop process still launches a tiny stdio MCP shim, but that shim forwards to the daemon so provider admission, ledgers, retained Cursor agents, and thread state are shared. Pass `--embedded-mcp` to `codex install` only when an intentionally independent in-process MCP bridge is preferred.
+## Coming next
 
-Codex custom-provider configuration and the Responses lifecycle are offline-tested. Exact model-picker presentation in every current ChatGPT/Codex Desktop build remains an external compatibility variable. The package therefore supplies working profiles/MCP integration without pretending stock picker behavior is guaranteed; a future Desktop augmentation can consume the same provider/model discovery surface.
+Roadmap only, not current functionality: safer PC and provider-app maintenance built on Compatibility Watch; a collapsed logical-task tree that shows the selected active Continuity generation under its origin and adds controls only when the native host can prove them; richer reverse-host parity; local-model backends; more provider adapters; and a separate memory system. Maintenance will remain plan-first, allowlisted, rollback-backed, active-work-aware, and free of surprise restarts or upgrades.
 
-## Consult examples
-
-Raw-model Consult:
+## Development
 
 ```bash
-node src/cli.mjs consult \
-  "Review this concurrency design for races and recommend the smallest safe fix" \
-  --provider deepseek \
-  --model deepseek-v4-pro \
-  --context-file ./consult-packet.md
-```
-
-Continue the same consultant thread:
-
-```bash
-node src/cli.mjs consult \
-  "Challenge your prior recommendation against the new test result" \
-  --thread thread_abc123 \
-  --provider deepseek
-```
-
-Cursor Consult over a disposable repository copy:
-
-```bash
-node src/cli.mjs consult \
-  "Inspect the implementation and identify correctness defects, not style nits" \
-  --provider cursor-ultra \
-  --workspace .
-```
-
-Grok Build Consult with a bounded diagnostic profile:
-
-```bash
-node src/cli.mjs consult \
-  "Characterize the failing behavior and propose a discriminating test" \
-  --provider grok-build \
-  --model grok-4.6 \
-  --workspace . \
-  --profile diagnose \
-  --effort medium \
-  --max-turns 8 \
-  --expected-turns 2 \
-  --coordinator-id cgpt-a \
-  --worker-group grok-nine
-```
-
-Consult remains advisory even when the provider internally has tools. The primary evaluates the result and owns edits, validation, and the final answer.
-
-## Delegate examples
-
-Cursor Delegate against the supplied workspace:
-
-```bash
-node src/cli.mjs delegate \
-  "Implement the accepted fix, run focused tests, and report changed files and evidence" \
-  --provider cursor-ultra \
-  --workspace .
-```
-
-Grok Build Delegate should use a dedicated linked worktree:
-
-```bash
-node src/cli.mjs delegate \
-  "Add deterministic characterization tests for the parser; do not change production behavior" \
-  --provider grok-build \
-  --model grok-4.6 \
-  --workspace /path/to/repo-worktree \
-  --profile mechanical \
-  --effort low \
-  --max-turns 8 \
-  --expected-turns 2 \
-  --no-plan \
-  --coordinator-id cgpt-a \
-  --worker-group grok-nine \
-  --acceptance-command "npm test -- test/parser.test.mjs"
-```
-
-The acceptance command is part of the authoritative task packet; it does not automatically expand the CLI permission allowlist. Configure exact Grok `allow`/`deny` rules separately, then independently rerun acceptance after the worker returns.
-
-## Grok Build operating model
-
-The dedicated adapter incorporates the generalizable findings in `docs/research/GrokReport.md` without hard-coding another account's observed model, hash, entitlement, or rate limits as universal truth.
-
-Implemented controls include:
-
-- exact executable resolution, optional absolute-path requirement, version regex/pin, and SHA-256 recording or enforcement;
-- explicit model and allowed effort values; no silent model/effort fallback;
-- finite one-shot `--single` jobs with `--max-turns`;
-- default `dontAsk`, strict sandbox, no cross-session memory, and no auto-update; Grok subagents and web/search are allowed by the package's current operator policy, with explicit per-job opt-outs;
-- structured argv with `shell: false`;
-- optional environment allowlist instead of broad process inheritance;
-- provider-local admission with active-worker, cold-start spacing, rolling-start, and expected-turn budgets;
-- reconciliation of expected turns to reported `model_calls`/`turns`;
-- append-only private JSONL lifecycle/usage ledger and optional hashed/raw evidence;
-- process-tree termination on abort, timeout, output overflow, or shutdown;
-- optional clean linked-worktree and denied-branch gates for Delegate;
-- no automatic retry for quota, rate-limit, entitlement, malformed-output, or worker failures.
-
-The generic packaged defaults—six active outer workers, 1.4-second start spacing, and 18 expected model turns per rolling minute—are conservative starting values derived from one bounded report, not xAI service guarantees. The included fleet preset raises the outer process ceiling to nine while retaining the shared 18-turn admission budget; nine resident/outer workers are therefore possible without pretending nine simultaneous model turns are safe. Re-canary after account, subscription, model, CLI, or provider behavior changes.
-
-Consumer weekly usage remains partly manual: detailed per-job CLI telemetry is ledgered, but no supported headless endpoint is assumed for the compute-weighted weekly percentage. Direct xAI API is the better path when exact cost and API rate policy matter more than consumer-plan convenience.
-
-Read [docs/GROK-BUILD.md](docs/GROK-BUILD.md) before enabling automatic batches.
-
-## Multi-coordinator fleet
-
-For the intended Desktop-heavy topology, run **one bridge daemon** and point every ChatGPT/Codex coordinator and subagent MCP shim at it:
-
-```text
-CGPT coordinator A + subagents ┐
-                               ├─ stdio MCP shims ─> one bridge daemon
-CGPT coordinator B + subagents ┘                       ├─ Grok outer-worker fleet
-                                                       └─ retained Cursor Delegate agents
-```
-
-This avoids the dangerous version of “nine workers” in which each Desktop process owns a separate admission controller. The daemon is the single source of truth for Grok launch spacing, rolling turn reservations, queue depth, run ledgers, and retained Cursor agents. Use stable `coordinator_id`, `worker_group`, and `thread_id` values so logs and retained-agent lineage remain intelligible.
-
-Grok web/search and nested subagents are enabled by default in this package because that is the requested operating policy. They do not receive broader authority: nested agents inherit the parent packet and workspace, and web-derived instructions cannot modify scope, permissions, acceptance, or integration rules. Use `--no-web` and/or `--no-subagents` for a particular job when isolation is more valuable than breadth.
-
-See [docs/MULTI-COORDINATOR-FLEET.md](docs/MULTI-COORDINATOR-FLEET.md) and [examples/fleet/](examples/fleet/).
-
-## Responses API example
-
-```bash
-curl http://127.0.0.1:8743/v1/responses \
-  -H 'Authorization: Bearer YOUR_BRIDGE_TOKEN' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "integrated/deepseek/deepseek-v4-pro",
-    "input": "Analyze this failure and call tools only when evidence is missing.",
-    "stream": true,
-    "tools": [
-      {
-        "type": "function",
-        "name": "read_file",
-        "description": "Read a repository file",
-        "parameters": {
-          "type": "object",
-          "properties": { "path": { "type": "string" } },
-          "required": ["path"],
-          "additionalProperties": false
-        }
-      }
-    ]
-  }'
-```
-
-Route IDs:
-
-```text
-<mode>/<provider>/<upstream-model>
-```
-
-Examples:
-
-```text
-consult/cursor-ultra/auto
-consult/grok-build/grok-4.6
-integrated/xai-api/grok-4.6
-integrated/nous/Hermes-4-70B
-integrated/deepseek/deepseek-v4-pro
-delegate/cursor-ultra/auto
-delegate/grok-build/grok-4.6
-```
-
-## Thread continuity
-
-There are two continuity mechanisms:
-
-1. Responses clients pass `previous_response_id`. The bridge restores normalized messages, tool-call IDs/arguments, tool outputs, and hidden reasoning required by provider history rules.
-2. MCP, CLI, `/v1/consult`, and `/v1/delegate` return a `threadId`. Reuse it for follow-ups. Calls on one convenience thread are serialized; unrelated threads may run concurrently.
-
-Bridge-managed thread and response state is currently **memory-only**, bounded by TTL and count. Restarting loses that continuity. Cursor Delegate retains SDK agents only for the process lifetime. Grok Build intentionally uses fresh bounded sessions by default.
-
-## Provider metadata
-
-When an adapter has useful nonstandard accounting or execution evidence, the buffered Responses result may include the namespaced extension:
-
-```json
-{
-  "bridge_provider_metadata": {
-    "grokBuild": {
-      "jobId": "job_...",
-      "reasoningEffort": "medium",
-      "turns": 4,
-      "modelCalls": 4,
-      "estimatedCostUsd": 0.08,
-      "allowSubagents": true,
-      "allowWebSearch": true,
-      "coordinatorId": "cgpt-a",
-      "workerGroup": "grok-nine"
-    }
-  }
-}
-```
-
-Convenience CLI/MCP results expose the same data as `providerMetadata`. Generic xAI API responses preserve exact `cost_in_usd_ticks` under `providerMetadata.upstream` when present. This metadata is an extension, not standardized OpenAI usage.
-
-## Security summary
-
-- The default listener is loopback only.
-- Non-browser loopback calls may be unauthenticated only when explicitly configured.
-- Browser origins must be allowlisted or supply a valid bearer token.
-- Cursor and Grok Consult snapshots isolate mutations; they do not provide confidentiality, a VM, or hostile-code containment.
-- Delegate is destructive-capable. Use disposable branches/worktrees and inspect the complete diff.
-- Grok Delegate can enforce Git/worktree policy, but the worker never receives integration authority.
-- Provider CLI allow/deny rules and sandboxing are separate layers; configure both. Grok web access and nested subagents do not override those boundaries.
-- Command providers can disable broad environment inheritance and terminate descendant process trees.
-- Grok Build records private lifecycle/usage JSONL and evidence hashes by default; raw prompt/stdout/stderr files remain opt-in. Consumer weekly usage still requires a manual provider-meter check.
-- Prompt bodies are not logged by default. Grok ledger output bodies are also opt-in; hashes and bounded lifecycle/accounting remain available without raw content.
-- Keep the Hermes subscription proxy on loopback.
-
-Read [docs/SECURITY.md](docs/SECURITY.md) before exposing the bridge beyond one trusted local user.
-
-## Verification
-
-```bash
+npm install --ignore-scripts
 npm run verify
 ```
 
-The 0.2.1 package passes **86 offline tests** plus source syntax checks. A **39/39 focused changed-path set** concentrated on: Grok web/subagent policy resolution and opt-outs, fleet identity propagation, remote MCP-to-daemon forwarding, asynchronous daemon status, runtime counters, configuration conflicts, generated Codex routing, and convenience-HTTP control normalization/route parsing. The established provider and protocol regressions still run in the complete offline suite.
+```bash
+node src/cli.mjs install plan --root "$HOME/.threadspan" --output /tmp/threadspan-plan.json --all
+node src/cli.mjs install apply --plan /tmp/threadspan-plan.json --approve-digest SHA256
+node src/cli.mjs serve --config "$HOME/.threadspan/config.jsonc"
+node src/cli.mjs install gui --config "$HOME/.threadspan/config.jsonc"
+```
 
-No paid Cursor, Grok, xAI, Nous, or DeepSeek inference is performed by the suite. Live provider certification remains explicit work documented in [docs/TESTING.md](docs/TESTING.md).
+## Security boundary
 
-## Documentation
+Threadspan is a trusted-local-user tool. Loopback APIs require a bearer by default. The optional public MCP connector has a separate scoped bearer and exposes only MCP. Delegate requires an explicit linked Git worktree and scope/acceptance contract. Workers have no merge, push, release, or integration authority.
 
-- [STATUS.md](STATUS.md) — honest implementation and live-certification status.
-- [DELIVERY.md](DELIVERY.md) — package contents and release delta.
-- [docs/GROK-BUILD.md](docs/GROK-BUILD.md) — dedicated Grok Build setup, safety, accounting, and unknowns.
-- [docs/GROK-REPORT-MERGE.md](docs/GROK-REPORT-MERGE.md) — finding-by-finding application and operator-policy overrides.
-- [docs/MULTI-COORDINATOR-FLEET.md](docs/MULTI-COORDINATOR-FLEET.md) — one-daemon topology for multiple Desktop coordinators, Grok workers, and retained Cursor agents.
-- [docs/MANAGED-WORKERS.md](docs/MANAGED-WORKERS.md) — provider-neutral task packets, authority, admission, and independent acceptance.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — components, state, concurrency, and extension points.
-- [docs/MODES-AND-USE-CASES.md](docs/MODES-AND-USE-CASES.md) — mode selection and scenarios.
-- [docs/PROVIDERS.md](docs/PROVIDERS.md) — provider configuration and adapter contracts.
-- [docs/PROTOCOL.md](docs/PROTOCOL.md) — Responses/MCP subset and extensions.
-- [docs/CODEX-INTEGRATION.md](docs/CODEX-INTEGRATION.md) — Codex/ChatGPT integration.
-- [docs/CURSOR-INTEGRATION.md](docs/CURSOR-INTEGRATION.md) — Cursor host-project setup.
-- [docs/SECURITY.md](docs/SECURITY.md) — threat model and hardening.
-- [docs/TESTING.md](docs/TESTING.md) — offline coverage and live smoke matrix.
-- [docs/WINDOWS.md](docs/WINDOWS.md) — Windows-specific setup.
-- [docs/ROADMAP.md](docs/ROADMAP.md) — prioritized remaining work.
-- [docs/SOURCE-NOTES.md](docs/SOURCE-NOTES.md) — source/provenance notes.
+Read [Security](docs/SECURITY.md), [Setup window](docs/INSTALLER-GUI.md), [Host surfaces](docs/HOST-SURFACES.md), and the [issue log](docs/ISSUE-LOG.md) before broad rollout.
 
 ## License
 
-MIT. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+MIT. Provider apps, SDKs, models, and services retain their own licenses and terms.

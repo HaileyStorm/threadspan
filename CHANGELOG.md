@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 - 2026-08-18
+
+- Renamed the broader bridge and orchestration project to Threadspan.
+- Added one authenticated daemon for Codex, Grok Build, Cursor, Nous, OpenRouter, and optional Claude Code gateways.
+- Added explicit Consult, Integrated, and Delegate boundaries with provider-specific tool and workspace policy.
+- Added Grok fleet admission/accounting, Cursor CLI/SDK routes, direct Nous Consult/Integrated plus bounded Delegate, OpenRouter discovery, and dated AgentRouter support.
+- Added account-aware routing, quota/renewal visibility, compatible fallback, and optional maximum-utilization policy.
+- Added a compact HUD/picker with search, favorites, filters, hiding, manual order, provider links, usage, forecasts, and route-map visualization.
+- Added a source-run setup window with task protection, exact preview, signed release updates, theme/accent controls, rollback, and proof.
+- Added Codex, Grok, and Cursor reverse surfaces; Hermes remains status/models/Consult Preview only.
+- Added context profiles, request-local Continuity handoffs, Voice profiles, optional Tips, Beads, and project bootstrap.
+- Added Compatibility Watch and bounded direct/meta/meta-meta self-heal across coding and non-code task types.
+- Added explicit-only Codex Full Access configuration without enabling destructive/open-world capabilities.
+- Fixed Windows command shims, PowerShell transport limits, detached service restart, and Claude Code file-backed MCP configuration.
+- Verified the Linux source gate at 434/434 and completed revision-specific live provider checks on Linux and Windows.
+
 ## 0.2.1 — 2026-08-16
 
 Focused fleet/orchestration follow-up to the Grok Build findings-report merge. No provider, mode, endpoint, or existing workflow was removed.

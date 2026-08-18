@@ -52,6 +52,92 @@
       }
     },
 
+    "agentrouter-claude": {
+      "enabled": false,
+      "adapter": "claude-code",
+      "command": "claude",
+      "model": "claude-opus-4-8",
+      "models": ["claude-opus-4-8"],
+      "capabilities": ["consult", "delegate"],
+      "gateway": {
+        "baseUrl": "https://agentrouter.org",
+        "apiKeyEnv": "AGENTROUTER_API_KEY",
+        "model": "claude-opus-4-8",
+        "provider": "agentrouter"
+      },
+      "maxTurnsCeiling": 24,
+      "consult": { "workspaceStrategy": "snapshot", "maxTurns": 4 },
+      "delegate": {
+        "maxTurns": 12,
+        "permissionMode": "acceptEdits",
+        "requireGit": true,
+        "requireLinkedWorktree": true,
+        "requireCleanStart": true,
+        "denyBranches": ["main", "master", "trunk"]
+      }
+    },
+
+    "mistral-api-free-candidate": {
+      "enabled": false,
+      "adapter": "openai-chat",
+      "baseUrl": "https://api.mistral.ai/v1",
+      "apiKeyEnv": "MISTRAL_API_KEY",
+      "model": "mistral-small-latest",
+      "discoverModels": true,
+      "capabilities": ["consult", "integrated"],
+      "paidUpgradeAllowed": false,
+      "requiresLiveCardlessCheck": true,
+      "offerEndDate": null,
+      "visibilityFreshnessDays": 7,
+      "officialUrl": "https://docs.mistral.ai/getting-started/quickstarts/studio/activate-and-generate-api-key"
+    },
+
+    "groqcloud-free-candidate": {
+      "enabled": false,
+      "adapter": "openai-chat",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "apiKeyEnv": "GROQ_API_KEY",
+      "model": "openai/gpt-oss-120b",
+      "discoverModels": true,
+      "capabilities": ["consult", "integrated"],
+      "paidUpgradeAllowed": false,
+      "requiresLiveCardlessCheck": true,
+      "offerEndDate": null,
+      "visibilityFreshnessDays": 7,
+      "officialUrl": "https://console.groq.com/docs/rate-limits"
+    },
+
+    "cloudflare-workers-ai-free-candidate": {
+      "enabled": false,
+      "adapter": "openai-chat",
+      "baseUrl": "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1",
+      "apiKeyEnv": "CLOUDFLARE_API_TOKEN",
+      "model": "@cf/openai/gpt-oss-120b",
+      "discoverModels": false,
+      "capabilities": ["consult", "integrated"],
+      "setupCandidateOnly": true,
+      "paidUpgradeAllowed": false,
+      "requiresLiveCardlessCheck": true,
+      "offerEndDate": null,
+      "visibilityFreshnessDays": 7,
+      "officialUrl": "https://developers.cloudflare.com/workers-ai/platform/pricing/"
+    },
+
+    "gemini-api-free-candidate": {
+      "enabled": false,
+      "adapter": "openai-chat",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "model": "gemini-3.5-flash",
+      "discoverModels": true,
+      "capabilities": ["consult", "integrated"],
+      "paidUpgradeAllowed": false,
+      "requiresLiveCardlessCheck": true,
+      "offerEndDate": null,
+      "visibilityFreshnessDays": 7,
+      "officialUrl": "https://ai.google.dev/gemini-api/docs/pricing"
+    },
+
     "xai-api": {
       "enabled": false,
       "adapter": "openai-chat",

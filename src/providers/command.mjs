@@ -33,6 +33,9 @@ export class CommandProvider extends ProviderAdapter {
     if (typeof command !== "string" || command.length === 0) {
       throw new RequestError(`Command provider '${this.id}' is missing a command`);
     }
+    if (this.config.shell === true) {
+      throw new RequestError(`Command provider '${this.id}' does not support shell:true; configure a fixed executable or wrapper with structured arguments`);
+    }
 
     const substitutions = {
       mode: request.mode,
@@ -45,13 +48,18 @@ export class CommandProvider extends ProviderAdapter {
     const outputFormat = this.config.outputFormat ?? "text";
     const maxOutputBytes = this.config.maxOutputBytes ?? 16 * 1024 * 1024;
     const timeoutMs = request.timeoutMs ?? this.config.timeoutMs ?? 30 * 60 * 1000;
-    const prompt = renderMessagesForAgent(request.messages);
+    const prompt = renderMessagesForAgent(request.messages, {
+      outputSummary: this.config.outputSummary,
+      providerId: this.id,
+      adapter: this.config.adapter ?? "command",
+      purpose: "agent-prompt",
+    });
     const configuredEnvironment = Object.fromEntries(
       Object.entries(this.config.env ?? {}).map(([key, value]) => [key, substitute(String(value), substitutions)]),
     );
     const child = spawnManagedChild(command, args, {
       cwd,
-      shell: this.config.shell === true,
+      shell: false,
       windowsHide: true,
       killTree: (this.config.killTree ?? this.config.killProcessTree) !== false,
       env: buildCommandEnvironment(this.config, configuredEnvironment, {

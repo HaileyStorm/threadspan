@@ -7,6 +7,25 @@ export { renderCodexProfileDocuments, installCodexProfileDocuments, uninstallCod
 export { discoverNativeCodexCatalog, appServerModelToCatalog } from "./codex/app-server.mjs";
 export { loadConfig, resolveConfigPath, createExampleConfig, writeInitialConfig } from "./core/config.mjs";
 export { KeyedSerialQueue } from "./core/keyed-serial-queue.mjs";
+export {
+  DEFAULT_VOICE_PROFILE_ID,
+  MAX_VOICE_INSTRUCTION_CHARS,
+  VOICE_PARAMETER_KEYS,
+  VOICE_PRESETS,
+  composeVoiceProfile,
+  normalizeVoiceConfig,
+  normalizeVoiceProfile,
+  renderVoiceInstruction,
+  resolveVoiceProfile,
+  voicePresetCards,
+} from "./core/voice-profiles.mjs";
+export {
+  INTENT_BRIEF_FIELDS,
+  INTENT_UPDATE_CLASSIFICATIONS,
+  applyIntentBriefUpdate,
+  applyIntentBriefUpdates,
+  deriveIntentBrief,
+} from "./core/intent-brief.mjs";
 export { WeightedAdmissionController, StartAdmissionController } from "./core/admission-controller.mjs";
 export {
   RunLedger,

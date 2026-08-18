@@ -34,7 +34,7 @@ test("OpenAiChatProvider streams text, reasoning, tool calls, and usage", async 
   const events = [];
   for await (const event of provider.run({
     mode: "integrated", model: "m", messages: [{ role: "user", content: "hi" }],
-    tools: [{ type: "function", name: "read", parameters: { type: "object" } }], toolChoice: "auto",
+    tools: [{ type: "function", name: "read", parameters: { type: "object" } }], toolChoice: "auto", parallelToolCalls: false,
   })) events.push(event);
   const done = events.at(-1);
   assert.equal(done.message.content, "answer");
@@ -43,15 +43,16 @@ test("OpenAiChatProvider streams text, reasoning, tool calls, and usage", async 
   assert.equal(done.usage.totalTokens, 5);
   assert.equal(upstream.requests[0].headers.authorization, "Bearer secret");
   assert.equal(upstream.requests[0].body.tools[0].function.name, "read");
+  assert.equal(upstream.requests[0].body.parallel_tool_calls, false);
 });
 
-test("OpenAiChatProvider retries buffered when stream fails before output", async (t) => {
+test("OpenAiChatProvider retries buffered only for an explicit streaming-unsupported response", async (t) => {
   let count = 0;
   const upstream = await startUpstream(t, async (_request, response, captured) => {
     count += 1;
     if (captured.body.stream) {
-      response.writeHead(500, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: { message: "stream unavailable" } }));
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "streaming is unsupported" } }));
       return;
     }
     response.writeHead(200, { "content-type": "application/json" });
@@ -65,6 +66,56 @@ test("OpenAiChatProvider retries buffered when stream fails before output", asyn
   assert.equal(count, 2);
   assert.ok(events.some((event) => event.type === "warning"));
   assert.equal(events.at(-1).message.content, "buffered");
+});
+
+test("a buffered downgrade failure cannot trigger a second account attempt", async (t) => {
+  const upstream = await startUpstream(t, async (_request, response, captured) => {
+    if (captured.body.stream) {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "streaming is unsupported" } }));
+      return;
+    }
+    response.writeHead(429, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: { message: "rate limited" } }));
+  });
+  const provider = new OpenAiChatProvider("openai", {
+    adapter: "openai-chat", baseUrl: upstream.url, apiKey: "x", capabilities: ["consult"], retryWithoutStreaming: true,
+  }, { logger: silentLogger() });
+
+  await assert.rejects(async () => {
+    for await (const _event of provider.run({ mode: "consult", model: "m", messages: [{ role: "user", content: "hi" }] })) { /* consume */ }
+  }, (error) => error.details?.upstream?.httpStatus === 429 && error.details.upstream.safeToFallbackBeforeOutput === false);
+  assert.equal(upstream.requests.length, 2);
+});
+
+test("OpenAiChatProvider certifies only HTTP 429 for safe account fallback", async (t) => {
+  let status = 429;
+  const upstream = await startUpstream(t, async (_request, response) => {
+    response.writeHead(status, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: { message: `failure-${status}` } }));
+  });
+  const provider = new OpenAiChatProvider("openai", {
+    adapter: "openai-chat", baseUrl: upstream.url, apiKey: "x", capabilities: ["consult"], retryWithoutStreaming: true,
+  }, { logger: silentLogger() });
+
+  for (const expected of [
+    { status: 429, retryable: true, safe: true },
+    { status: 401, retryable: false, safe: false },
+    { status: 503, retryable: true, safe: false },
+  ]) {
+    status = expected.status;
+    const requestsBefore = upstream.requests.length;
+    await assert.rejects(async () => {
+      for await (const _event of provider.run({ mode: "consult", model: "m", messages: [{ role: "user", content: "hi" }] })) { /* consume */ }
+    }, (error) => {
+      assert.equal(error.retryable, expected.retryable);
+      assert.equal(error.details?.upstream?.httpStatus, expected.status);
+      assert.equal(error.details?.upstream?.safeToFallbackBeforeOutput, expected.safe);
+      assert.equal(error.details?.upstream?.safeToRetryWithoutStreaming, false);
+      return true;
+    });
+    assert.equal(upstream.requests.length, requestsBefore + 1, `HTTP ${expected.status} must not retry the account`);
+  }
 });
 
 test("parseSseData handles CRLF, multiple data lines, and final unterminated block", async () => {

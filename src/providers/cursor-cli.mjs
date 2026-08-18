@@ -8,8 +8,29 @@ import { enforceGitWorkspacePolicy } from "../workspace/git-workspace.mjs";
 import { createWorkspaceSnapshot } from "../workspace/snapshot.mjs";
 import { ProviderAdapter } from "./base.mjs";
 
+const PROTECTED_CURSOR_ARGUMENTS = new Set([
+  "-e", "-f", "-H", "-m", "-p", "-w",
+  "--add-dir", "--agent", "--agents", "--approve-mcps", "--auto-review",
+  "--api-key", "--continue", "--disable-web-search", "--enable-web-search", "--endpoint", "--force", "--header", "--max-turns", "--memory",
+  "--mode", "--model", "--no-memory", "--no-subagents", "--output-format", "--plan",
+  "--plugin-dir", "--print", "--reasoning-effort", "--sandbox", "--skip-worktree-setup",
+  "--resume", "--subagents", "--trust", "--web-search", "--workspace", "--worktree", "--worktree-base",
+  "--yolo",
+]);
+
 /** Cursor Agent CLI adapter for an existing signed-in Cursor subscription. */
 export class CursorCliProvider extends ProviderAdapter {
+  constructor(id, config, context) {
+    super(id, config, context);
+    assertSafeCursorArgumentTail(config.commandArgs ?? []);
+    if (config.sandbox !== undefined && !["enabled", "disabled"].includes(config.sandbox)) {
+      throw new TypeError("Cursor CLI sandbox must be 'enabled', 'disabled', or omitted to use native settings");
+    }
+    if (config.trust !== undefined && typeof config.trust !== "boolean") {
+      throw new TypeError("Cursor CLI trust must be boolean when configured");
+    }
+  }
+
   capabilities() {
     const configured = new Set(this.config.capabilities ?? ["consult", "delegate"]);
     return {
@@ -25,6 +46,7 @@ export class CursorCliProvider extends ProviderAdapter {
       providerOwnsTools: true,
       localRuntime: true,
       authentication: "existing-cli-session",
+      settings: resolveCursorCliSettings(this.config),
     };
   }
 
@@ -74,17 +96,8 @@ export class CursorCliProvider extends ProviderAdapter {
         });
       }
 
-      const args = [
-        "--print",
-        "--output-format", "json",
-        "--sandbox", this.config.sandbox ?? "disabled",
-        "--trust",
-        "--workspace", String(workspace),
-        "--model", request.model,
-        ...(request.mode === "consult" ? ["--mode", this.config.consult?.agentMode ?? "plan"] : []),
-        ...(request.mode === "delegate" && this.config.delegate?.force === true ? ["--force"] : []),
-        prompt,
-      ];
+      const settings = resolveCursorCliSettings(this.config, request.mode);
+      const args = buildCursorCliArguments(this.config, request, workspace, prompt);
       yield { type: "status", status: "started" };
       const result = await this.#runProcess(args, {
         cwd: workspace,
@@ -107,6 +120,7 @@ export class CursorCliProvider extends ProviderAdapter {
             sessionId: payload.session_id ?? payload.sessionId,
             requestId: payload.request_id ?? payload.requestId,
             durationMs: result.durationMs,
+            ...settings,
           },
         },
       };
@@ -117,7 +131,7 @@ export class CursorCliProvider extends ProviderAdapter {
   }
 
   runtimeStats() {
-    return { kind: "cursor-cli", authentication: "existing-cli-session", retainedAgents: 0 };
+    return { kind: "cursor-cli", authentication: "existing-cli-session", retainedAgents: 0, settings: resolveCursorCliSettings(this.config) };
   }
 
   #runProcess(args, options = {}) {
@@ -139,6 +153,49 @@ export class CursorCliProvider extends ProviderAdapter {
     throw new ProviderError(this.id, `Cursor CLI ${operation} failed with exit code ${result.exitCode}: ${truncate(result.stderr || result.stdout, 1200)}`, {
       retryable: false,
     });
+  }
+}
+
+/** Build Cursor CLI argv, trusting only disposable Consult workspaces by default. */
+export function buildCursorCliArguments(config, request, workspace, prompt) {
+  return [
+    "--print",
+    "--output-format", "json",
+    ...(config.sandbox === undefined ? [] : ["--sandbox", config.sandbox]),
+    ...(request.mode === "consult" || config.trust === true ? ["--trust"] : []),
+    "--workspace", String(workspace),
+    "--model", request.model,
+    ...(request.mode === "consult" ? ["--mode", config.consult?.agentMode ?? "plan"] : []),
+    ...(request.mode === "delegate" && config.delegate?.force === true ? ["--force"] : []),
+    prompt,
+  ];
+}
+
+/** Report which Cursor settings remain native and which Threadspan overrides effectively apply. */
+function resolveCursorCliSettings(config, mode) {
+  const consultTrust = mode === "consult";
+  return {
+    nativeSettings: {
+      sandbox: config.sandbox === undefined,
+      workspaceTrust: !consultTrust && config.trust !== true,
+    },
+    effectiveSettings: {
+      sandbox: config.sandbox ?? "native",
+      workspaceTrust: consultTrust || config.trust === true ? "trusted" : "native",
+    },
+  };
+}
+
+/** Reject configured prefix arguments that can override adapter-owned policy later in argv parsing. */
+function assertSafeCursorArgumentTail(arguments_) {
+  for (const value of arguments_) {
+    const argument = String(value);
+    const flag = argument.startsWith("--")
+      ? argument.split("=", 1)[0]
+      : ["-e", "-f", "-H", "-m", "-p", "-w"].find((candidate) => argument === candidate || argument.startsWith(candidate) && argument.length > candidate.length);
+    if (PROTECTED_CURSOR_ARGUMENTS.has(flag)) {
+      throw new TypeError(`Cursor CLI commandArgs contains protected argument '${flag}'; configure trust, sandbox, model, mode, workspace, web, memory, and subagents through reviewed fields`);
+    }
   }
 }
 

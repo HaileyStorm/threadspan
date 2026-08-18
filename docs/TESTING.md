@@ -10,28 +10,31 @@ npm run verify
 
 This executes source syntax checks and Node's built-in test runner over `test/*.test.mjs`.
 
-Current result in the delivery environment:
+Current 0.4.0 Linux result:
 
 ```text
-86 tests passed
+npm run check: passed
+434 tests
+434 passed
 0 failed
+0 skipped
 ```
 
-No test requires network access, provider credentials, subscription quota, or a real Cursor SDK process.
+The suite uses local fakes, local HTTP servers, and isolated temporary paths. It makes no paid inference calls and does not certify provider credentials, subscription quota, current live models/events, native Windows behavior, Desktop integration, or end-to-end host acceptance.
 
 ## Coverage map
 
 | Area | Covered behavior |
 |---|---|
-| Configuration | JSONC comments/trailing commas, environment expansion, deep merge, invalid server/provider/mode/command/Grok policy settings, and static starter-config parity. |
+| Configuration | JSONC comments/trailing commas, environment expansion, deep merge, invalid server/provider/mode/command/Grok policy settings, token-source separation, single-alternate normalization, and static starter-config parity. |
 | CLI | GNU-style parsing, repeated options, POSIX PATH lookup, Windows PATHEXT lookup, and human/JSON continuity-id output. |
 | Codex config | Responses wire API, profiles, MCP stanza, marker replacement, backup, atomic install/uninstall. |
-| Routing | Mode/provider/model route parsing, defaults, capability errors, dynamic adapter registration. |
+| Routing | Mode/provider/model route parsing, defaults, capability errors, dynamic adapter registration, isolated account state, native Codex exact usage-limit fallback, OpenAI-compatible pre-output HTTP 429 fallback, and at most one same-provider alternate. |
 | Responses | Text lifecycle, reasoning visibility, function-call events, terminal object, continuation linkage, and bounded opt-in body logs. |
-| OpenAI-compatible provider | SSE parsing, text/reasoning/tool calls/usage, buffered fallback before output, split CRLF framing. |
+| OpenAI-compatible provider | SSE parsing, text/reasoning/tool calls/usage, streaming-unsupported buffered retry, pre-output HTTP 429 account fallback, single-alternate enforcement, and split CRLF framing. |
 | DeepSeek | Thinking controls and required reasoning/content replay. |
 | Command provider | JSON/JSONL normalization, substitutions, timeout, malformed output, missing executable errors, environment allowlisting, and managed process-tree behavior. |
-| HTTP | Health/models, buffered/streaming Responses, auth/origin policy, CORS preflight, and snake_case managed-worker control normalization. |
+| HTTP | Health/models, buffered/streaming Responses, auth/origin policy, CORS preflight, connector-only `/mcp`, owner-token rejection, legacy remote-route failure, and snake_case managed-worker control normalization. |
 | MCP | Version negotiation, initialization/list/call, tool-error results, concurrent dispatch, and in-flight cancellation. |
 | Threads/queues | Same-thread ordering, unrelated concurrency, abort-safe queue behavior. |
 | Cursor adapter | Integrated rejection, simultaneous Delegate creation dedupe, queued Delegate cancellation/overtake prevention. |
@@ -54,17 +57,6 @@ Fast-moving external SDKs and clients can change:
 - Windows process lifecycle.
 
 Live smoke tests are therefore a separate release gate, not hidden inside the default unit suite.
-
-## Changed-area checks for 0.2.1
-
-**39/39 focused checks pass.** The focused set runs the six changed provider/orchestration suites plus the restored convenience-HTTP normalization regression.
-
-- Grok policy defaults permit subagents and web/search; explicit provider, mode, and request opt-outs win without silent fallback.
-- Fleet identity reaches task packets, provider metadata, and ledger records.
-- MCP remote shims forward Consult/Delegate/status/providers/models to one authenticated daemon and preserve structured failures.
-- Generated Codex configuration uses the shared daemon by default and retains an `--embedded-mcp` escape hatch.
-- Provider runtime diagnostics expose counts/policy only, not prompts, source, credentials, or raw outputs.
-- The nine-worker fleet example retains one rolling admission controller rather than multiplying limits per coordinator.
 
 ## Live smoke matrix
 

@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { extname } from "node:path";
 
 const TERMINATIONS = new WeakMap();
 
@@ -8,16 +11,109 @@ const TERMINATIONS = new WeakMap();
  *
  * @param {string} command Executable path or name.
  * @param {string[]} args Argument vector.
- * @param {import("node:child_process").SpawnOptionsWithoutStdio & {killTree?: boolean}} [options] Spawn options.
+ * @param {import("node:child_process").SpawnOptionsWithoutStdio & {killTree?: boolean, expectedExecutableSha256?: string}} [options] Spawn options.
  * @returns {import("node:child_process").ChildProcessWithoutNullStreams}
  */
 export function spawnManagedChild(command, args, options = {}) {
-  const { killTree = true, ...spawnOptions } = options;
-  return spawn(command, args, {
+  const { killTree = true, expectedExecutableSha256, ...spawnOptions } = options;
+  const normalized = normalizeManagedCommand(command, args, {
+    platform: process.platform,
+    environment: spawnOptions.env ?? process.env,
+    expectedExecutableSha256,
+  });
+  return spawn(normalized.command, normalized.args, {
     ...spawnOptions,
+    shell: normalized.viaCommandShim ? false : spawnOptions.shell,
     detached: spawnOptions.detached ?? (killTree && process.platform !== "win32"),
     stdio: spawnOptions.stdio ?? ["pipe", "pipe", "pipe"],
   });
+}
+
+/**
+ * Route a Windows PowerShell command shim through powershell.exe without enabling a shell.
+ * A `.cmd` launcher is never evaluated: its canonical sibling `.ps1` file becomes the executable
+ * artifact, and the original argv remains distinct from PowerShell's own fixed arguments.
+ *
+ * @param {string} command Executable path or name.
+ * @param {string[]} args Argument vector.
+ * @param {{platform?: NodeJS.Platform, environment?: NodeJS.ProcessEnv, expectedExecutableSha256?: string}} [options] Platform inputs.
+ * @returns {{command:string,args:string[],executable:string,viaCommandShim:boolean}}
+ */
+export function normalizeManagedCommand(command, args = [], options = {}) {
+  const platform = options.platform ?? process.platform;
+  const requestedCommand = String(command);
+  const extension = extname(requestedCommand).toLowerCase();
+  if (platform === "win32" && extension === ".bat") {
+    throw new TypeError("Windows .bat launchers are not supported; configure a native executable or npm .ps1 shim");
+  }
+
+  let executable = requestedCommand;
+  let viaCommandShim = false;
+  if (platform === "win32" && extension === ".cmd") {
+    const canonicalLauncher = canonicalRegularFile(requestedCommand, "Windows .cmd launcher", { allowSymbolicLink: true });
+    if (extname(canonicalLauncher).toLowerCase() !== ".cmd") {
+      throw new TypeError(`Windows .cmd launcher resolves to a non-.cmd file: ${canonicalLauncher}`);
+    }
+    executable = canonicalRegularFile(`${canonicalLauncher.slice(0, -4)}.ps1`, "sibling PowerShell shim");
+    viaCommandShim = true;
+  } else if (platform === "win32" && extension === ".ps1") {
+    executable = canonicalRegularFile(requestedCommand, "PowerShell shim");
+    viaCommandShim = true;
+  }
+
+  if (options.expectedExecutableSha256) assertExecutableSha256(executable, options.expectedExecutableSha256);
+  if (!viaCommandShim) {
+    return { command, args: [...args], executable, viaCommandShim: false };
+  }
+
+  const environment = options.environment ?? process.env;
+  const systemRoot = environment.SystemRoot ?? environment.SYSTEMROOT ?? process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  const powershell = systemRoot
+    ? `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+    : "powershell.exe";
+  return {
+    command: powershell,
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", executable, ...args],
+    executable,
+    viaCommandShim: true,
+  };
+}
+
+/** Resolve a launch artifact while rejecting unsafe or non-file PowerShell shim targets. */
+function canonicalRegularFile(path, label, options = {}) {
+  let entry;
+  try {
+    entry = lstatSync(path);
+  } catch (error) {
+    throw new TypeError(`${label} does not exist: ${path}`, { cause: error });
+  }
+  if (entry.isSymbolicLink() && options.allowSymbolicLink !== true) {
+    throw new TypeError(`${label} must not be a symbolic link: ${path}`);
+  }
+
+  let canonical;
+  let target;
+  try {
+    canonical = realpathSync(path);
+    target = statSync(canonical);
+  } catch (error) {
+    throw new TypeError(`${label} could not be resolved safely: ${path}`, { cause: error });
+  }
+  if (!target.isFile()) throw new TypeError(`${label} is not a regular file: ${canonical}`);
+  return canonical;
+}
+
+/** Recheck a preflight digest immediately before spawning the selected artifact. */
+function assertExecutableSha256(executable, expected) {
+  let actual;
+  try {
+    actual = createHash("sha256").update(readFileSync(executable)).digest("hex");
+  } catch (error) {
+    throw new TypeError(`Could not re-hash executable '${executable}' before launch`, { cause: error });
+  }
+  if (actual.toLowerCase() !== String(expected).toLowerCase()) {
+    throw new TypeError(`Executable SHA-256 '${actual}' no longer matches the verified preflight artifact`);
+  }
 }
 
 /**
@@ -29,9 +125,9 @@ export function spawnManagedChild(command, args, options = {}) {
  * @returns {Promise<void>}
  */
 export function terminateProcessTree(child, options = {}) {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   const existing = TERMINATIONS.get(child);
   if (existing) return existing;
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
 
   const operation = terminateProcessTreeOnce(child, options).finally(() => TERMINATIONS.delete(child));
   TERMINATIONS.set(child, operation);
@@ -151,6 +247,7 @@ export class ManagedProcessError extends Error {
  *   shell?: boolean,
  *   windowsHide?: boolean,
  *   killTree?: boolean,
+ *   expectedExecutableSha256?: string,
  *   onSpawn?: (state: {pid?: number, startedAt: number}) => void|Promise<void>,
  * }} options Process options.
  * @returns {Promise<{stdout: string, stderr: string, exitCode: number|null, exitSignal: NodeJS.Signals|null, pid?: number, startedAt: number, durationMs: number}>}
@@ -166,6 +263,7 @@ export async function runCapturedProcess(options) {
       shell: options.shell === true,
       windowsHide: options.windowsHide !== false,
       killTree: options.killTree !== false,
+      expectedExecutableSha256: options.expectedExecutableSha256,
     });
   } catch (error) {
     throw new ManagedProcessError(`Could not start '${options.command}': ${error instanceof Error ? error.message : String(error)}`, {
@@ -182,25 +280,31 @@ export async function runCapturedProcess(options) {
 
   let timedOut = false;
   let streamFailure;
-  const abort = () => { void terminateProcessTree(child, { killTree: options.killTree !== false }); };
+  let terminationTask;
+  const requestTermination = () => {
+    terminationTask ??= terminateProcessTree(child, { killTree: options.killTree !== false });
+    terminationTask.catch(() => undefined);
+    return terminationTask;
+  };
+  const abort = () => { void requestTermination(); };
   options.signal?.addEventListener("abort", abort, { once: true });
   const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
   const timer = setTimeout(() => {
     timedOut = true;
-    void terminateProcessTree(child, { killTree: options.killTree !== false });
+    void requestTermination();
   }, timeoutMs);
   timer.unref?.();
 
   const stdoutTask = readBoundedStream(child.stdout, options.maxStdoutBytes ?? 16 * 1024 * 1024, "error")
     .catch((error) => {
       streamFailure ??= error;
-      void terminateProcessTree(child, { killTree: options.killTree !== false });
+      void requestTermination();
       return "";
     });
   const stderrTask = readBoundedStream(child.stderr, options.maxStderrBytes ?? 64 * 1024, "tail")
     .catch((error) => {
       streamFailure ??= error;
-      void terminateProcessTree(child, { killTree: options.killTree !== false });
+      void requestTermination();
       return "";
     });
 
@@ -244,8 +348,9 @@ export async function runCapturedProcess(options) {
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", abort);
-    if (child.exitCode === null && child.signalCode === null) await terminateProcessTree(child, { killTree: options.killTree !== false }).catch(() => undefined);
-    else if (options.killTree !== false) await reapExitedProcessGroup(child).catch(() => undefined);
+    if (terminationTask) await terminationTask.catch(() => undefined);
+    if (child.exitCode === null && child.signalCode === null) await requestTermination().catch(() => undefined);
+    if (options.killTree !== false) await reapExitedProcessGroup(child).catch(() => undefined);
     await Promise.allSettled([stdoutTask, stderrTask]);
   }
 }

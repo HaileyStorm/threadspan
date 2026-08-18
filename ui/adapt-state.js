@@ -7,6 +7,18 @@
  */
 (function bindThreadspanState(root) {
   const MODES = ["consult", "integrated", "delegate"];
+  const PICKER_PREFERENCE_SCHEMA_VERSION = 1;
+  const PICKER_DEFAULT_FILTERS = Object.freeze({
+    query: "",
+    mode: "all",
+    provider: "all",
+    model: "all",
+    freeOnly: false,
+    favoritesOnly: false,
+    showHiddenUnavailable: false,
+  });
+  const CREDIT_STATES = ["unknown", "normal", "low", "exhausted"];
+  const EXPIRY_STATES = ["unknown", "current", "approaching", "expired"];
 
   const MODE_NOTES = {
     consult: "Secondary output is advisory. The primary agent owns judgment and execution.",
@@ -33,15 +45,42 @@
       id: "delegate/grok-build/grok-4.6",
       mode: "delegate",
       provider: "grok-build",
+      accountId: "unknown/default",
       model: "grok-4.6",
       verified: true,
       verifiedAt: "2026-08-17T20:00:00Z",
       verificationSource: "offline capability matrix, not live entitlement",
     },
+    pickerRoutes: [
+      { id: "delegate/grok-build/grok-4.6", mode: "delegate", provider: "grok-build", model: "grok-4.6", availability: "available", reason: "Verified Delegate worker route." },
+      { id: "consult/cursor-ultra/auto", mode: "consult", provider: "cursor-ultra", model: "auto", availability: "available", reason: "Advisory route on a disposable snapshot." },
+      { id: "delegate/cursor-ultra/auto", mode: "delegate", provider: "cursor-ultra", model: "auto", availability: "available", reason: "Bounded repository worker route." },
+      { id: "integrated/deepseek/deepseek-v4-pro", mode: "integrated", provider: "deepseek", model: "deepseek-v4-pro", availability: "available", reason: "Raw inference with caller-owned tools." },
+      { id: "consult/deepseek/deepseek-v4-pro", mode: "consult", provider: "deepseek", model: "deepseek-v4-pro", availability: "available", reason: "Advisory reasoning route." },
+      { id: "integrated/openrouter/free/model:free", mode: "integrated", provider: "openrouter", model: "free/model:free", free: true, availability: "available", reason: "Explicitly marked free by provider metadata." },
+      { id: "delegate/claude-code/sonnet", mode: "delegate", provider: "claude-code", model: "sonnet", availability: "unavailable", setupReason: "Install and authenticate Claude Code before using this route." },
+    ],
+    accounts: { descriptors: [], accounts: [], combined: { eventCount: 0, inputTokens: 0, outputTokens: 0 } },
     quota: {
       label: "Consumer week remaining",
       percentRemaining: 62,
       note: "Manual meter. Local token telemetry cannot reconstruct provider weekly usage.",
+    },
+    forecast: {
+      status: "rate-only",
+      source: "sanitized-usage-ledger",
+      evidenceClass: "live-provider",
+      observedAt: "2026-08-17T20:00:00Z",
+      windowMs: 21600000,
+      sampleInterval: { start: "2026-08-17T14:00:00Z", end: "2026-08-17T20:00:00Z", durationMs: 21600000 },
+      coverage: { ratio: 1, eventCount: 6, scannedEventCount: 6 },
+      freshness: { status: "fresh", ageMs: 0 },
+      confidence: { level: "high", reason: "recent samples span at least half the window" },
+      burn: { unit: "turns", amount: 9, ratePerHour: 1.5, rateLabel: "1.5 turns/hour" },
+      limitKnown: false,
+      limitLabel: "limit unknown",
+      entitlement: { allowance: null, remaining: null, resetAt: null, renewalAt: null, source: "not-observed", observedAt: null },
+      exhaustion: null,
     },
     context: {
       usedTokens: 52428,
@@ -126,6 +165,16 @@
       ],
     },
     compatibility: { status: "ok", changed: false, observedAt: "2026-08-17T20:00:00Z", products: [{ id: "codex-cli", label: "Codex CLI", status: "detected", version: "0.147.0" }], changes: [] },
+    maximumUtilization: {
+      phase: "disabled",
+      readiness: "disabled",
+      epoch: 0,
+      quota: { usedRatio: null, observedAt: null, resetAt: null },
+      counts: { protectedTasks: 0, notices: 0, inboxPending: 0, suspendedMonitors: 0, overruns: 0, provisionalOutputs: 0 },
+      statuses: { pendingActions: 0, unsupportedActions: 0, executedActions: 0, manifest: "not-requested", fastCanary: "not-requested", recovery: "unconfirmed" },
+      automatic: { enabled: false, active: false, scope: null },
+      manual: { active: false, scope: null, manifestCount: 0 },
+    },
   };
 
   /**
@@ -144,6 +193,39 @@
     return typeof value === "string" ? value.trim() : "";
   }
 
+  function safeProviderUrl(value) {
+    const candidate = text(value);
+    if (!candidate || candidate.length > 2048 || /[\u0000-\u001f\u007f]/.test(candidate)) return "";
+    try {
+      const url = new URL(candidate);
+      if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash) return "";
+      return url.href;
+    } catch {
+      return "";
+    }
+  }
+
+  /** Normalize reviewed provider web metadata without deriving URLs or account state. */
+  function normalizeProviderWebMetadata(raw) {
+    const source = isObject(raw) ? raw : {};
+    const metadata = isObject(source.metadata) ? source.metadata : {};
+    const links = isObject(source.providerLinks) ? source.providerLinks
+      : isObject(metadata.providerLinks) ? metadata.providerLinks
+        : {};
+    const pick = (key) => source[key] ?? links[key] ?? metadata[key];
+    const credit = text(pick("creditState")).toLowerCase();
+    const expiry = text(pick("expiryState")).toLowerCase();
+    return {
+      providerLinks: {
+        officialUrl: safeProviderUrl(pick("officialUrl")),
+        accountUrl: safeProviderUrl(pick("accountUrl")),
+        usageUrl: safeProviderUrl(pick("usageUrl")),
+      },
+      creditState: CREDIT_STATES.includes(credit) ? credit : "unknown",
+      expiryState: EXPIRY_STATES.includes(expiry) ? expiry : "unknown",
+    };
+  }
+
   /**
    * @param {unknown} value
    * @param {number} fallback
@@ -157,14 +239,16 @@
 
   /**
    * @param {string} routeId
-   * @returns {{mode: string, provider: string, model: string}}
+   * @returns {{mode: string, provider: string, accountId: string, model: string}}
    */
   function parseRouteId(routeId) {
     const parts = routeId.split("/");
+    const accountId = parts[2]?.startsWith("@") ? parts[2].slice(1) : "";
     return {
       mode: text(parts[0]).toLowerCase(),
       provider: text(parts[1]),
-      model: parts.slice(2).join("/") || "",
+      accountId,
+      model: parts.slice(accountId ? 3 : 2).join("/") || "",
     };
   }
 
@@ -185,6 +269,7 @@
       model: text(raw.model) || parsed.model,
       qualified: raw.qualified === true,
       reason: text(raw.reason) || "Qualification reason not supplied.",
+      ...normalizeProviderWebMetadata(raw),
     };
   }
 
@@ -226,6 +311,7 @@
 
     const filters = isObject(raw.filters) ? raw.filters : {};
     const filterMode = text(filters.mode).toLowerCase();
+    const routeMap = adaptRouteMap(raw.routeMap);
 
     return {
       status: "ready",
@@ -234,7 +320,9 @@
       hud: hudOf(raw),
       thread: threadOf(raw),
       route,
+      accounts: adaptAccounts(raw.accounts, route),
       quota: adaptQuota(raw.quota),
+      forecast: adaptForecast(raw.forecast),
       context: adaptContext(raw.context),
       fallbacks,
       checkpoint: adaptCheckpoint(raw.checkpoint),
@@ -246,8 +334,10 @@
         verifiedOnly: filters.verifiedOnly === true,
       },
       modeNote: MODE_NOTES[route.mode] || "Mode authority is unspecified.",
-      routeMap: adaptRouteMap(raw.routeMap),
+      routeMap,
+      pickerRoutes: adaptPickerRoutes(raw.pickerRoutes ?? raw.routes, route, fallbacks, routeMap),
       compatibility: adaptCompatibility(raw.compatibility),
+      maximumUtilization: adaptMaximumUtilization(raw.maximumUtilization),
     };
   }
 
@@ -299,10 +389,12 @@
       id,
       mode,
       provider: text(raw.provider) || parsed.provider || "unspecified",
+      accountId: text(raw.accountId) || parsed.accountId || "unknown/default",
       model: text(raw.model) || parsed.model || "unspecified",
       verified: raw.verified === true,
       verifiedAt: text(raw.verifiedAt),
       verificationSource: text(raw.verificationSource) || "Unspecified source.",
+      ...normalizeProviderWebMetadata(raw),
     };
   }
 
@@ -312,12 +404,85 @@
   function adaptQuota(raw) {
     if (!isObject(raw)) return null;
     const percentRemaining = finiteNumber(raw.percentRemaining);
-    if (percentRemaining == null) return null;
+    const allowance = nonNegativeNumber(raw.allowance);
+    const remaining = nonNegativeNumber(raw.remaining);
+    const resetAt = timestamp(raw.resetAt);
+    const renewalAt = timestamp(raw.renewalAt);
+    if (percentRemaining == null && allowance == null && remaining == null && !resetAt && !renewalAt) return null;
+    const derivedPercent = percentRemaining ?? (allowance && remaining != null ? (remaining / allowance) * 100 : null);
     return {
       label: text(raw.label) || "Quota remaining",
-      percentRemaining: Math.max(0, Math.min(100, percentRemaining)),
+      percentRemaining: derivedPercent == null ? null : Math.max(0, Math.min(100, Math.round(derivedPercent))),
+      allowance,
+      remaining,
+      unit: boundedText(raw.unit, 40) || "units",
+      resetAt,
+      renewalAt,
+      source: boundedText(raw.source, 120) || "unspecified",
+      observedAt: timestamp(raw.observedAt),
       note: text(raw.note) || "Quota source is unspecified.",
     };
+  }
+
+  /** Keep forecast evidence closed and separate from authoritative quota facts. */
+  function adaptForecast(raw) {
+    if (!isObject(raw)) return null;
+    const burn = isObject(raw.burn) ? raw.burn : {};
+    const confidence = isObject(raw.confidence) ? raw.confidence : {};
+    const coverage = isObject(raw.coverage) ? raw.coverage : {};
+    const freshness = isObject(raw.freshness) ? raw.freshness : {};
+    const sample = isObject(raw.sampleInterval) ? raw.sampleInterval : {};
+    const entitlement = isObject(raw.entitlement) ? raw.entitlement : {};
+    const exhaustion = isObject(raw.exhaustion) ? raw.exhaustion : null;
+    const unit = boundedText(burn.unit, 40) || "units";
+    const ratePerHour = nonNegativeNumber(burn.ratePerHour);
+    const amount = nonNegativeNumber(burn.amount);
+    const eventCount = nonNegativeNumber(coverage.eventCount);
+    const scannedEventCount = nonNegativeNumber(coverage.scannedEventCount);
+    const ratio = finiteNumber(coverage.ratio);
+    return {
+      status: boundedText(raw.status, 40) || "unknown",
+      source: boundedText(raw.source, 120) || "unknown",
+      evidenceClass: boundedText(raw.evidenceClass, 80) || null,
+      observedAt: timestamp(raw.observedAt),
+      windowMs: nonNegativeNumber(raw.windowMs),
+      sampleInterval: { start: timestamp(sample.start), end: timestamp(sample.end), durationMs: nonNegativeNumber(sample.durationMs) },
+      coverage: { ratio: ratio == null ? null : Math.max(0, Math.min(1, ratio)), eventCount, scannedEventCount },
+      freshness: { status: boundedText(freshness.status, 40) || "unknown", ageMs: nonNegativeNumber(freshness.ageMs) },
+      confidence: { level: boundedText(confidence.level, 40) || "unknown", reason: boundedText(confidence.reason, 240) || "No confidence reason supplied." },
+      burn: { unit, amount, ratePerHour, rateLabel: ratePerHour == null ? "rate unknown" : `${formatRoundedNumber(ratePerHour)} ${unit}/hour` },
+      limitKnown: raw.limitKnown === true,
+      limitLabel: raw.limitKnown === true ? "authoritative limit snapshot" : "limit unknown",
+      entitlement: {
+        allowance: nonNegativeNumber(entitlement.allowance), remaining: nonNegativeNumber(entitlement.remaining),
+        resetAt: timestamp(entitlement.resetAt), renewalAt: timestamp(entitlement.renewalAt),
+        source: boundedText(entitlement.source, 120) || "not-observed", observedAt: timestamp(entitlement.observedAt),
+      },
+      exhaustion: exhaustion ? {
+        earliestAt: timestamp(exhaustion.earliestAt), latestAt: timestamp(exhaustion.latestAt),
+        label: boundedText(exhaustion.label, 80) || "range unknown", relation: boundedText(exhaustion.relation, 80) || "reset-or-renewal-unknown",
+      } : null,
+    };
+  }
+
+  function nonNegativeNumber(value) {
+    const number = finiteNumber(value);
+    return number != null && number >= 0 ? number : null;
+  }
+
+  function timestamp(value) {
+    const candidate = text(value);
+    if (!candidate) return "";
+    const date = new Date(candidate);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : "";
+  }
+
+  function boundedText(value, maximum) {
+    return text(value).slice(0, maximum);
+  }
+
+  function formatRoundedNumber(value) {
+    return Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
   }
 
   /**
@@ -379,6 +544,7 @@
       return {
         at: text(row.at),
         route,
+        accountId: text(row.accountId) || parsed.accountId || "unknown/default",
         mode: text(row.mode).toLowerCase() || parsed.mode,
         event: text(row.event) || "event",
         verified: row.verified === true,
@@ -414,7 +580,9 @@
       hud: hudOf(null),
       thread: { id: "", title: "" },
       route: null,
+      accounts: { descriptors: [], accounts: [], active: null, combined: emptyTotals() },
       quota: null,
+      forecast: null,
       context: null,
       fallbacks: [],
       checkpoint: null,
@@ -424,7 +592,9 @@
       filters: { mode: "all", verifiedOnly: false },
       modeNote: "",
       routeMap: { nodes: [], edges: [] },
+      pickerRoutes: [],
       compatibility: { status: "disabled", changed: false, products: [], changes: [] },
+      maximumUtilization: null,
     };
   }
 
@@ -443,10 +613,17 @@
       if (!isObject(node) || !text(node.id)) return null;
       return {
         id: text(node.id),
+        accountId: text(node.accountId) || "unknown/default",
         label: text(node.label) || text(node.id),
         intelligence: Math.max(1, Math.min(100, finiteNumber(node.intelligence, 50))),
         availability: text(node.availability) || "unknown",
+        hidden: node.hidden === true || text(node.visibility).toLowerCase() === "hide",
+        unavailabilityReason: boundedText(node.unavailabilityReason ?? node.reason, 240),
+        capabilityReason: boundedText(node.capabilityReason, 240),
+        setupReason: boundedText(node.setupReason, 240),
+        ...normalizeProviderWebMetadata(node),
         modes: Array.isArray(node.modes) ? node.modes.map((mode) => text(mode).toLowerCase()).filter((mode) => MODES.includes(mode)) : [],
+        models: adaptPickerModels(node.models),
         specialties: Array.isArray(node.specialties) ? node.specialties.map(text).filter(Boolean).slice(0, 6) : [],
         usage: isObject(node.usage) ? { requests: finiteNumber(node.usage.requests, 0), failures: finiteNumber(node.usage.failures, 0) } : { requests: 0, failures: 0 },
       };
@@ -471,6 +648,373 @@
     };
   }
 
+  function adaptMaximumUtilization(raw) {
+    if (!isObject(raw)) return null;
+    const phases = ["disabled", "idle", "maximum-utilization", "exhausted"];
+    const readiness = ["disabled", "awaiting-native-quota", "native-quota-observed", "direct-exhaustion-observed", "active", "awaiting-exact-native-recovery", "native-recovery-confirmed", "owner-disabled"];
+    const quota = isObject(raw.quota) ? raw.quota : {};
+    const counts = isObject(raw.counts) ? raw.counts : {};
+    const statuses = isObject(raw.statuses) ? raw.statuses : {};
+    const automatic = isObject(raw.automatic) ? raw.automatic : {};
+    const automaticScope = isObject(automatic.scope) ? automatic.scope : null;
+    const manual = isObject(raw.manual) ? raw.manual : {};
+    const manualScope = isObject(manual.scope) ? manual.scope : null;
+    return {
+      phase: phases.includes(text(raw.phase)) ? text(raw.phase) : "idle",
+      readiness: readiness.includes(text(raw.readiness)) ? text(raw.readiness) : "awaiting-native-quota",
+      epoch: nonNegativeNumber(raw.epoch) ?? 0,
+      quota: { usedRatio: finiteRatio(quota.usedRatio), observedAt: timestamp(quota.observedAt), resetAt: timestamp(quota.resetAt) },
+      counts: {
+        protectedTasks: nonNegativeNumber(counts.protectedTasks) ?? 0,
+        notices: nonNegativeNumber(counts.notices) ?? 0,
+        inboxPending: nonNegativeNumber(counts.inboxPending) ?? 0,
+        suspendedMonitors: nonNegativeNumber(counts.suspendedMonitors) ?? 0,
+        overruns: nonNegativeNumber(counts.overruns) ?? 0,
+        provisionalOutputs: nonNegativeNumber(counts.provisionalOutputs) ?? 0,
+      },
+      statuses: {
+        pendingActions: nonNegativeNumber(statuses.pendingActions) ?? 0,
+        unsupportedActions: nonNegativeNumber(statuses.unsupportedActions) ?? 0,
+        executedActions: nonNegativeNumber(statuses.executedActions) ?? 0,
+        manifest: statuses.manifest === "requested" ? "requested" : "not-requested",
+        fastCanary: statuses.fastCanary === "requested" ? "requested" : "not-requested",
+        recovery: statuses.recovery === "confirmed" ? "confirmed" : "unconfirmed",
+      },
+      automatic: {
+        enabled: automatic.enabled === true,
+        active: automatic.active === true,
+        scope: automaticScope ? {
+          provider: boundedText(automaticScope.provider, 80),
+          account: boundedText(automaticScope.account, 80),
+          bucket: boundedText(automaticScope.bucket, 80),
+        } : null,
+      },
+      manual: {
+        active: manual.active === true,
+        scope: manualScope && ["provider", "app", "account"].includes(text(manualScope.kind)) && boundedText(manualScope.label, 80)
+          ? { kind: text(manualScope.kind), label: boundedText(manualScope.label, 80) }
+          : null,
+        manifestCount: nonNegativeNumber(manual.manifestCount) ?? 0,
+      },
+    };
+  }
+
+  function finiteRatio(value) {
+    const number = finiteNumber(value);
+    return number != null && number >= 0 && number <= 1 ? number : null;
+  }
+
+  function adaptAccounts(raw, route) {
+    if (!isObject(raw)) return { descriptors: [], accounts: [], active: null, combined: emptyTotals() };
+    const descriptors = Array.isArray(raw.descriptors) ? raw.descriptors.map((item) => {
+      if (!isObject(item) || !text(item.authKind)) return null;
+      return { authKind: text(item.authKind), label: text(item.label) || text(item.authKind), instructions: text(item.instructions), collectsSecrets: item.collectsSecrets === true };
+    }).filter(Boolean) : [];
+    const accounts = Array.isArray(raw.accounts) ? raw.accounts.map((item) => {
+      if (!isObject(item) || !text(item.id) || !text(item.providerId)) return null;
+      return {
+        id: text(item.id), providerId: text(item.providerId), label: text(item.label) || "Account",
+        authKind: text(item.authKind) || "unknown", authSourceRef: text(item.authSourceRef), profileRef: text(item.profileRef),
+        active: item.active === true, isolatedExecution: item.isolatedExecution === true,
+        quota: adaptQuota(item.quota),
+        forecast: adaptForecast(item.forecast),
+        usage: isObject(item.usage) ? { eventCount: finiteNumber(item.usage.eventCount, 0), inputTokens: finiteNumber(item.usage.inputTokens, 0), outputTokens: finiteNumber(item.usage.outputTokens, 0) } : emptyTotals(),
+      };
+    }).filter(Boolean) : [];
+    return { descriptors, accounts, active: accounts.find((item) => item.id === route.accountId) || accounts.find((item) => item.active) || null, combined: isObject(raw.combined) ? { eventCount: finiteNumber(raw.combined.eventCount, 0), inputTokens: finiteNumber(raw.combined.inputTokens, 0), outputTokens: finiteNumber(raw.combined.outputTokens, 0) } : emptyTotals() };
+  }
+
+  function emptyTotals() { return { eventCount: 0, inputTokens: 0, outputTokens: 0 }; }
+
+  function adaptPickerModels(raw) {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set();
+    return raw.flatMap((item) => {
+      const source = isObject(item) ? item : { id: item };
+      const id = boundedText(source.id ?? source.slug, 240);
+      if (!id || seen.has(id)) return [];
+      seen.add(id);
+      return [{
+        id,
+        label: boundedText(source.label ?? source.display_name, 120) || id,
+        free: source.free === true ? true : source.free === false ? false : null,
+        hidden: source.hidden === true || text(source.visibility).toLowerCase() === "hide",
+        availability: boundedText(source.availability, 40),
+        unavailabilityReason: boundedText(source.unavailabilityReason ?? source.reason, 240),
+        capabilityReason: boundedText(source.capabilityReason, 240),
+        setupReason: boundedText(source.setupReason, 240),
+      }];
+    });
+  }
+
+  function routeId(value) {
+    const id = text(value);
+    if (!id || id.length > 512 || /[\\\s\u0000-\u001f\u007f]/.test(id)) return "";
+    const parsed = parseRouteId(id);
+    const segments = id.split("/");
+    const providerOk = /^[a-z0-9][a-z0-9._-]{0,119}$/i.test(parsed.provider) && ![".", ".."].includes(parsed.provider);
+    const accountOk = !parsed.accountId || /^[a-z0-9][a-z0-9._:-]{0,159}$/i.test(parsed.accountId);
+    const modelOk = parsed.model && !segments.some((segment) => segment === "." || segment === "..");
+    return MODES.includes(parsed.mode) && providerOk && accountOk && modelOk ? id : "";
+  }
+
+  function adaptPickerRoute(raw) {
+    if (!isObject(raw)) return null;
+    const metadata = isObject(raw.metadata) ? raw.metadata : {};
+    const id = routeId(raw.id ?? raw.slug);
+    if (!id) return null;
+    const parsed = parseRouteId(id);
+    const mode = parsed.mode;
+    const availability = boundedText(raw.availability, 40).toLowerCase() || "unknown";
+    const explicitFree = raw.free ?? metadata.free;
+    return {
+      id,
+      mode,
+      provider: parsed.provider,
+      model: parsed.model,
+      label: boundedText(raw.label ?? raw.display_name, 160),
+      availability,
+      hidden: raw.hidden === true || text(raw.visibility).toLowerCase() === "hide",
+      free: explicitFree === true,
+      freeKnown: explicitFree === true || explicitFree === false,
+      reason: boundedText(raw.reason, 240),
+      unavailabilityReason: boundedText(raw.unavailabilityReason, 240),
+      capabilityReason: boundedText(raw.capabilityReason, 240),
+      setupReason: boundedText(raw.setupReason, 240),
+      ...normalizeProviderWebMetadata(raw),
+    };
+  }
+
+  /** Build the presentation catalog without changing registry order or eligibility. */
+  function adaptPickerRoutes(raw, currentRoute = null, fallbacks = [], routeMap = { nodes: [], edges: [] }) {
+    const explicit = Array.isArray(raw) ? raw.map(adaptPickerRoute).filter(Boolean) : [];
+    const generated = [];
+    if (!explicit.length) {
+      const nodes = new Map((routeMap.nodes ?? []).map((node) => [node.id, node]));
+      const ranked = [...(routeMap.edges ?? [])].sort((left, right) => left.priority - right.priority);
+      const pairs = ranked.map((edge) => ({ mode: edge.mode, node: nodes.get(edge.provider) })).filter((item) => item.node);
+      for (const node of routeMap.nodes ?? []) {
+        for (const mode of node.modes) {
+          if (!pairs.some((item) => item.mode === mode && item.node.id === node.id)) pairs.push({ mode, node });
+        }
+      }
+      for (const { mode, node } of pairs) {
+        const models = node.models.length ? node.models : [{ id: "auto", label: "auto", free: null }];
+        for (const model of models) {
+          const account = node.accountId && node.accountId !== "unknown/default" ? `/@${node.accountId}` : "";
+          generated.push(adaptPickerRoute({
+            id: `${mode}/${node.id}${account}/${model.id}`,
+            mode,
+            provider: node.id,
+            model: model.id,
+            label: model.label,
+            free: model.free,
+            hidden: node.hidden || model.hidden,
+            availability: model.availability || node.availability,
+            unavailabilityReason: model.unavailabilityReason || node.unavailabilityReason,
+            capabilityReason: model.capabilityReason || node.capabilityReason,
+            setupReason: model.setupReason || node.setupReason,
+            providerLinks: node.providerLinks,
+            creditState: node.creditState,
+            expiryState: node.expiryState,
+          }));
+        }
+      }
+    }
+
+    const active = currentRoute ? adaptPickerRoute({
+      ...currentRoute,
+      availability: currentRoute.verified ? "available" : "unknown",
+      reason: currentRoute.verificationSource,
+    }) : null;
+    const alternatives = Array.isArray(fallbacks) ? fallbacks.map((row) => adaptPickerRoute({
+      ...row,
+      availability: row.qualified ? "available" : "unavailable",
+      unavailabilityReason: row.qualified ? "" : row.reason,
+    })).filter(Boolean) : [];
+    const ordered = [...explicit, ...generated];
+    if (active && !ordered.some((item) => item.id === active.id)) ordered.unshift(active);
+    for (const alternative of alternatives) {
+      if (!ordered.some((item) => item.id === alternative.id)) ordered.push(alternative);
+    }
+    const seen = new Set();
+    return ordered.filter((item) => item && !seen.has(item.id) && seen.add(item.id));
+  }
+
+  function createPickerPreferences() {
+    return {
+      schemaVersion: PICKER_PREFERENCE_SCHEMA_VERSION,
+      selectedRouteId: "",
+      favoriteRouteIds: [],
+      hiddenRouteIds: [],
+      manualOrderRouteIds: [],
+      filters: { ...PICKER_DEFAULT_FILTERS },
+    };
+  }
+
+  function pickerRouteIds(value) {
+    const seen = new Set();
+    return (Array.isArray(value) ? value : []).flatMap((item) => {
+      const id = routeId(isObject(item) ? item.id : item);
+      if (!id || seen.has(id)) return [];
+      seen.add(id);
+      return [id];
+    });
+  }
+
+  function normalizePickerPreferences(value, knownRoutes = []) {
+    const defaults = createPickerPreferences();
+    if (!isObject(value) || value.schemaVersion !== PICKER_PREFERENCE_SCHEMA_VERSION || !isObject(value.filters)
+      || !Array.isArray(value.favoriteRouteIds) || !Array.isArray(value.hiddenRouteIds) || !Array.isArray(value.manualOrderRouteIds)
+      || typeof value.selectedRouteId !== "string") return defaults;
+    const validReferences = (items) => items.every((item) => typeof item === "string" && routeId(item));
+    if (!validReferences(value.favoriteRouteIds) || !validReferences(value.hiddenRouteIds) || !validReferences(value.manualOrderRouteIds)
+      || (value.selectedRouteId && !routeId(value.selectedRouteId))) return defaults;
+    const filters = value.filters;
+    if (typeof filters.query !== "string" || typeof filters.mode !== "string" || typeof filters.provider !== "string"
+      || typeof filters.model !== "string" || typeof filters.freeOnly !== "boolean" || typeof filters.favoritesOnly !== "boolean"
+      || typeof filters.showHiddenUnavailable !== "boolean" || /[\u0000-\u001f\u007f]/.test(filters.query)) return defaults;
+    const known = new Set(pickerRouteIds(knownRoutes));
+    const prune = (items) => pickerRouteIds(items).filter((id) => known.has(id));
+    const selectedRouteId = routeId(value.selectedRouteId);
+    return {
+      schemaVersion: PICKER_PREFERENCE_SCHEMA_VERSION,
+      selectedRouteId: known.has(selectedRouteId) ? selectedRouteId : "",
+      favoriteRouteIds: prune(value.favoriteRouteIds),
+      hiddenRouteIds: prune(value.hiddenRouteIds),
+      manualOrderRouteIds: prune(value.manualOrderRouteIds),
+      filters: {
+        query: boundedText(filters.query, 120),
+        mode: filters.mode === "all" || MODES.includes(filters.mode) ? filters.mode : "all",
+        provider: boundedFilter(filters.provider),
+        model: boundedFilter(filters.model, 240),
+        freeOnly: filters.freeOnly,
+        favoritesOnly: filters.favoritesOnly,
+        showHiddenUnavailable: filters.showHiddenUnavailable,
+      },
+    };
+  }
+
+  function boundedFilter(value, maximum = 120) {
+    const candidate = boundedText(value, maximum);
+    return candidate && !/[\u0000-\u001f\u007f\\]/.test(candidate) ? candidate : "all";
+  }
+
+  function parsePickerPreferences(serialized, knownRoutes = []) {
+    if (serialized == null || serialized === "") return createPickerPreferences();
+    try {
+      const value = typeof serialized === "string" ? JSON.parse(serialized) : serialized;
+      return normalizePickerPreferences(value, knownRoutes);
+    } catch {
+      return createPickerPreferences();
+    }
+  }
+
+  function serializePickerPreferences(value, knownRoutes = []) {
+    return JSON.stringify(normalizePickerPreferences(value, knownRoutes));
+  }
+
+  function orderRouteIds(allRouteIds, manualOrderRouteIds) {
+    const all = pickerRouteIds(allRouteIds);
+    const valid = new Set(all);
+    const manual = pickerRouteIds(manualOrderRouteIds).filter((id) => valid.has(id));
+    return [...manual, ...all.filter((id) => !manual.includes(id))];
+  }
+
+  /** Pure preference reducer used by drag, keyboard, mouse, and touch controls. */
+  function reducePickerPreferences(state, action, knownRoutes = []) {
+    const all = pickerRouteIds(knownRoutes);
+    const current = normalizePickerPreferences(state, all);
+    if (!isObject(action)) return current;
+    const id = routeId(action.routeId);
+    const known = new Set(all);
+    if (["toggle-favorite", "toggle-hidden", "select-route", "move-route"].includes(action.type) && !known.has(id)) return current;
+    if (action.type === "toggle-favorite") {
+      const next = new Set(current.favoriteRouteIds);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return { ...current, favoriteRouteIds: all.filter((route) => next.has(route)) };
+    }
+    if (action.type === "toggle-hidden") {
+      const next = new Set(current.hiddenRouteIds);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return { ...current, hiddenRouteIds: all.filter((route) => next.has(route)) };
+    }
+    if (action.type === "select-route") return { ...current, selectedRouteId: id };
+    if (action.type === "move-route") {
+      const ordered = orderRouteIds(all, current.manualOrderRouteIds);
+      const from = ordered.indexOf(id);
+      const requested = Number(action.toIndex);
+      if (from < 0 || !Number.isInteger(requested)) return current;
+      const to = Math.max(0, Math.min(ordered.length - 1, requested));
+      if (from === to) return current;
+      ordered.splice(from, 1);
+      ordered.splice(to, 0, id);
+      return { ...current, manualOrderRouteIds: ordered };
+    }
+    if (action.type === "reset-order") return current.manualOrderRouteIds.length ? { ...current, manualOrderRouteIds: [] } : current;
+    if (action.type === "set-filter" && Object.hasOwn(PICKER_DEFAULT_FILTERS, action.name)) {
+      const nextFilters = { ...current.filters };
+      if (["freeOnly", "favoritesOnly", "showHiddenUnavailable"].includes(action.name)) nextFilters[action.name] = action.value === true;
+      else if (action.name === "mode") nextFilters.mode = action.value === "all" || MODES.includes(action.value) ? action.value : "all";
+      else if (action.name === "query") nextFilters.query = boundedText(action.value, 120);
+      else nextFilters[action.name] = boundedFilter(action.value, action.name === "model" ? 240 : 120);
+      return { ...current, filters: nextFilters };
+    }
+    return current;
+  }
+
+  /** Apply AND filters and local ordering while always retaining the active route. */
+  function applyPickerPreferences(routes, preferences, activeRouteId, options = {}) {
+    const source = Array.isArray(routes) ? routes.map(adaptPickerRoute).filter(Boolean) : [];
+    const ids = source.map((route) => route.id);
+    const prefs = normalizePickerPreferences(preferences, ids);
+    const favorites = new Set(prefs.favoriteRouteIds);
+    const hidden = new Set(prefs.hiddenRouteIds);
+    const byId = new Map(source.map((route) => [route.id, route]));
+    const ordered = orderRouteIds(ids, prefs.manualOrderRouteIds).map((id) => byId.get(id)).filter(Boolean);
+    const query = prefs.filters.query.trim().toLocaleLowerCase();
+    const providerFilter = prefs.filters.provider.toLocaleLowerCase();
+    const modelFilter = prefs.filters.model.toLocaleLowerCase();
+    const active = routeId(activeRouteId);
+    const matches = (route) => {
+      const hiddenUnavailable = hidden.has(route.id) || route.hidden || route.availability === "unavailable"
+        || Boolean(route.setupReason) || Boolean(route.capabilityReason);
+      const searchable = [route.id, route.mode, route.provider, route.model, route.label, route.reason,
+        route.unavailabilityReason, route.capabilityReason, route.setupReason].join(" ").toLocaleLowerCase();
+      return (!query || searchable.includes(query))
+        && (prefs.filters.mode === "all" || route.mode === prefs.filters.mode)
+        && (providerFilter === "all" || route.provider.toLocaleLowerCase() === providerFilter)
+        && (modelFilter === "all" || route.model.toLocaleLowerCase() === modelFilter)
+        && (!prefs.filters.freeOnly || route.free === true)
+        && (!prefs.filters.favoritesOnly || favorites.has(route.id))
+        && (prefs.filters.showHiddenUnavailable || !hiddenUnavailable);
+    };
+    const projected = ordered.filter((route) => matches(route) || route.id === active).map((route) => ({
+      ...route,
+      active: route.id === active,
+      selected: route.id === prefs.selectedRouteId,
+      favorite: favorites.has(route.id),
+      hiddenByPreference: hidden.has(route.id),
+      forcedVisible: route.id === active && !matches(route),
+    }));
+    const defaultView = !query && prefs.filters.mode === "all" && prefs.filters.provider === "all" && prefs.filters.model === "all"
+      && !prefs.filters.freeOnly && !prefs.filters.favoritesOnly && !prefs.filters.showHiddenUnavailable;
+    const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 6;
+    let visible = defaultView && options.showAll !== true ? projected.slice(0, limit) : projected;
+    const activeRoute = projected.find((route) => route.active);
+    if (activeRoute && !visible.some((route) => route.id === activeRoute.id)) {
+      visible = limit === 1 ? [activeRoute] : [...visible.slice(0, Math.max(0, limit - 1)), activeRoute];
+    }
+    return {
+      routes: visible,
+      totalMatches: projected.length,
+      hiddenByCompactCount: projected.length - visible.length,
+      hiddenUnavailableCount: source.filter((route) => hidden.has(route.id) || route.hidden || route.availability === "unavailable"
+        || route.setupReason || route.capabilityReason).length,
+      preferences: prefs,
+    };
+  }
+
   /**
    * Apply drawer filters to history. Qualified fallbacks stay visible unless
    * unverified rows are excluded; the current route is never hidden.
@@ -492,8 +1036,16 @@
   root.ThreadspanState = {
     MODE_NOTES,
     MODES,
+    PICKER_PREFERENCE_SCHEMA_VERSION,
     SYNTHETIC_STATE,
+    adaptPickerRoutes,
     adaptThreadspanState,
     applyFilters,
+    applyPickerPreferences,
+    createPickerPreferences,
+    normalizeProviderWebMetadata,
+    parsePickerPreferences,
+    reducePickerPreferences,
+    serializePickerPreferences,
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

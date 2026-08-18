@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { BridgeService } from "./bridge/service.mjs";
 import { closeHttpServer, createHttpServer, listenHttpServer } from "./bridge/http-server.mjs";
-import { RemoteBridgeService } from "./bridge/remote-service.mjs";
 import { installCodexConfigBlock, installCodexProfileDocuments, renderCodexConfigBlock, renderCodexProfileDocuments, resolveCodexConfigPath, uninstallCodexConfigBlock, uninstallCodexProfileDocuments } from "./codex/config.mjs";
 import { buildMergedModelCatalog } from "./codex/catalog.mjs";
 import { discoverNativeCodexCatalog } from "./codex/app-server.mjs";
@@ -15,10 +15,12 @@ import { asBridgeError } from "./core/errors.mjs";
 import { resolveExecutablePath } from "./core/executable.mjs";
 import { Logger } from "./core/logger.mjs";
 import { applyInstallerPlan, createInstallerPlan, previewInstallerPlan } from "./installer/index.mjs";
-import { runMcpServer } from "./mcp/server.mjs";
+import { runMcpHttpProxy, runMcpServer } from "./mcp/server.mjs";
 import { inspectGrokBuildInstallation } from "./providers/grok-build.mjs";
 import { DesktopCompatibilityWatch } from "./maintenance/desktop-update.mjs";
 import { GitHubCompatibilityIntake } from "./maintenance/github-intake.mjs";
+import { launchCompanionWindow } from "./installer/companion-launch.mjs";
+import { installHostSurface } from "./mcp/host-install.mjs";
 
 const SOURCE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(SOURCE_DIRECTORY, "..");
@@ -76,6 +78,31 @@ export async function main(argv = process.argv.slice(2)) {
     const config = loadConfig(configPath);
     const logger = new Logger({ level: valueOption(parsed.options.logLevel) ?? config.logging?.level ?? "info" });
 
+    if (command === "install" && subcommand === "gui") {
+      await runInstallerGui(parsed.options, config);
+      return;
+    }
+    if (command === "host" && subcommand === "install") {
+      const host = valueOption(parsed.options.host);
+      const connectorTokenFile = valueOption(parsed.options.tokenFile);
+      if (!host || !connectorTokenFile) throw new Error("host install requires --host grok|cursor|claude-code|hermes and an explicit --token-file PATH for the read-only connector token");
+      const validatedConnectorTokenFile = await assertConnectorOnlyTokenFile(config, connectorTokenFile);
+      const integration = host === "claude-code" ? "claude-code-threadspan" : "grok-threadspan";
+      const result = await installHostSurface(host, {
+        nodePath: process.execPath,
+        cliPath: fileURLToPath(import.meta.url),
+        bridgeConfigPath: config.configPath,
+        connectorTokenFile: validatedConnectorTokenFile,
+        remoteUrl: `http://${formatHost(config.server.host)}:${config.server.port}/mcp`,
+        targetPath: valueOption(parsed.options.target),
+        allowPreview: parsed.options.allowPreview === true,
+        pluginSource: resolve(PACKAGE_ROOT, "integrations", integration),
+        statusLinePath: resolve(PACKAGE_ROOT, "integrations", "claude-code-threadspan", "statusline.mjs"),
+      });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+
     if (command === "compatibility" && subcommand === "doctor") {
       const watch = new DesktopCompatibilityWatch({ ...config.compatibilityWatch, enabled: true });
       const report = parsed.options.afterUpdate === true ? await watch.doctorAfterUpdate() : await watch.doctor();
@@ -96,15 +123,18 @@ export async function main(argv = process.argv.slice(2)) {
       const remoteUrl = parsed.options.embedded === true
         ? undefined
         : valueOption(parsed.options.remote) ?? process.env.THREADSPAN_MCP_URL ?? process.env.CURSOR_BRIDGE_MCP_URL;
-      const service = remoteUrl
-        ? new RemoteBridgeService({
-            baseUrl: remoteUrl,
-            tokenEnv: config.server.authTokenEnv,
-            timeoutMs: config.server.requestTimeoutMs,
-          })
-        : new BridgeService(config, { logger });
+      if (remoteUrl) {
+        if (!isMcpHttpEndpoint(remoteUrl)) {
+          throw new Error("Remote MCP requires the connector-only /mcp endpoint; use --embedded for an explicit local MCP process");
+        }
+        const connectorTokenFile = valueOption(parsed.options.tokenFile);
+        if (!connectorTokenFile) throw new Error("Remote /mcp proxy requires --token-file PATH for the read-only connector token");
+        await runMcpHttpProxy({ endpoint: remoteUrl, tokenFile: await assertConnectorOnlyTokenFile(config, connectorTokenFile) });
+        return;
+      }
+      const service = new BridgeService(config, { logger });
       try {
-        await runMcpServer({ service, logger: logger.child(remoteUrl ? "mcp-proxy" : "mcp") });
+        await runMcpServer({ service, logger: logger.child("mcp") });
       } finally {
         await service.close();
       }
@@ -221,6 +251,7 @@ export async function main(argv = process.argv.slice(2)) {
  */
 async function runServe(config, logger) {
   const service = new BridgeService(config, { logger });
+  await service.initialize();
   const server = createHttpServer(service, config);
   const address = await listenHttpServer(server, { host: config.server.host, port: config.server.port });
   logger.info("Bridge HTTP server listening", { host: address.address, port: address.port, configPath: config.configPath });
@@ -256,10 +287,13 @@ async function runCodexCommand(subcommand, options, bridgeConfigPath, config) {
     return;
   }
   const bridgeUrl = valueOption(options.url) ?? `http://${config.server.host}:${config.server.port}/v1`;
-  const block = renderCodexConfigBlock({
+  const mcpRemoteUrl = options.embeddedMcp === true ? undefined : toMcpEndpoint(bridgeUrl);
+  if (mcpRemoteUrl) await assertConnectorOnlyTokenFile(config, config.server.connectorTokenFile);
+  let block = renderCodexConfigBlock({
     bridgeUrl,
-    mcpRemoteUrl: options.embeddedMcp === true ? undefined : bridgeUrl,
+    mcpRemoteUrl,
     tokenEnv: config.server.authTokenEnv,
+    connectorTokenFile: config.server.connectorTokenFile,
     cliPath: fileURLToPath(import.meta.url),
     bridgeConfigPath,
     defaultProvider: config.defaults.provider,
@@ -269,6 +303,7 @@ async function runCodexCommand(subcommand, options, bridgeConfigPath, config) {
     delegateProvider: valueOption(options.delegateProvider) ?? findProviderForMode(config, "delegate")?.id ?? config.defaults.provider,
     delegateModel: valueOption(options.delegateModel) ?? findProviderForMode(config, "delegate")?.config.model ?? config.defaults.model,
   });
+  if (options.embeddedMcp === true) block = forceEmbeddedMcpArgument(block);
   const profiles = renderCodexProfileDocuments({
     defaultProvider: config.defaults.provider,
     defaultModel: config.defaults.model,
@@ -284,6 +319,33 @@ async function runCodexCommand(subcommand, options, bridgeConfigPath, config) {
   const result = await installCodexConfigBlock(codexConfigPath, block, { backup: options.noBackup !== true });
   const installedProfiles = await installCodexProfileDocuments(codexConfigPath, profiles, { backup: options.noBackup !== true });
   process.stdout.write(`${JSON.stringify({ ...result, profiles: installedProfiles, nativeCatalogPreserved: true }, null, 2)}\n`);
+}
+
+async function runInstallerGui(options, config) {
+  const tokenEnv = config.server.authTokenEnv ?? "THREADSPAN_TOKEN";
+  let token = process.env[tokenEnv];
+  const tokenFile = valueOption(options.tokenFile) ?? config.server.authTokenFile;
+  if (!token && tokenFile) token = (await readFile(resolve(tokenFile), "utf8")).trim();
+  if (!token) throw new Error(`Installer GUI requires ${tokenEnv} or server.authTokenFile`);
+  const installRoot = resolve(valueOption(options.root) ?? dirname(config.configPath));
+  const originKind = valueOption(options.origin) ?? "direct";
+  const base = `http://${formatHost(config.server.host)}:${config.server.port}`;
+  const response = await fetch(`${base}/threadspan/install/session`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      installRoot,
+      origin: {
+        kind: originKind,
+        id: valueOption(options.originId),
+        project: valueOption(options.originProject),
+      },
+    }),
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body?.error?.message ?? `Installer GUI session failed with HTTP ${response.status}`);
+  const launched = await launchCompanionWindow({ url: body.url, browserPath: valueOption(options.browser) });
+  process.stdout.write(`${JSON.stringify({ sessionId: body.sessionId, pid: launched.pid, expiresAt: body.expiresAt, origin: originKind }, null, 2)}\n`);
 }
 
 /**
@@ -347,6 +409,17 @@ async function runDoctor(config, options) {
         ok: true,
         warning: true,
         detail: "Consumer Build entitlement and remaining weekly usage cannot be verified through a documented headless meter without an authenticated request; verify the CLI account and Settings → Usage before automatic batches",
+      });
+    }
+    if (provider.adapter === "claude-code") {
+      const executablePath = await resolveExecutablePath(provider.command ?? "claude");
+      checks.push({
+        name: `provider:${id}:claude-code`,
+        ok: executablePath !== undefined,
+        warning: executablePath !== undefined,
+        detail: executablePath
+          ? `${executablePath} — Preview/live-untested; sign-in and CLI compatibility were not probed`
+          : `${provider.command ?? "claude"} was not found on PATH; Preview remains disabled`,
       });
     }
     if (options.live && provider.baseUrl) {
@@ -484,16 +557,105 @@ function formatHost(host) {
   return host.includes(":") ? `[${host}]` : host;
 }
 
+/** Identify the scoped Streamable HTTP MCP endpoint without treating owner `/v1` URLs as connector routes. */
+function isMcpHttpEndpoint(value) {
+  try {
+    return new URL(String(value)).pathname.replace(/\/+$/, "") === "/mcp";
+  } catch {
+    return false;
+  }
+}
+
+/** Derive the connector-only endpoint without reusing the owner /v1 path. */
+function toMcpEndpoint(value) {
+  const endpoint = new URL(String(value));
+  endpoint.pathname = "/mcp";
+  endpoint.search = "";
+  endpoint.hash = "";
+  return endpoint.toString();
+}
+
+/** Reject owner-token reuse and connector credentials that cannot authenticate the configured daemon. */
+async function assertConnectorOnlyTokenFile(config, connectorTokenFile) {
+  if (typeof connectorTokenFile !== "string" || !connectorTokenFile) {
+    throw new Error("A dedicated connector token file is required");
+  }
+  const connectorPath = resolve(connectorTokenFile);
+  const ownerPath = config.server?.authTokenFile ? resolve(config.server.authTokenFile) : undefined;
+  if (ownerPath && sameLocalFile(connectorPath, ownerPath)) {
+    throw new Error("Connector token file must not be the owner main-token file");
+  }
+  const connectorToken = await readRequiredTokenFile(connectorPath, "connector");
+  let ownerToken = config.server?.authTokenEnv ? process.env[config.server.authTokenEnv] : undefined;
+  if (!ownerToken && ownerPath) ownerToken = await readOptionalTokenFile(ownerPath);
+  if (ownerToken && secretValuesEqual(connectorToken, ownerToken)) {
+    throw new Error("Connector token value must differ from the owner main token");
+  }
+
+  let configuredConnector = config.server?.connectorTokenEnv ? process.env[config.server.connectorTokenEnv] : undefined;
+  const configuredConnectorPath = config.server?.connectorTokenFile ? resolve(config.server.connectorTokenFile) : undefined;
+  if (!configuredConnector && configuredConnectorPath) {
+    configuredConnector = await readRequiredTokenFile(configuredConnectorPath, "configured connector");
+  }
+  if (configuredConnector && !secretValuesEqual(connectorToken, configuredConnector)) {
+    throw new Error("Connector token file does not match the configured connector credential");
+  }
+  return connectorPath;
+}
+
+async function readRequiredTokenFile(path, label) {
+  let token;
+  try { token = (await readFile(path, "utf8")).trim(); } catch {
+    throw new Error(`Configured ${label} token file is not readable`);
+  }
+  if (!token) throw new Error(`Configured ${label} token file is empty`);
+  return token;
+}
+
+async function readOptionalTokenFile(path) {
+  try { return (await readFile(path, "utf8")).trim() || undefined; } catch { return undefined; }
+}
+
+function sameLocalFile(left, right) {
+  if (pathComparisonKey(left) === pathComparisonKey(right)) return true;
+  try {
+    const leftStats = statSync(left), rightStats = statSync(right);
+    if (leftStats.dev === rightStats.dev && leftStats.ino === rightStats.ino) return true;
+  } catch {}
+  try { return pathComparisonKey(realpathSync.native(left)) === pathComparisonKey(realpathSync.native(right)); } catch { return false; }
+}
+
+function pathComparisonKey(value) {
+  const path = resolve(value);
+  return process.platform === "win32" ? path.toLowerCase() : path;
+}
+
+function secretValuesEqual(left, right) {
+  if (!left || !right) return false;
+  const leftBuffer = Buffer.from(left), rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+/** Make a generated embedded Codex MCP launch immune to ambient remote-MCP variables. */
+function forceEmbeddedMcpArgument(block) {
+  const marker = '"mcp", "--config"';
+  const linePattern = /^args = \[(.*)\]$/m;
+  if (!block.includes(marker) || !linePattern.test(block)) throw new Error("Generated Codex MCP block is missing its args line");
+  return block.replace(linePattern, (_line, args) => `args = [${args}, "--embedded"]`);
+}
+
 /** Print CLI usage. */
 function printHelp() {
   process.stdout.write(`threadspan — one task across every model
 
 Usage:
+  threadspan install gui [--root PATH] [--origin codex|grok|cursor|hermes|direct] [--origin-id ID] [--origin-project PATH] [--browser PATH]
   threadspan install plan --root PATH --output PLAN.json [--all|--component ID ...] [--long-context all|NAME ...]
   threadspan install apply --plan PLAN.json --approve-digest SHA256
   threadspan config init [--config PATH] [--force]
   threadspan serve [--config PATH]
-  threadspan mcp [--config PATH] [--remote URL|--embedded]
+  threadspan mcp [--config PATH] [--remote URL|--embedded] [--token-file CONNECTOR_TOKEN_PATH]
+  threadspan host install --host grok|cursor|claude-code|hermes --token-file CONNECTOR_TOKEN_PATH [--target PATH] [--allow-preview]
   threadspan doctor [--config PATH] [--live]
   threadspan providers [--config PATH]
   threadspan models [--config PATH]
@@ -508,7 +670,7 @@ Usage:
   threadspan skill install [--skill consult|managed-worker|all] [--target SKILLS_ROOT] [--force]
 
 Modes:
-  Consult     Advisory second opinion. Cursor uses a disposable workspace snapshot.
+  Consult     Advisory second opinion. Cursor and Claude Code use disposable workspace snapshots.
   Integrated  Secondary raw model is active; the calling client owns tools.
   Delegate    Secondary provider agent owns a bounded execution task.
 `);

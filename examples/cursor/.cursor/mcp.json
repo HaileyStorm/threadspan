@@ -2,7 +2,7 @@
   "mcpServers": {
     "consult": {
       "command": "cursor-bridge",
-      "args": ["mcp", "--remote", "http://127.0.0.1:8743"]
+      "args": ["mcp", "--remote", "http://127.0.0.1:8743/mcp", "--token-file", "/absolute/path/to/threadspan-connector-token"]
     }
   }
 }

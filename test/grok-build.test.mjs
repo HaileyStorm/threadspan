@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
   GrokBuildProvider,
   buildGrokBuildArguments,
@@ -11,9 +14,10 @@ import {
   resolveGrokExecutionPolicy,
   resolveGrokTaskProfile,
 } from "../src/providers/grok-build.mjs";
-import { silentLogger } from "./helpers.mjs";
+import { nativePath, silentLogger } from "./helpers.mjs";
 
-const fixture = new URL("./fixtures/fake-grok.mjs", import.meta.url).pathname;
+const fixture = nativePath(new URL("./fixtures/fake-grok.mjs", import.meta.url));
+const execFileAsync = promisify(execFile);
 
 function createProviderConfig(overrides = {}) {
   return {
@@ -47,6 +51,80 @@ test("Grok installation preflight validates version without consuming inference"
   assert.equal(result.ok, true);
   assert.equal(result.executable, process.execPath);
   assert.match(result.version, /^grok 1\.0\.4/);
+});
+
+test("Grok Windows preflight resolves a bare PATHEXT command and records the final PowerShell artifact", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan grok windows "));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const command = join(root, "grok.CMD");
+  const script = join(root, "grok.ps1");
+  const scriptBody = process.platform === "win32"
+    ? "Write-Output 'grok ps1-final 2.0.0'\r\n"
+    : "#!/bin/sh\nprintf 'grok ps1-final 2.0.0\\n'\n";
+  await writeFile(command, "@echo off\r\necho wrong-wrapper-version\r\n");
+  await writeFile(script, scriptBody);
+  if (process.platform !== "win32") await chmod(script, 0o755);
+  const expectedSha256 = createHash("sha256").update(scriptBody).digest("hex");
+
+  const result = await inspectGrokBuildInstallation(createProviderConfig({
+    command: "grok",
+    commandArgs: [],
+    requireAbsoluteCommand: false,
+    versionArgs: ["--version"],
+    versionPattern: "^grok ps1-final 2\\.0\\.0$",
+    pin: { version: "ps1-final 2.0.0", sha256: expectedSha256 },
+  }), {
+    platform: "win32",
+    environment: { PATH: root, PATHEXT: ".CMD" },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.executable, script);
+  assert.equal(result.version, "grok ps1-final 2.0.0");
+  assert.equal(result.sha256, expectedSha256);
+});
+
+test("Grok Windows preflight hashes the final PowerShell artifact and rejects wrapper-hash pinning", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-pin-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const command = join(root, "grok.cmd");
+  const script = join(root, "grok.ps1");
+  const commandBody = "reviewed wrapper";
+  const scriptBody = "different final artifact";
+  await writeFile(command, commandBody);
+  await writeFile(script, scriptBody);
+  const wrapperSha256 = createHash("sha256").update(commandBody).digest("hex");
+  const scriptSha256 = createHash("sha256").update(scriptBody).digest("hex");
+
+  const result = await inspectGrokBuildInstallation(createProviderConfig({
+    command,
+    commandArgs: [],
+    skipVersionCheck: true,
+    versionPattern: undefined,
+    pin: { sha256: wrapperSha256 },
+  }), { platform: "win32", environment: {} });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.executable, script);
+  assert.equal(result.sha256, scriptSha256);
+  assert.match(result.errors.join("; "), /does not match configured pin/);
+});
+
+test("Grok Windows preflight rejects missing PowerShell siblings and batch launchers", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-reject-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const command = join(root, "grok.cmd");
+  const batch = join(root, "grok.bat");
+  await writeFile(command, "not evaluated");
+  await writeFile(batch, "not evaluated");
+
+  const missingSibling = await inspectGrokBuildInstallation(createProviderConfig({ command }), { platform: "win32", environment: {} });
+  assert.equal(missingSibling.ok, false);
+  assert.match(missingSibling.errors.join("; "), /sibling PowerShell shim does not exist/);
+
+  const rejectedBatch = await inspectGrokBuildInstallation(createProviderConfig({ command: batch }), { platform: "win32", environment: {} });
+  assert.equal(rejectedBatch.ok, false);
+  assert.match(rejectedBatch.errors.join("; "), /\.bat launchers are not supported/);
 });
 
 test("Grok parser preserves cache-read/reasoning usage and terminal accounting", () => {
@@ -89,6 +167,69 @@ test("Grok argument builder keeps subagents and web enabled by default while ret
   }
   assert.equal(args.includes("--no-subagents"), false);
   assert.equal(args.includes("--disable-web-search"), false);
+});
+
+test("Grok rejects protected execution-policy flags from every arbitrary argument tail", () => {
+  const cases = [
+    ["commandArgs", [fixture, "-mgrok-other"]],
+    ["modelListArgs", ["models", "--no-subagents"]],
+    ["preArgs", ["--permission-mode", "bypassPermissions"]],
+    ["postArgs", ["--resume=old-session"]],
+    ["versionArgs", ["--version", "--disable-web-search"]],
+  ];
+  for (const [field, values] of cases) {
+    assert.throws(
+      () => new GrokBuildProvider("grok", createProviderConfig({ [field]: values }), { logger: silentLogger() }),
+      new RegExp(`${field} contains protected argument`),
+    );
+  }
+});
+
+test("Grok bypassPermissions is Delegate-only and forces a clean linked worktree", async (t) => {
+  try { await execFileAsync("git", ["--version"]); } catch { t.skip("git is unavailable"); return; }
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-bypass-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repository = join(root, "repository");
+  const worktree = join(root, "worker");
+  await execFileAsync("git", ["init", "--initial-branch=main", repository]);
+  await execFileAsync("git", ["config", "user.email", "threadspan@example.invalid"], { cwd: repository });
+  await execFileAsync("git", ["config", "user.name", "Threadspan Test"], { cwd: repository });
+  await writeFile(join(repository, "tracked.txt"), "base\n");
+  await execFileAsync("git", ["add", "tracked.txt"], { cwd: repository });
+  await execFileAsync("git", ["commit", "-m", "base"], { cwd: repository });
+  await execFileAsync("git", ["worktree", "add", "-b", "worker", worktree], { cwd: repository });
+
+  const config = createProviderConfig({
+    delegate: {
+      permissionMode: "bypassPermissions",
+      requireGit: false,
+      requireLinkedWorktree: false,
+      requireCleanStart: false,
+    },
+  });
+  assert.throws(
+    () => buildGrokBuildArguments(createProviderConfig({ consult: { permissionMode: "bypassPermissions" } }), { mode: "consult", model: "grok-4.6", metadata: {} }, {
+      reasoningEffort: "medium", maxTurns: 4, expectedTurns: 1, noPlan: false,
+    }, repository, "task"),
+    /only for Delegate in a clean linked worktree/,
+  );
+
+  const provider = new GrokBuildProvider("grok", config, { logger: silentLogger() });
+  const request = { mode: "delegate", model: "grok-4.6", messages: [{ role: "user", content: "bounded task" }] };
+  try {
+    await assert.rejects(async () => {
+      for await (const _event of provider.run({ ...request, workspace: repository })) {}
+    }, /linked Git worktree/);
+    const events = [];
+    for await (const event of provider.run({ ...request, workspace: worktree })) events.push(event);
+    assert.equal(events.at(-1).message.content, "worker-ok");
+    await writeFile(join(worktree, "tracked.txt"), "dirty\n");
+    await assert.rejects(async () => {
+      for await (const _event of provider.run({ ...request, workspace: worktree })) {}
+    }, /must be clean/);
+  } finally {
+    await provider.close();
+  }
 });
 
 test("Grok execution policy supports explicit per-request subagent and web disabling", () => {
@@ -157,6 +298,35 @@ test("Grok Consult executes in a disposable workspace and emits usage/metadata",
   assert.equal(events.at(-1).providerMetadata.grokBuild.allowSubagents, true);
   assert.equal(events.at(-1).providerMetadata.grokBuild.allowWebSearch, true);
   assert.equal(events.at(-1).providerMetadata.grokBuild.coordinatorId, "cgpt-a");
+});
+
+test("Grok Build summarizes only repetitive tool output in the transmitted worker packet", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-summary-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const argsPath = join(root, "args.json");
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    env: { FAKE_GROK_ARGS_PATH: argsPath },
+    outputSummary: {
+      minBytes: 128,
+      minLines: 12,
+      minRepetitions: 8,
+      minDuplicateLineRatio: 0.7,
+      headBytes: 96,
+      tailBytes: 96,
+    },
+  }), { logger: silentLogger() });
+  const original = ["head", ...Array.from({ length: 80 }, () => "repeat"), "tail"].join("\n");
+  const messages = [{ role: "tool", toolCallId: "call_grok", content: original }];
+  const before = structuredClone(messages);
+  try {
+    for await (const _event of provider.run({ mode: "consult", model: "grok-4.6", messages })) {}
+  } finally {
+    await provider.close();
+  }
+  const args = JSON.parse(await readFile(argsPath, "utf8"));
+  const prompt = args[args.indexOf("--single") + 1];
+  assert.match(prompt, /THREADSPAN PROGRAMMATIC OUTPUT SUMMARY/);
+  assert.deepEqual(messages, before);
 });
 
 test("Grok Build rejects Integrated rather than substituting its agent loop", async () => {

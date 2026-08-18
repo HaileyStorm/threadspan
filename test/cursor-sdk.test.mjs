@@ -16,20 +16,22 @@ async function collect(iterable) {
 
 /** Create a fake Cursor SDK with observable agent creation and disposal. */
 function createFakeCursorSdk() {
-  const state = { creates: 0, sends: 0, disposals: 0 };
+  const state = { creates: 0, sends: 0, disposals: 0, prompts: [], agentOptions: [] };
   return {
     state,
     sdk: {
       Cursor: { models: { list: async () => ({ models: [{ id: "auto" }] }) } },
       Agent: {
-        create: async () => {
+        create: async (options) => {
           state.creates += 1;
+          state.agentOptions.push(options);
           await new Promise((resolve) => setTimeout(resolve, 20));
           const agentId = `agent-${state.creates}`;
           return {
             agentId,
-            async send() {
+            async send(prompt) {
               state.sends += 1;
+              state.prompts.push(prompt);
               return {
                 id: `run-${state.sends}`,
                 supports: () => false,
@@ -65,6 +67,54 @@ test("Cursor provider rejects Integrated mode instead of misrepresenting the age
   await provider.close();
 });
 
+test("Cursor SDK exposes native settings and forwards explicit false sandbox/review overrides", async () => {
+  const native = createFakeCursorSdk();
+  const nativeProvider = new CursorSdkProvider("cursor-native", {
+    adapter: "cursor-sdk",
+    apiKey: "test-key",
+    capabilities: ["consult"],
+  }, {
+    logger: new Logger({ level: "silent" }),
+    cursorSdkLoader: async () => native.sdk,
+  });
+  try {
+    const events = await collect(nativeProvider.run({ mode: "consult", model: "auto", messages: [{ role: "user", content: "review" }] }));
+    assert.deepEqual(nativeProvider.capabilities().settings.nativeSettings, { settingSources: true, sandbox: true, autoReview: true });
+    assert.equal("sandboxOptions" in native.state.agentOptions[0].local, false);
+    assert.equal("autoReview" in native.state.agentOptions[0].local, false);
+    assert.equal(events.at(-1).providerMetadata.cursorSdk.effectiveSettings.sandbox, "native");
+  } finally {
+    await nativeProvider.close();
+  }
+
+  const explicit = createFakeCursorSdk();
+  const explicitProvider = new CursorSdkProvider("cursor-explicit", {
+    adapter: "cursor-sdk",
+    apiKey: "test-key",
+    capabilities: ["consult"],
+    local: { settingSources: [], sandboxEnabled: false, autoReview: false },
+  }, {
+    logger: new Logger({ level: "silent" }),
+    cursorSdkLoader: async () => explicit.sdk,
+  });
+  try {
+    const events = await collect(explicitProvider.run({ mode: "consult", model: "auto", messages: [{ role: "user", content: "review" }] }));
+    assert.deepEqual(explicit.state.agentOptions[0].local, {
+      cwd: explicit.state.agentOptions[0].local.cwd,
+      settingSources: [],
+      autoReview: false,
+      sandboxOptions: { enabled: false },
+    });
+    assert.deepEqual(events.at(-1).providerMetadata.cursorSdk.effectiveSettings, {
+      settingSources: [],
+      sandbox: "disabled",
+      autoReview: "disabled",
+    });
+  } finally {
+    await explicitProvider.close();
+  }
+});
+
 test("simultaneous first Delegate calls share one retained Cursor agent", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "cursor-bridge-delegate-test-"));
   const { sdk, state } = createFakeCursorSdk();
@@ -92,6 +142,7 @@ test("simultaneous first Delegate calls share one retained Cursor agent", async 
     ]);
     assert.equal(state.creates, 1);
     assert.equal(state.sends, 2);
+    assert.equal(state.prompts[1].split("Do one bounded thing.").length - 1, 1);
     assert.equal(left.at(-1).message.content, "delegated result");
     assert.equal(right.at(-1).message.content, "delegated result");
   } finally {
@@ -100,6 +151,48 @@ test("simultaneous first Delegate calls share one retained Cursor agent", async 
   }
 
   assert.equal(state.disposals, 1);
+});
+
+test("retained Cursor agents replay changed policy once without replaying old turns", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "threadspan-cursor-policy-"));
+  const { sdk, state } = createFakeCursorSdk();
+  const provider = new CursorSdkProvider("cursor", {
+    adapter: "cursor-sdk",
+    apiKey: "test-key",
+    capabilities: ["delegate"],
+  }, {
+    logger: new Logger({ level: "silent" }),
+    cursorSdkLoader: async () => sdk,
+  });
+  try {
+    const run = (messages) => collect(provider.run({
+      mode: "delegate", model: "auto", workspace, messages,
+    }));
+    await run([
+      { role: "system", content: "policy one" },
+      { role: "user", content: "first task" },
+    ]);
+    await run([
+      { role: "system", content: "policy one" },
+      { role: "user", content: "first task" },
+      { role: "assistant", content: "first result" },
+      { role: "user", content: "second task" },
+    ]);
+    await run([
+      { role: "system", content: "policy two" },
+      { role: "user", content: "first task" },
+      { role: "assistant", content: "first result" },
+      { role: "user", content: "third task" },
+    ]);
+    assert.doesNotMatch(state.prompts[1], /policy one|first task|first result/);
+    assert.match(state.prompts[1], /second task/);
+    assert.match(state.prompts[2], /policy two/);
+    assert.doesNotMatch(state.prompts[2], /policy one|first result/);
+    assert.match(state.prompts[2], /third task/);
+  } finally {
+    await provider.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
 });
 
 test("an aborted queued Delegate call does not run or let later work overtake the active send", async () => {

@@ -3,6 +3,11 @@
     "host": "127.0.0.1",
     "port": 8743,
     "authTokenEnv": "THREADSPAN_TOKEN",
+    "authTokenFile": null,
+    "connectorTokenEnv": "THREADSPAN_CONNECTOR_TOKEN",
+    // Optional owner-local connector credential. The daemon may read it for
+    // scoped /mcp auth; clients receive only the file path, never the value.
+    "connectorTokenFile": null,
     "allowUnauthenticatedLoopback": false,
     "maxBodyBytes": 8388608,
     "requestTimeoutMs": 1800000,
@@ -23,6 +28,29 @@
   "usageLedger": {
     "enabled": true
   },
+  "accounts": {
+    "path": null,
+    "profileSources": {},
+    "fallback": {
+      "enabled": false,
+      "maxCandidates": 1
+    }
+  },
+  // Optional and fail-closed. Enabling still requires authoritative native Codex
+  // quota receipts and capability-specific host adapters; unsupported effects
+  // remain pending or unsupported rather than being reported as executed.
+  "maximumUtilization": {
+    "enabled": false,
+    "automaticPollingEnabled": false,
+    "pollIntervalMs": 60000,
+    "manualManifestMaxEntries": 32,
+    "triggerUsedRatio": 0.96,
+    "fastCanaryUsedRatio": 0.99,
+    "normalRolloverConsideration": 0.78,
+    "pressuredRolloverConsideration": 0.75,
+    "oneManifestPerEpoch": true,
+    "requireExactNativeQuotaRecovery": true
+  },
   "compatibilityWatch": {
     "enabled": false,
     "readOnly": true,
@@ -30,11 +58,75 @@
     "pollingEnabled": false,
     "pollIntervalMs": 900000
   },
+  // Provider-neutral orchestration policy. It does not enable a provider or
+  // replace host/project settings. Branch only when the decision value exceeds
+  // coordination cost, then stop at convergence under one caller-owned synthesis.
+  "branching": {
+    "enabled": true,
+    "automaticRecognition": true,
+    "activationReasons": ["independent-evidence", "divergent-ideation", "disjoint-writes"],
+    "routingFactors": ["capability", "live-availability", "quota", "credit", "privacy", "latency", "diversity-value"],
+    "maxBranches": 3,
+    "maxTurnsPerBranch": 8,
+    "maxCostUsd": null,
+    "stopOnConvergence": true,
+    "nativeDefaults": "preserve",
+    "toolPolicy": "decision-useful-only",
+    "imageDivergenceTool": "imagegen",
+    "synthesisOwner": "caller"
+  },
+  // Portable lifecycle policy only; adapters remain recovery owners. Threadspan
+  // never turns these bounds into generic retries or bypasses privacy/account gates.
+  "connectionRecovery": {
+    "maxReconnectAttempts": 1,
+    "maxRebindAttempts": 1,
+    "maxHandleAudits": 1,
+    "preserveResumableState": true,
+    "detectStaleProcesses": true,
+    "detectStaleConfig": true,
+    "auditHandlesOnParentInterruption": true,
+    "requireAdapterSpecificRecovery": true,
+    "reroutePolicy": "existing-gates-only",
+    "reauthPolicy": "provider-native-only"
+  },
+  // Compatibility Watch — Recover, learn, harden: detect app/provider drift,
+  // restore compatibility, then run bounded direct/meta/meta-meta hardening.
+  // Reviewed proposals stay sanitized and evidence stays privacy-minimized.
+  "selfHeal": {
+    "enabled": true,
+    "subsystemOwner": "compatibility-watch",
+    "maxAnalysisDepth": 2,
+    "phases": ["repair", "meta", "meta-meta"],
+    "immediateRecoveryFirst": true,
+    "stopAfterMetaMeta": true,
+    "requireConcreteOwner": true,
+    "requireEvidence": true,
+    "requireRegression": true,
+    "requireHostRollout": true,
+    "requireRollbackOrExpiryWhenRelevant": true,
+    "updateRecognizerAndProcess": true,
+    "analyzeRetryChurn": true,
+    "contributionPolicy": "sanitized-proposal-only",
+    "proposalDestinations": ["github-issue", "github-pr"],
+    "requiredProposalEvidence": ["affected-versions-hosts", "evidence", "rollback", "residual-gaps"],
+    "localMonitorReview": "required",
+    "localApplyAfterAcceptance": true,
+    "sanitizeMachineLocalData": true,
+    "autoMerge": false
+  },
   "routing": {
     "providerOrder": {
       "consult": ["cursor", "cursor-ultra", "grok-build", "nous", "openrouter"],
       "integrated": ["nous", "openrouter", "xai-api"],
-      "delegate": ["grok-build", "cursor", "cursor-ultra", "nous-worker"]
+      "delegate": ["grok-build", "openai-codex", "cursor", "cursor-ultra", "nous-worker"]
+    },
+    "providerProfiles": {
+      "openai-codex": {
+        "label": "OpenAI Codex account worker",
+        "intelligence": 95,
+        "specialties": ["coding", "repository-work", "provider-native"],
+        "modeWeights": { "delegate": 20 }
+      }
     }
   },
   "defaults": {
@@ -215,6 +307,36 @@
         "deny": []
       }
     },
+    "agentrouter-claude": {
+      "enabled": false,
+      "adapter": "claude-code",
+      "officialUrl": "https://agentrouter.org",
+      "accountUrl": "https://agentrouter.org/console",
+      "usageUrl": "https://agentrouter.org/console/log",
+      "command": "claude",
+      "model": "claude-opus-4-8",
+      "models": ["claude-opus-4-8"],
+      "capabilities": ["consult", "delegate"],
+      "gateway": {
+        "baseUrl": "https://agentrouter.org",
+        "apiKeyEnv": "AGENTROUTER_API_KEY",
+        "model": "claude-opus-4-8",
+        "provider": "agentrouter"
+      },
+      "maxTurnsCeiling": 24,
+      "consult": {
+        "workspaceStrategy": "snapshot",
+        "maxTurns": 4
+      },
+      "delegate": {
+        "maxTurns": 12,
+        "permissionMode": "acceptEdits",
+        "requireGit": true,
+        "requireLinkedWorktree": true,
+        "requireCleanStart": true,
+        "denyBranches": ["main", "master", "trunk"]
+      }
+    },
     "xai-api": {
       "enabled": false,
       "adapter": "openai-chat",
@@ -263,9 +385,24 @@
         "denyBranches": ["main", "master", "trunk"]
       }
     },
+    "openai-codex": {
+      "enabled": true,
+      "adapter": "codex-native-worker",
+      "command": "codex",
+      "model": "gpt-5.6-sol",
+      "models": ["gpt-5.6-sol"],
+      "capabilities": ["delegate"],
+      "delegate": {
+        "requireCleanStart": true,
+        "denyBranches": ["main", "master", "trunk"]
+      }
+    },
     "openrouter": {
       "enabled": false,
       "adapter": "openrouter",
+      "officialUrl": "https://openrouter.ai",
+      "accountUrl": "https://openrouter.ai/settings/credits",
+      "usageUrl": "https://openrouter.ai/activity",
       "baseUrl": "https://openrouter.ai/api/v1",
       "apiKeyEnv": "OPENROUTER_API_KEY",
       "model": "auto",

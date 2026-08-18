@@ -5,7 +5,7 @@ import { WeightedAdmissionController } from "../core/admission-controller.mjs";
 import { readExecutableVersion, resolveExecutablePath, sha256File } from "../core/executable.mjs";
 import { CapabilityError, ProviderError, RequestError } from "../core/errors.mjs";
 import { createId } from "../core/ids.mjs";
-import { ManagedProcessError, runCapturedProcess } from "../core/managed-process.mjs";
+import { ManagedProcessError, normalizeManagedCommand, runCapturedProcess } from "../core/managed-process.mjs";
 import { renderMessagesForAgent } from "../core/policies.mjs";
 import { RunLedger, workspacePathFingerprint } from "../core/run-ledger.mjs";
 import { enforceGitWorkspacePolicy, inspectGitWorkspace } from "../workspace/git-workspace.mjs";
@@ -20,6 +20,16 @@ const BUILTIN_PROFILES = Object.freeze({
 });
 
 const DEFAULT_ALLOWED_EFFORTS = Object.freeze(["low", "medium", "high"]);
+const PROTECTED_GROK_ARGUMENTS = new Set([
+  "-c", "-m", "-p", "-r", "-s", "-w",
+  "--agent", "--agents", "--allow", "--always-approve", "--cwd", "--deny",
+  "--continue", "--disable-web-search", "--disallowed-tools", "--effort", "--experimental-memory",
+  "--fork-session", "--json-schema", "--max-turns", "--model", "--no-memory", "--no-plan",
+  "--no-subagents", "--output-format", "--permission-mode", "--prompt-file",
+  "--prompt-json", "--reasoning-effort", "--restore-code", "--resume", "--rules", "--sandbox",
+  "--session-id", "--single", "--system-prompt", "--system-prompt-override", "--tools", "--verbatim", "--worktree",
+  "--worktree-ref",
+]);
 
 /**
  * Official Grok Build CLI adapter.
@@ -36,6 +46,7 @@ export class GrokBuildProvider extends ProviderAdapter {
    */
   constructor(id, config, context) {
     super(id, config, context);
+    assertSafeGrokArgumentTails(config);
     const admission = config.admission ?? {};
     this.admission = new WeightedAdmissionController({
       maxActive: admission.maxActive ?? 6,
@@ -104,6 +115,7 @@ export class GrokBuildProvider extends ProviderAdapter {
       const result = await runCapturedProcess({
         command: installation.executable,
         args: [...(this.config.commandArgs ?? []), ...(this.config.modelListArgs ?? ["models"])],
+        expectedExecutableSha256: installation.sha256,
         timeoutMs: this.config.modelListTimeoutMs ?? this.config.discoveryTimeoutMs ?? 10_000,
         maxStdoutBytes: 2 * 1024 * 1024,
         maxStderrBytes: 64 * 1024,
@@ -115,10 +127,7 @@ export class GrokBuildProvider extends ProviderAdapter {
       this.modelDiscovery = { models: resolvedModels, expiresAt: now + (this.config.modelCacheTtlMs ?? 300_000) };
       return resolvedModels;
     } catch (error) {
-      this.logger.warn("Grok Build model discovery failed; using configured fallback", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return [{ id: this.config.model ?? "grok-4.6" }];
+      throw new ProviderError(this.id, `Grok Build model discovery failed: ${error instanceof Error ? error.message : String(error)}`, { retryable: true, cause: error });
     }
   }
 
@@ -150,7 +159,11 @@ export class GrokBuildProvider extends ProviderAdapter {
 
     try {
       ({ workspace, snapshot, emptyWorkspace, gitBefore } = await prepareGrokWorkspace(this.config, request, this.logger));
-      const prompt = renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitBefore, acceptanceCommands, { coordinatorId, workerGroup });
+      const prompt = renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitBefore, acceptanceCommands, { coordinatorId, workerGroup }, {
+        outputSummary: this.config.outputSummary,
+        providerId: this.id,
+        adapter: this.config.adapter ?? "grok-build",
+      });
       const modeConfig = this.config[request.mode] ?? {};
       const maxPromptChars = modeConfig.maxPromptChars
         ?? this.config.maxPromptChars
@@ -190,6 +203,7 @@ export class GrokBuildProvider extends ProviderAdapter {
       const result = await runCapturedProcess({
         command: installation.executable,
         args,
+        expectedExecutableSha256: installation.sha256,
         cwd: workspace,
         env: buildGrokEnvironment(this.config, {
           CURSOR_BRIDGE_MODE: request.mode,
@@ -395,6 +409,16 @@ export async function inspectGrokBuildInstallation(config, options = {}) {
     return { ok: false, errors: [`No Grok Build executable found in candidates: ${candidates.join(", ")}`], warnings: [] };
   }
 
+  try {
+    executable = normalizeManagedCommand(executable, [], { platform, environment }).executable;
+  } catch (error) {
+    return {
+      ok: false,
+      errors: [`Grok Build executable is not safe to launch: ${error instanceof Error ? error.message : String(error)}`],
+      warnings: [],
+    };
+  }
+
   const errors = [];
   const warnings = [];
   const pinnedVersion = config.pin?.version;
@@ -445,6 +469,10 @@ export async function inspectGrokBuildInstallation(config, options = {}) {
 export function buildGrokBuildArguments(config, request, profile, workspace, prompt, resolvedPolicy) {
   const modeConfig = config[request.mode] ?? {};
   const executionPolicy = resolvedPolicy ?? resolveGrokExecutionPolicy(config, request);
+  const permissionMode = modeConfig.permissionMode ?? config.permissionMode ?? "dontAsk";
+  if (permissionMode === "bypassPermissions" && request.mode !== "delegate") {
+    throw new RequestError("Grok Build bypassPermissions is permitted only for Delegate in a clean linked worktree");
+  }
   const args = [...(config.commandArgs ?? [])];
   if (config.noAutoUpdate !== false) args.push("--no-auto-update");
   args.push("--cwd", workspace);
@@ -453,7 +481,7 @@ export function buildGrokBuildArguments(config, request, profile, workspace, pro
   for (const value of config.preArgs ?? []) args.push(String(value));
   args.push("--single", prompt);
   args.push("--output-format", "json");
-  args.push("--permission-mode", modeConfig.permissionMode ?? config.permissionMode ?? "dontAsk");
+  args.push("--permission-mode", permissionMode);
   args.push("--sandbox", modeConfig.sandbox ?? config.sandbox ?? "strict");
   if (!executionPolicy.allowSubagents) args.push("--no-subagents");
   if (executionPolicy.noMemory) args.push("--no-memory");
@@ -613,13 +641,18 @@ export function parseGrokBuildPayload(stdout, stderr = "", providerId = "grok-bu
 /** Prepare the disposable Consult workspace or enforce the live Delegate worktree policy. */
 async function prepareGrokWorkspace(config, request, logger) {
   const modeConfig = config[request.mode] ?? {};
+  const permissionMode = modeConfig.permissionMode ?? config.permissionMode ?? "dontAsk";
+  if (permissionMode === "bypassPermissions" && request.mode !== "delegate") {
+    throw new RequestError("Grok Build bypassPermissions is permitted only for Delegate in a clean linked worktree");
+  }
   if (request.mode === "delegate") {
     if (!request.workspace) throw new RequestError("Grok Build Delegate requires a workspace");
     const workspace = resolve(request.workspace);
+    const bypassPermissions = permissionMode === "bypassPermissions";
     const gitBefore = await enforceGitWorkspacePolicy(workspace, {
-      requireGit: modeConfig.requireGit,
-      requireLinkedWorktree: modeConfig.requireLinkedWorktree,
-      requireCleanStart: modeConfig.requireCleanStart,
+      requireGit: bypassPermissions || modeConfig.requireGit,
+      requireLinkedWorktree: bypassPermissions || modeConfig.requireLinkedWorktree,
+      requireCleanStart: bypassPermissions || modeConfig.requireCleanStart,
       denyBranches: modeConfig.denyBranches,
     });
     return { workspace, snapshot: undefined, emptyWorkspace: undefined, gitBefore };
@@ -648,7 +681,7 @@ async function prepareGrokWorkspace(config, request, logger) {
 }
 
 /** Render a bounded worker task packet with authority, evidence, and acceptance boundaries. */
-function renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitBefore, acceptanceCommands, fleet) {
+function renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitBefore, acceptanceCommands, fleet, renderOptions) {
   const boundary = request.mode === "consult"
     ? `EXECUTION BOUNDARY\nYou are an advisory worker inside another agent's active thread. The workspace is disposable. Inspect it, but do not intentionally edit it. Return findings, evidence, uncertainty, disagreements, and a compact recommendation. The primary agent retains judgment, tool use, edits, and final-answer authority.`
     : `EXECUTION BOUNDARY\nYou own only this bounded worker task. Stay inside the assigned worktree and scope. You have no merge, push, rebase, tag, release, or integration authority. Do not broaden the task. Report changed files, exact validation performed, terminal results, and unresolved risks. A separate coordinator will inspect the diff and independently accept or reject the work.`;
@@ -673,7 +706,7 @@ function renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitB
   const acceptance = acceptanceCommands.length > 0
     ? `\nACCEPTANCE COMMANDS\nRun only when permitted by the configured tool/command allowlist. Record exact command, exit status, and relevant output.\n${acceptanceCommands.map((command) => `- ${command}`).join("\n")}`
     : "";
-  return `${boundary}\n\n${nestedAgentPolicy}\n\n${webPolicy}\n\n${memoryPolicy}${fleetNote}${snapshotNote}${gitNote}\n\nPROFILE\nname=${profile.name}\nreasoning_effort=${profile.reasoningEffort}\nmax_turns=${profile.maxTurns}\nexpected_model_turns=${profile.expectedTurns}${acceptance}\n\nAUTHORITATIVE THREAD PACKET\n${renderMessagesForAgent(request.messages)}`;
+  return `${boundary}\n\n${nestedAgentPolicy}\n\n${webPolicy}\n\n${memoryPolicy}${fleetNote}${snapshotNote}${gitNote}\n\nPROFILE\nname=${profile.name}\nreasoning_effort=${profile.reasoningEffort}\nmax_turns=${profile.maxTurns}\nexpected_model_turns=${profile.expectedTurns}${acceptance}\n\nAUTHORITATIVE THREAD PACKET\n${renderMessagesForAgent(request.messages, { ...renderOptions, purpose: "agent-prompt" })}`;
 }
 
 /** Build the Grok process environment with optional explicit inheritance reduction. */
@@ -769,6 +802,26 @@ function collectModeRules(config, modeConfig, kind) {
     ...(modeConfig[primary] ?? []),
     ...(modeConfig[alias] ?? []),
   ];
+}
+
+/** Reject generic argument tails that could override adapter-owned execution policy. */
+function assertSafeGrokArgumentTails(config) {
+  for (const field of ["commandArgs", "modelListArgs", "preArgs", "postArgs", "versionArgs"]) {
+    for (const value of config[field] ?? []) {
+      const argument = String(value);
+      const flag = protectedArgumentFlag(argument, PROTECTED_GROK_ARGUMENTS, ["-c", "-m", "-p", "-r", "-s", "-w"]);
+      if (PROTECTED_GROK_ARGUMENTS.has(flag)) {
+        throw new TypeError(`Grok Build ${field} contains protected argument '${flag}'; configure model, effort, turns, tools, permissions, sandbox, web, memory, and subagents through reviewed fields`);
+      }
+    }
+  }
+}
+
+/** Normalize long assignments and attached short-option values before policy matching. */
+function protectedArgumentFlag(argument, protectedArguments, shortArguments) {
+  if (argument.startsWith("--")) return argument.split("=", 1)[0];
+  return shortArguments.find((flag) => argument === flag || argument.startsWith(flag) && argument.length > flag.length)
+    ?? (protectedArguments.has(argument) ? argument : undefined);
 }
 
 /** Find an error field only inside an explicit error object or exact top-level error key. */

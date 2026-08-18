@@ -1,5 +1,7 @@
 import { createId } from "./ids.mjs";
 
+const LEGACY_ACCOUNT_ID = "unknown/default";
+
 /**
  * In-memory response/thread store with bounded TTL eviction.
  * The store intentionally keeps normalized messages, not raw HTTP headers or credentials.
@@ -29,6 +31,7 @@ export class SessionStore {
         messages: [],
         providerState: {},
         ...initial,
+        accountId: initial.accountId ?? LEGACY_ACCOUNT_ID,
       };
       this.threads.set(id, thread);
       this.#enforceLimit(this.threads);
@@ -53,6 +56,7 @@ export class SessionStore {
       createdAt: this.now(),
       updatedAt: this.now(),
       ...structuredClone(state),
+      accountId: state.accountId ?? LEGACY_ACCOUNT_ID,
     };
     this.responses.set(response.id, record);
     this.#enforceLimit(this.responses);

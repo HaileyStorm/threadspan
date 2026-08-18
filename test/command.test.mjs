@@ -114,3 +114,33 @@ test("CommandProvider can replace broad environment inheritance with an allowlis
   }
   assert.equal(events.at(-1).message.content, "absent");
 });
+
+test("CommandProvider applies configured repetitive-output summarization only to its agent prompt", async () => {
+  const provider = new CommandProvider("cmd", {
+    adapter: "command",
+    capabilities: ["consult"],
+    command: process.execPath,
+    args: ["-e", "let value='';process.stdin.on('data',(chunk)=>value+=chunk);process.stdin.on('end',()=>process.stdout.write(value))"],
+    outputFormat: "text",
+    outputSummary: {
+      minBytes: 128,
+      minLines: 12,
+      minRepetitions: 8,
+      minDuplicateLineRatio: 0.7,
+      headBytes: 96,
+      tailBytes: 96,
+    },
+  }, { logger: silentLogger() });
+  const original = ["head", ...Array.from({ length: 80 }, () => "repeat"), "tail"].join("\n");
+  const messages = [{ role: "tool", toolCallId: "call_command", content: original }];
+  const before = structuredClone(messages);
+  const events = [];
+  for await (const event of provider.run({
+    mode: "consult",
+    model: "m",
+    messages,
+    workspace: process.cwd(),
+  })) events.push(event);
+  assert.match(events.at(-1).message.content, /THREADSPAN PROGRAMMATIC OUTPUT SUMMARY/);
+  assert.deepEqual(messages, before);
+});

@@ -4,7 +4,7 @@
 
 Threadspan is the operator-facing route surface for this bridge: **one task, every model**, without collapsing Consult, Integrated, and Delegate into a single “use another model” switch.
 
-The host HUD is deliberately neutral. Threadspan owns a restrained copper-and-teal braid and boundary accent, keeping the sidecar visually related but clearly distinct without competing for attention.
+The host HUD is deliberately neutral. Threadspan owns a restrained copper-and-teal routing gate and boundary accent, keeping the sidecar visually related but clearly distinct without competing for attention.
 
 Accent colors can be changed under the collapsed **Appearance** disclosure. The choice is browser-local, never changes the host HUD, and can be reset to the shipped pair.
 
@@ -12,7 +12,7 @@ Accent colors can be changed under the collapsed **Appearance** disclosure. The 
 
 `ui/` is a dependency-free HTML/CSS/JS/SVG sidecar:
 
-- a compact **collapsed route bar** meant to sit *beneath* a host agent-status HUD;
+- a compact **collapsed route bar** with an in-bar route picker, meant to sit *beneath* a host agent-status HUD;
 - an **expanded drawer** for the current route, mode authority, verified availability, quota/context, two qualified fallbacks, checkpoint, provider utilization, history, filters, and a visible reroute event;
 - a small editable vector mark (`ui/mark.svg`);
 - synthetic demo state plus `adaptThreadspanState()` for a future live JSON payload.
@@ -33,16 +33,32 @@ This UI can be:
 
 Until a host actually provides a HUD, the placeholder remains visible. Do not treat the placeholder as a live agent-status feed.
 
-## Braided-thread layout
+## Routing-gate layout
 
-The visual system is a braid, not a dashboard:
+The visual system is a live switchyard, not a dashboard:
 
-- three strands (mode / provider / model) become one route;
-- the collapsed bar is a filament under the host HUD;
-- the expanded drawer continues that braid as a left spine on wide viewports, then a two-column inspector (route facts | capacity and history);
+- one task reaches a visible selector and continues through the primary or fallback route;
+- the collapsed bar is a compact route line under the host HUD;
+- the expanded drawer continues the switch as a split left spine on wide viewports, then a two-column inspector (route facts | capacity and history);
 - on narrow Ubuntu/Windows windows the spine hides and the drawer stacks.
 
 Mode uses **non-color structure** as well as labels: dashed = Consult, dotted = Integrated, solid = Delegate.
+
+## HUD route picker preferences
+
+The **Pick route** control is part of the existing route bar. It is not a second app and does not replace or inject into a native Desktop model picker. Selecting a row updates the browser-local displayed choice and exposes the exact Threadspan route string for copying. It does not call a routing mutation endpoint, change the daemon’s active route, or claim to change native Desktop selection.
+
+The default list is capped to a compact set in the registry’s published smart order. Search and the collapsed-by-default **Advanced filters** combine with AND semantics across mode, provider, model, explicit free metadata, and favorites. A model name ending in `:free` is not enough: **Free only** includes a route only when its metadata explicitly says `free: true`. The daemon’s active route is always included even when search, filters, hidden state, or unavailability would otherwise remove it.
+
+Favorites, hidden state, and manual order are presentation overlays only. Drag-and-drop uses the same pure move operation as the always-visible **Move up** and **Move down** buttons. **Reset smart order** removes only the manual ordering overlay; it keeps favorites, hidden routes, the selected display route, and filters. **Show hidden/unavailable** is the recovery control for locally hidden, catalog-hidden, setup-blocked, and unavailable routes, whose published setup/capability/availability reason remains visible.
+
+Picker preferences use the distinct browser-local key `threadspan-hud-picker-preferences-v1`. The payload is schema-versioned and contains only route IDs, route-ID ordering, the selected route ID, and filter values. Malformed or version-mismatched payloads are rejected, and route-ID fields are pruned against the current catalog. It never stores prompts, separate account identifiers, raw paths, credentials, provider response text, availability snapshots, or registry scores. Browser favorites do not feed Codex catalog `--favorite` values and never mutate `ProviderRegistry` smart ranking or `providerOrder`; existing CLI `--favorite` behavior remains independent and compatible.
+
+Expanded route and provider details may show contextual **Official site**, **Account**, and **Usage** links only when reviewed state metadata supplies `officialUrl`, `accountUrl`, or `usageUrl`. Each value is independently revalidated as a bounded absolute HTTPS URL; URLs with credentials, query strings, fragments, invalid schemes, or parse failures are omitted rather than repaired or guessed. External links open only from an explicit click and use `noopener noreferrer`; the HUD never opens a popup, emits a toast, appends provider/account/route values, or invents a provider URL.
+
+Context links stay inline and quiet. They receive subtle emphasis beside only explicit `creditState: "low"` or `expiryState: "approaching"` metadata (and accurately label explicit `exhausted`/`expired` states). Quota numbers, remaining credit, timestamps, provider names, and model names never cause the browser to infer those states. The closed values are `unknown|normal|low|exhausted` for credit and `unknown|current|approaching|expired` for expiry; unknown values collapse to `unknown`. When link/state metadata is absent or rejected, the rendered UI is unchanged.
+
+Provider configuration may optionally define `officialUrl`, `accountUrl`, and `usageUrl`. Startup validation requires strict absolute HTTPS URLs with a hostname and rejects credentials, query strings, fragments, controls, surrounding whitespace, and oversized values. Accepted fields are conditionally published by `describeProviders()`, copied onto Threadspan route-map nodes, and attached to the active route; omitted fields remain structurally absent. This publication path does not create or infer `creditState` or `expiryState`. The example configuration contains reviewed links only for OpenRouter and AgentRouter.
 
 ## Modes (do not blur)
 
@@ -61,6 +77,9 @@ Qualified fallbacks are **capability-checked alternatives**, not automatic failo
 - `ThreadspanState.SYNTHETIC_STATE` — demo JSON;
 - `ThreadspanState.adaptThreadspanState(raw)` — normalizes live or synthetic JSON;
 - `ThreadspanState.applyFilters(model, filters)` — history/verified filtering without hiding the current route.
+- `ThreadspanState.applyPickerPreferences(routes, preferences, activeRouteId)` — pure search/filter/order projection with an active-route exemption;
+- `ThreadspanState.reducePickerPreferences(state, action, routeIds)` — pure favorite, hide, select, filter, move, and smart-order-reset transitions;
+- `ThreadspanState.parsePickerPreferences()` / `serializePickerPreferences()` — strict schema validation and stale-route pruning.
 
 Default boot uses synthetic data. To try a same-origin JSON document later:
 
@@ -76,8 +95,9 @@ Quota copy in the demo is a **manual consumer-week meter**. Local token counts c
 
 ## Keyboard, contrast, motion, Windows/Ubuntu
 
-- Skip link to the route bar; the bar is one expand/collapse button; `Escape` closes the drawer and returns focus.
+- Skip link to the route bar; separate route-detail and picker buttons have explicit controlled regions; `Escape` closes the foremost open region and returns focus.
 - History uses a native `<details>` disclosure; filters are native radio/checkbox controls with 40px-class targets.
+- Picker controls use 44px-class targets; advanced filters start collapsed, move controls remain visible for keyboard/touch use, and reorder changes are announced through an ARIA live region.
 - Focus is a 2px copper outline. Text is ink on linen (or Canvas/CanvasText under Windows high contrast).
 - `prefers-reduced-motion: reduce` disables animation and chevron motion.
 - `prefers-contrast: more` and `forced-colors: active` thicken structure and drop decorative color.
@@ -91,6 +111,6 @@ Quota copy in the demo is a **manual consumer-week meter**. Local token counts c
 | `ui/threadspan.css` | Layout, contrast, motion, forced colors |
 | `ui/adapt-state.js` | Synthetic JSON + adapter |
 | `ui/threadspan.js` | Expand/collapse, filters, optional live JSON |
-| `ui/mark.svg` | Editable three-strand mark (`#strand-ink`, `#strand-copper`, `#strand-teal`) |
+| `ui/mark.svg` | Editable routing-gate mark (`#route-input`, `#route-selector`, `#route-primary`, `#route-fallback`) |
 
 Offline checks live in `test/ui-assets.test.mjs` (file presence, semantics, adapter behavior). They do not launch a browser and are not visual or live-host acceptance.

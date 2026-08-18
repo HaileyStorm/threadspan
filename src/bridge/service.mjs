@@ -1,5 +1,6 @@
+import { dirname, join } from "node:path";
 import { applyModePolicy } from "../core/policies.mjs";
-import { asBridgeError, RequestError } from "../core/errors.mjs";
+import { asBridgeError, ProviderError, RequestError } from "../core/errors.mjs";
 import { createId, createTraceId } from "../core/ids.mjs";
 import { normalizeConsultInput, normalizeResponsesInput, toBridgeResponsesInput } from "../core/input-normalizer.mjs";
 import { KeyedSerialQueue } from "../core/keyed-serial-queue.mjs";
@@ -7,9 +8,21 @@ import { Logger } from "../core/logger.mjs";
 import { boundedRedactedJson } from "../core/redact.mjs";
 import { SessionStore } from "../core/session-store.mjs";
 import { ProviderRegistry } from "../providers/registry.mjs";
+import { CODEX_NATIVE_USAGE_LIMIT_KIND } from "../providers/codex-worker.mjs";
 import { UsageLedger } from "../core/usage-ledger.mjs";
+import { AccountStore, UNKNOWN_ACCOUNT_ID } from "../core/account-store.mjs";
 import { DesktopCompatibilityWatch } from "../maintenance/desktop-update.mjs";
 import { ResponsesAssembler } from "./responses.mjs";
+import { listHostSurfaces } from "../core/host-surfaces.mjs";
+import { MaximumUtilizationController, needsDisabledMaximumUtilizationRecovery } from "../core/maximum-utilization-controller.mjs";
+import { MaximumUtilizationJournal } from "../core/maximum-utilization-journal.mjs";
+import { CodexNativeQuotaAdapter } from "../core/codex-native-quota.mjs";
+import { selectTip, tipById } from "../core/tips.mjs";
+import { renderVoiceInstruction, resolveVoiceProfile } from "../core/voice-profiles.mjs";
+import { applyIntentBriefUpdates, deriveIntentBrief } from "../core/intent-brief.mjs";
+
+const TIP_CONVERSATION_TTL_MS = 30 * 60 * 1000;
+const TIP_CONVERSATION_LIMIT = 16;
 
 /**
  * Core bridge orchestrator shared by HTTP, MCP, and CLI surfaces.
@@ -17,14 +30,25 @@ import { ResponsesAssembler } from "./responses.mjs";
 export class BridgeService {
   /**
    * @param {Record<string, any>} config Validated bridge configuration.
-   * @param {{logger?: Logger, registry?: ProviderRegistry, sessions?: SessionStore}} [dependencies] Injectable dependencies.
+   * @param {{logger?: Logger, registry?: ProviderRegistry, sessions?: SessionStore, accountStore?: AccountStore, maximumUtilizationController?: any, maximumUtilizationCapabilities?: Record<string, Function>, maximumUtilizationJournal?: MaximumUtilizationJournal}} [dependencies] Injectable dependencies.
    */
   constructor(config, dependencies = {}) {
     this.config = config;
     this.logger = dependencies.logger ?? new Logger({ level: config.logging?.level ?? "info" });
     this.sessions = dependencies.sessions ?? new SessionStore(config.sessions);
     this.usageLedger = dependencies.usageLedger ?? new UsageLedger({ ...(config.usageLedger ?? {}), enabled: config.usageLedger?.enabled === true });
-    this.registry = dependencies.registry ?? new ProviderRegistry(config, { logger: this.logger, usageLedger: this.usageLedger });
+    this.accountStore = dependencies.accountStore ?? dependencies.registry?.accountStore ?? new AccountStore(config.accounts);
+    this.registry = dependencies.registry ?? new ProviderRegistry(config, { logger: this.logger, usageLedger: this.usageLedger, accountStore: this.accountStore });
+    this.maximumUtilizationController = config.maximumUtilization?.enabled === true && dependencies.maximumUtilizationController
+      ? dependencies.maximumUtilizationController
+      : createMaximumUtilizationController(config, { ...dependencies, accountStore: this.accountStore }, this.logger);
+    this.maximumUtilizationRecovery = this.maximumUtilizationController || config.maximumUtilization?.enabled === true
+      ? null
+      : {
+          journal: maximumUtilizationJournal(config, dependencies),
+          capabilities: dependencies.maximumUtilizationCapabilities,
+        };
+    this.maximumUtilizationReady = null;
     this.compatibilityWatch = dependencies.compatibilityWatch ?? new DesktopCompatibilityWatch(config.compatibilityWatch ?? {});
     this.compatibilityReport = undefined;
     this.compatibilityPolling = undefined;
@@ -35,7 +59,34 @@ export class BridgeService {
       );
     }
     this.convenienceThreads = dependencies.convenienceThreads ?? new KeyedSerialQueue();
+    this.connectionHealth = new Map();
+    this.tipConversations = new Map();
+    this.tipConversationTimers = new Map();
+    this.tipRefinementLastAt = 0;
     this.closed = false;
+  }
+
+  /** Restore persistent controller state and replay its durable outbox. */
+  async initialize() {
+    this.#assertOpen();
+    this.maximumUtilizationReady ??= this.#initializeMaximumUtilization();
+    await this.maximumUtilizationReady;
+  }
+
+  async #initializeMaximumUtilization() {
+    if (!this.maximumUtilizationController && this.maximumUtilizationRecovery) {
+      const snapshot = await this.maximumUtilizationRecovery.journal.loadExisting();
+      if (needsDisabledMaximumUtilizationRecovery(snapshot)) {
+        this.maximumUtilizationController = new MaximumUtilizationController({
+          policy: { ...(this.config.maximumUtilization ?? {}), enabled: false },
+          journal: this.maximumUtilizationRecovery.journal,
+          capabilities: this.maximumUtilizationRecovery.capabilities,
+          logger: this.logger,
+        });
+      }
+      this.maximumUtilizationRecovery = null;
+    }
+    await this.maximumUtilizationController?.initialize?.();
   }
 
   /**
@@ -45,14 +96,13 @@ export class BridgeService {
    * terminal response object used in `response.completed`, so buffered and streaming paths share one implementation.
    *
    * @param {Record<string, any>} request Responses request.
-   * @param {{signal?: AbortSignal, onEvent?: (event: Record<string, any>) => void|Promise<void>}} [options] Execution options.
+   * @param {{signal?: AbortSignal, onEvent?: (event: Record<string, any>) => void|Promise<void>, onIntentBrief?: (brief: Record<string, any>) => void|Promise<void>}} [options] Execution options.
    * @returns {Promise<Record<string, any>>}
    */
   async executeResponse(request, options = {}) {
     this.#assertOpen();
     validateResponseRequest(request);
     const traceId = createTraceId();
-    const startedAt = Date.now();
     const previousRecord = request.previous_response_id ? this.sessions.getResponse(request.previous_response_id) : undefined;
     if (request.previous_response_id && !previousRecord) {
       throw new RequestError(`Unknown or expired previous_response_id '${request.previous_response_id}'`);
@@ -62,6 +112,7 @@ export class BridgeService {
       model: request.model,
       mode: request.metadata?.bridge_mode,
       providerId: request.metadata?.bridge_provider,
+      accountId: request.metadata?.bridge_account_id ?? request.metadata?.bridge_account,
     });
     const routeChange = previousRecord ? continuationRouteChange(previousRecord, route) : undefined;
     if (routeChange && !metadataBoolean(request.metadata?.bridge_continuity_handoff)) {
@@ -70,11 +121,41 @@ export class BridgeService {
       );
     }
     const threadId = String(request.metadata?.bridge_thread_id ?? previousRecord?.threadId ?? createId("thread"));
-    const suppressDefaultWorkspace = metadataBoolean(request.metadata?.bridge_no_default_workspace);
-    const workspace = request.metadata?.bridge_workspace ?? request.metadata?.cwd ?? (suppressDefaultWorkspace ? undefined : process.cwd());
+    const workspace = request.metadata?.bridge_workspace ?? request.metadata?.cwd;
+    if (route.mode === "delegate" && !workspace) {
+      throw new RequestError("Delegate requires an explicit workspace through metadata.bridge_workspace or metadata.cwd");
+    }
     const normalizedMessages = normalizeResponsesInput(request, previousRecord);
     const messages = applyModePolicy(normalizedMessages, route.mode);
-    const assembler = new ResponsesAssembler(request, {
+    let intentBrief;
+    if (request.metadata?.bridge_intent_brief !== undefined) {
+      try {
+        intentBrief = applyIntentBriefUpdates(
+          deriveIntentBrief(request.metadata.bridge_intent_brief),
+          request.metadata.bridge_intent_updates ?? [],
+        );
+      } catch (error) {
+        throw new RequestError(error instanceof Error ? error.message : String(error));
+      }
+    } else if (request.metadata?.bridge_intent_updates !== undefined) {
+      throw new RequestError("Intent brief updates require bridge_intent_brief in the same request");
+    }
+    if (intentBrief && options.onIntentBrief) await options.onIntentBrief(intentBrief);
+    let voiceProfile;
+    try {
+      voiceProfile = resolveVoiceProfile(this.config.voice, request.metadata?.bridge_voice_profile);
+    } catch (error) {
+      throw new RequestError(error instanceof Error ? error.message : String(error));
+    }
+    const userFacingProsePolicy = {
+      profileId: voiceProfile.id,
+      instruction: renderVoiceInstruction(voiceProfile),
+      scope: "user-facing-assistant-prose-and-progress-cadence-only",
+    };
+    const responseVisibleRequest = request.metadata === undefined
+      ? request
+      : { ...request, metadata: providerVisibleMetadata(request.metadata) };
+    const assembler = new ResponsesAssembler(responseVisibleRequest, {
       ...route,
       threadId,
       exposeReasoning: request.metadata?.bridge_expose_reasoning === true || request.metadata?.bridge_expose_reasoning === "true" || this.config.responses?.exposeReasoning === true,
@@ -85,6 +166,7 @@ export class BridgeService {
       responseId: assembler.responseId,
       threadId,
       provider: route.providerId,
+      accountId: route.accountId,
       mode: route.mode,
       model: route.model,
       stream: request.stream === true,
@@ -93,65 +175,176 @@ export class BridgeService {
       this.logger.info("Response request body", {
         traceId,
         responseId: assembler.responseId,
-        body: boundedRedactedJson(request),
+        body: boundedRedactedJson(responseVisibleRequest),
       });
     }
 
     try {
       await emitAll(assembler.begin(), options.onEvent);
       let terminal;
+      let activeRoute = route;
       const providerRequest = {
         mode: route.mode,
         model: route.model,
         messages,
         tools: route.mode === "integrated" ? request.tools : undefined,
         toolChoice: route.mode === "integrated" ? request.tool_choice : undefined,
+        parallelToolCalls: route.mode === "integrated" ? request.parallel_tool_calls : undefined,
         temperature: request.temperature,
         maxOutputTokens: request.max_output_tokens,
         signal: options.signal,
         threadId,
         workspace: workspace ? String(workspace) : undefined,
         timeoutMs: numberFromMetadata(request.metadata?.bridge_timeout_ms),
-        metadata: request.metadata ?? {},
+        metadata: providerVisibleMetadata(request.metadata),
       };
-
-      for await (const providerEvent of route.provider.run(providerRequest)) {
-        if (options.signal?.aborted) throw options.signal.reason ?? new Error("Request aborted");
-        if (providerEvent.type === "done") terminal = providerEvent;
-        await emitAll(assembler.accept(providerEvent), options.onEvent);
+      const fallbackEnabled = this.config.accounts?.fallback?.enabled === true && metadataBoolean(request.metadata?.bridge_account_fallback);
+      const candidates = fallbackEnabled
+        ? this.registry.fallbackRoutes(route, this.config.accounts.fallback.maxCandidates).slice(0, 1)
+        : [];
+      const attempts = [route, ...candidates];
+      const attemptGroupId = createId("attempt_group");
+      for (const [index, attemptRoute] of attempts.entries()) {
+        const attemptId = createId("attempt");
+        const attemptStartedAt = Date.now();
+        let meaningfulOutput = false;
+        let observedSideEffect = false;
+        let attemptTerminal;
+        let attemptCommitted = index + 1 >= attempts.length;
+        const pendingEvents = [];
+        const baseAttemptRequest = {
+          ...providerRequest,
+          model: attemptRoute.model,
+          accountId: attemptRoute.accountId,
+          metadata: { ...providerRequest.metadata, bridge_account_id: attemptRoute.accountId },
+        };
+        const attemptRequest = attemptRoute.mode === "consult" && attemptRoute.provider.capabilities?.().userFacingProsePolicy === true
+          ? attemptRoute.provider.attachUserFacingProsePolicy(baseAttemptRequest, userFacingProsePolicy)
+          : baseAttemptRequest;
+        const effectiveSettings = attemptRoute.provider.effectiveSettings?.(attemptRequest);
+        const commitAttempt = async () => {
+          if (attemptCommitted) return;
+          attemptCommitted = true;
+          for (const event of pendingEvents.splice(0)) await emitAll(assembler.accept(event), options.onEvent);
+        };
+        try {
+          for await (const providerEvent of attemptRoute.provider.run(attemptRequest)) {
+            const connectionLifecycle = providerEvent.type === "done"
+              ? attemptRoute.provider.connectionLifecycle?.({
+                  accountId: attemptRoute.accountId,
+                  providerHealth: "available",
+                  accountHealth: "available",
+                  transportHealth: "connected",
+                })
+              : undefined;
+            const event = providerEvent.type === "done" && (effectiveSettings || connectionLifecycle)
+              ? { ...providerEvent, providerMetadata: { ...(providerEvent.providerMetadata ?? {}), ...(effectiveSettings ? { effectiveSettings } : {}), ...(connectionLifecycle ? { connectionLifecycle } : {}) } }
+              : providerEvent;
+            if (options.signal?.aborted) throw options.signal.reason ?? new Error("Request aborted");
+            if (["text-delta", "reasoning-delta", "tool-call-delta"].includes(event.type)) meaningfulOutput = true;
+            if (["tool-call-delta", "usage"].includes(event.type)) observedSideEffect = true;
+            if (event.type === "done") attemptTerminal = event;
+            if (attemptCommitted) {
+              await emitAll(assembler.accept(event), options.onEvent);
+            } else {
+              if (["text-delta", "reasoning-delta", "tool-call-delta", "usage", "done"].includes(event.type)) pendingEvents.push(event);
+              if (meaningfulOutput || observedSideEffect) await commitAttempt();
+            }
+            if (assembler.output.length > 0) meaningfulOutput = true;
+          }
+          if (!attemptTerminal) {
+            throw new ProviderError(attemptRoute.providerId, "Provider stream ended without a terminal done event", {
+              retryable: false,
+              details: { kind: "missing-terminal-event", retryPolicy: "no-automatic-retry" },
+            });
+          }
+          await commitAttempt();
+          terminal = attemptTerminal;
+          activeRoute = attemptRoute;
+          this.connectionHealth.set(connectionKey(activeRoute.providerId, activeRoute.accountId), {
+            providerHealth: "available",
+            accountHealth: "available",
+            transportHealth: "connected",
+            lastSuccessAt: new Date().toISOString(),
+            failure: null,
+          });
+          await this.registry.recordSuccess(activeRoute, assembler.usage, { durationMs: Date.now() - attemptStartedAt, ...usageEvidence(assembler.response.bridge_provider_metadata), attemptId, attemptGroupId, attemptOrdinal: index + 1, fallbackFromAccountId: attemptRoute.fallbackFromAccountId });
+          break;
+        } catch (error) {
+          const bridgeError = asBridgeError(error);
+          const failure = classifyConnectionFailure(bridgeError, {
+            meaningfulOutput,
+            observedSideEffect,
+            parentInterrupted: options.signal?.aborted === true,
+          });
+          const recoveryAudit = options.signal?.aborted
+            ? await attemptRoute.provider.auditRecovery?.({ threadId, workspace, error: bridgeError })
+            : undefined;
+          const connectionLifecycle = attemptRoute.provider.connectionLifecycle?.({
+            accountId: attemptRoute.accountId,
+            providerHealth: failure.providerHealth,
+            accountHealth: failure.accountHealth,
+            transportHealth: failure.transportHealth,
+            lastFailure: { ...failure, ...(recoveryAudit ? { recoveryAudit } : {}) },
+          });
+          bridgeError.details = {
+            ...(bridgeError.details && typeof bridgeError.details === "object" ? bridgeError.details : {}),
+            ...(connectionLifecycle ? { connectionLifecycle } : {}),
+            selfHealPolicy: this.selfHealPolicy(),
+          };
+          this.connectionHealth.set(connectionKey(attemptRoute.providerId, attemptRoute.accountId), {
+            ...failure,
+            failure: connectionLifecycle?.failure ?? failure,
+            observedAt: new Date().toISOString(),
+          });
+          await this.#observeCodexNativeUsageLimit(attemptRoute, bridgeError);
+          if (!options.signal?.aborted && (bridgeError.code === "provider_error" || bridgeError.status >= 500)) {
+            await this.registry.recordFailure(attemptRoute, bridgeError, { durationMs: Date.now() - attemptStartedAt, partial: meaningfulOutput || observedSideEffect, attemptId, attemptGroupId, attemptOrdinal: index + 1, fallbackFromAccountId: attemptRoute.fallbackFromAccountId });
+          }
+          const hasNext = index + 1 < attempts.length;
+          if (!hasNext || !canSafelyFallbackAccount(bridgeError, { meaningfulOutput, observedSideEffect, mode: attemptRoute.mode })) throw bridgeError;
+          terminal = undefined;
+        }
       }
+      assembler.route = { ...assembler.route, ...activeRoute };
+      assembler.request.metadata = { ...(assembler.request.metadata ?? {}), bridge_account_id: activeRoute.accountId };
       await emitAll(assembler.finish(terminal), options.onEvent);
-      await this.registry.recordSuccess(route, assembler.usage, { durationMs: Date.now() - startedAt, ...usageEvidence(assembler.response.bridge_provider_metadata) });
 
       const assistant = assembler.assistantMessage();
       const storedMessages = [...messages, assistant];
-      const thread = this.sessions.getOrCreateThread(threadId, {
-        providerId: route.providerId,
-        mode: route.mode,
-        model: route.model,
-        workspace: workspace ? String(workspace) : undefined,
-      });
-      thread.messages = structuredClone(storedMessages);
-      thread.providerId = route.providerId;
-      thread.mode = route.mode;
-      thread.model = route.model;
-      thread.workspace = workspace ? String(workspace) : undefined;
-      thread.updatedAt = Date.now();
-      this.sessions.putResponse(assembler.response, {
-        threadId,
-        messages: storedMessages,
-        providerId: route.providerId,
-        mode: route.mode,
-        model: route.model,
-      });
+      if (request.metadata?.bridge_ephemeral_tip !== true) {
+        const thread = this.sessions.getOrCreateThread(threadId, {
+          providerId: route.providerId,
+          accountId: activeRoute.accountId,
+          mode: route.mode,
+          model: route.model,
+          workspace: workspace ? String(workspace) : undefined,
+        });
+        thread.messages = structuredClone(storedMessages);
+        thread.providerId = activeRoute.providerId;
+        thread.accountId = activeRoute.accountId;
+        thread.mode = activeRoute.mode;
+        thread.model = activeRoute.model;
+        thread.workspace = workspace ? String(workspace) : undefined;
+        thread.updatedAt = Date.now();
+        this.sessions.putResponse(assembler.response, {
+          threadId,
+          messages: storedMessages,
+          providerId: activeRoute.providerId,
+          accountId: activeRoute.accountId,
+          mode: activeRoute.mode,
+          model: activeRoute.model,
+        });
+      }
 
       this.logger.info("Completed response", {
         traceId,
         responseId: assembler.responseId,
         threadId,
-        provider: route.providerId,
-        mode: route.mode,
-        model: route.model,
+        provider: activeRoute.providerId,
+        accountId: activeRoute.accountId,
+        mode: activeRoute.mode,
+        model: activeRoute.model,
         finishReason: assembler.finishReason,
         usage: assembler.usage,
       });
@@ -165,9 +358,6 @@ export class BridgeService {
       return assembler.response;
     } catch (error) {
       const bridgeError = asBridgeError(error);
-      if (!options.signal?.aborted && (bridgeError.code === "provider_error" || bridgeError.status >= 500)) {
-        await this.registry.recordFailure(route, bridgeError, { durationMs: Date.now() - startedAt, partial: assembler.response?.output?.length > 0 });
-      }
       await emitAll(assembler.fail({ code: bridgeError.code, message: bridgeError.message }), options.onEvent).catch(() => undefined);
       this.logger.error("Response failed", {
         traceId,
@@ -224,7 +414,38 @@ export class BridgeService {
   /** Return provider capabilities and discovered/configured models. */
   async describeProviders() {
     this.#assertOpen();
-    return this.registry.describe();
+    const providers = await this.registry.describe();
+    return providers.map((item) => {
+      const provider = this.registry.providers.get(item.id);
+      const observed = this.connectionHealth.get(connectionKey(item.id, item.accountId));
+      return {
+        ...item,
+        ...(provider?.providerWebMetadata?.() ?? {}),
+        effectiveSettings: provider?.effectiveSettings?.(),
+        connectionLifecycle: provider?.connectionLifecycle?.({
+          accountId: item.accountId,
+          health: item.health,
+          accountHealth: observed?.accountHealth ?? item.health?.status ?? "unknown",
+          transportHealth: observed?.transportHealth ?? "not-probed",
+          lastFailure: observed?.failure ?? null,
+        }),
+      };
+    });
+  }
+
+  /** Return the provider-neutral, host-default-preserving branch policy. */
+  branchingPolicy() {
+    return publicBranchingPolicy(this.config.branching);
+  }
+
+  /** Return bounded lifecycle policy; this never authorizes a generic retry. */
+  connectionRecoveryPolicy() {
+    return publicConnectionRecoveryPolicy(this.config.connectionRecovery);
+  }
+
+  /** Return the bounded repair/meta/meta-meta contract. */
+  selfHealPolicy() {
+    return publicSelfHealPolicy(this.config.selfHeal);
   }
 
   /** Return OpenAI-shaped routed model entries. */
@@ -233,15 +454,78 @@ export class BridgeService {
     return this.registry.listRoutedModels();
   }
 
+  /** Return read-only account descriptors and telemetry. */
+  async describeAccounts() {
+    this.#assertOpen();
+    const described = await this.registry.describeAccounts();
+    return {
+      ...described,
+      accounts: (described.accounts ?? []).map((account) => ({
+        ...account,
+        connectionHealth: this.connectionHealth.get(connectionKey(account.providerId, account.id)) ?? {
+          providerHealth: account.health?.status ?? "unknown",
+          accountHealth: account.health?.status ?? "unknown",
+          transportHealth: "not-probed",
+        },
+      })),
+    };
+  }
+
+  /** Add a machine-local ref-only account descriptor. */
+  async createAccount(input) {
+    this.#assertOpen();
+    this.registry.validateAccountDescriptor(input);
+    return this.accountStore.create(input);
+  }
+
+  /** Persist the active account for its provider. */
+  async selectAccount(accountId) {
+    this.#assertOpen();
+    return this.accountStore.select(accountId);
+  }
+
+  /** Remove one machine-local account descriptor. */
+  async removeAccount(accountId) {
+    this.#assertOpen();
+    const removed = await this.accountStore.remove(accountId);
+    await this.registry.releaseAccount(accountId);
+    return removed;
+  }
+
   /** Return sanitized live state for the loopback-only Threadspan sidecar. */
   async threadspanState() {
     this.#assertOpen();
-    const providers = await this.registry.describe();
-    const routeMap = await this.registry.routeMap(providers);
+    const providers = await this.describeProviders();
+    const registryRouteMap = await this.registry.routeMap(providers);
+    const providersById = new Map(providers.map((provider) => [provider.id, provider]));
+    const routeMap = {
+      ...registryRouteMap,
+      nodes: registryRouteMap.nodes.map((node) => ({
+        ...node,
+        ...publicProviderWebMetadata(providersById.get(node.id)),
+      })),
+    };
     const usageSummary = await this.registry.usageSummary({ recentLimit: 50 });
+    const accounts = await this.describeAccounts();
     const mode = this.config.defaults?.mode ?? "consult";
     const requestedProvider = this.config.defaults?.provider ?? "threadspan";
-    const route = this.registry.resolveRoute({ mode, providerId: requestedProvider, model: this.config.defaults?.model ?? "auto" });
+    let route;
+    let routeError;
+    try {
+      route = this.registry.resolveRoute({ mode, providerId: requestedProvider, model: this.config.defaults?.model ?? "auto", accountId: this.config.defaults?.accountId });
+    } catch (error) {
+      routeError = error instanceof Error ? error.message : String(error);
+      route = {
+        providerId: requestedProvider,
+        accountId: UNKNOWN_ACCOUNT_ID,
+        mode,
+        model: this.config.providers?.[requestedProvider]?.model ?? this.config.defaults?.model ?? "auto",
+      };
+    }
+    const activeAccount = accounts.accounts.find((account) => account.providerId === route.providerId && account.id === route.accountId);
+    const activeForecast = activeAccount?.forecast
+      ?? usageSummary.forecasts?.accounts?.find((forecast) => forecast.scope.provider === route.providerId && forecast.scope.accountId === route.accountId)
+      ?? null;
     const selected = providers.find((item) => item.id === route.providerId);
     const candidates = routeMap.edges.filter((edge) => edge.mode === mode && edge.provider !== route.providerId).slice(0, 2);
     const runtime = this.registry.runtimeStats();
@@ -251,20 +535,49 @@ export class BridgeService {
       if (!Number.isFinite(active) || !Number.isFinite(limit) || limit <= 0) return [];
       return [{ id, label: `${id} active`, used: active, limit, note: "Daemon-local utilization; not a provider entitlement guarantee." }];
     });
+    const maximumUtilization = await sanitizedMaximumUtilizationReadModel(this.maximumUtilizationController);
+    const compatibility = summarizeCompatibility(this.config.compatibilityWatch, this.compatibilityReport);
+    const tip = this.config.tips?.enabled === true
+      ? selectTip({
+          mode,
+          routeVerified: selected?.health?.status === "available",
+          qualifiedFallbackCount: candidates.filter((edge) => routeMap.nodes.find((node) => node.id === edge.provider)?.availability !== "unavailable").length,
+          compatibilityChanged: compatibility.changed === true,
+        })
+      : null;
+    const tipModel = tip ? publishedTipModel(this.config.tips, providers) : null;
     return {
+      hostSurfaces: listHostSurfaces(),
       status: "ready",
       product: { name: "Threadspan", tagline: "One task. Every model." },
-      hud: { assumedInjection: false, placeholder: "Local route control beneath the host agent HUD when the host supports it." },
+      hud: {
+        assumedInjection: false,
+        placeholder: "Local route control beneath the host agent HUD when the host supports it.",
+        ...(tip ? {
+          tip: {
+            id: tip.id,
+            text: tip.text,
+            cooldownMs: this.config.tips.cooldownMs,
+            glossaryHref: `#glossary-${tip.glossaryTerm}`,
+            ...(tipModel ? { model: tipModel } : {}),
+          },
+        } : {}),
+      },
       route: {
-        id: `${mode}/${route.providerId}/${route.model}`,
+        id: `${mode}/${route.providerId}/${route.accountId === UNKNOWN_ACCOUNT_ID ? "" : `@${route.accountId}/`}${route.model}`,
         mode,
         provider: route.providerId,
+        accountId: route.accountId,
         model: route.model,
         verified: selected?.health?.status === "available",
         verifiedAt: selected?.health?.catalogCheckedAt ? new Date(selected.health.catalogCheckedAt).toISOString() : "",
-        verificationSource: selected?.modelError ? "Configured fallback; live catalog unavailable." : "Live daemon catalog and capability check.",
+        verificationSource: routeError ?? (selected?.modelError ? "Configured fallback; live catalog unavailable." : "Live daemon catalog and capability check."),
+        ...publicProviderWebMetadata(selected),
+        effectiveSettings: selected?.effectiveSettings ?? null,
+        connectionLifecycle: selected?.connectionLifecycle ?? null,
       },
-      quota: null,
+      quota: publishedQuota(activeAccount?.quota),
+      forecast: activeForecast,
       context: null,
       fallbacks: candidates.map((edge) => {
         const node = routeMap.nodes.find((candidate) => candidate.id === edge.provider);
@@ -273,12 +586,47 @@ export class BridgeService {
       }),
       checkpoint: null,
       utilization,
-      history: usageSummary.recentEvents.map((event) => ({ at: event.timestamp, route: `${event.mode}/${event.provider}/${event.model}`, mode: event.mode, event: event.status, verified: event.evidenceClass === "live-provider" })),
+      history: usageSummary.recentEvents.map((event) => ({ at: event.timestamp, route: `${event.mode}/${event.provider}/${event.accountId === UNKNOWN_ACCOUNT_ID ? "" : `@${event.accountId}/`}${event.model}`, accountId: event.accountId, mode: event.mode, event: event.status, verified: event.evidenceClass === "live-provider" })),
       reroute: null,
       filters: { mode: "all", verifiedOnly: false },
       routeMap,
-      compatibility: summarizeCompatibility(this.config.compatibilityWatch, this.compatibilityReport),
+      accounts,
+      compatibility,
+      branching: this.branchingPolicy(),
+      connectionRecovery: this.connectionRecoveryPolicy(),
+      selfHeal: this.selfHealPolicy(),
+      ...(maximumUtilization ? { maximumUtilization } : {}),
     };
+  }
+
+  /** Request a daemon-owned native quota refresh for the selected Codex account. */
+  async refreshMaximumUtilizationNative() {
+    this.#assertOpen();
+    if (this.config.maximumUtilization?.enabled !== true || !this.maximumUtilizationController?.refreshNative) return { accepted: false, reason: "disabled" };
+    await this.initialize();
+    return this.maximumUtilizationController.refreshNative();
+  }
+
+  /** Enter quota-independent owner-requested manual full-push mode. */
+  async enterManualMaximumUtilization(input) {
+    this.#assertOpen();
+    if (this.config.maximumUtilization?.enabled !== true || !this.maximumUtilizationController?.enterManual) return { accepted: false, reason: "disabled" };
+    await this.initialize();
+    return this.maximumUtilizationController.enterManual(input);
+  }
+
+  async leaveManualMaximumUtilization() {
+    this.#assertOpen();
+    if (!this.maximumUtilizationController?.leaveManual) return { accepted: false, reason: "disabled" };
+    await this.initialize();
+    return this.maximumUtilizationController.leaveManual();
+  }
+
+  async disableMaximumUtilization() {
+    this.#assertOpen();
+    if (!this.maximumUtilizationController?.ownerDisable) return { accepted: false, reason: "disabled" };
+    await this.initialize();
+    return this.maximumUtilizationController.ownerDisable();
   }
 
   /** Return count-only service diagnostics. */
@@ -288,7 +636,11 @@ export class BridgeService {
       sessions: this.sessions.stats(),
       providers: this.registry.providers.size,
       providerRuntime: this.registry.runtimeStats(),
+      accounts: this.accountStore.stats(),
       configPath: this.config.configPath,
+      branching: this.branchingPolicy(),
+      connectionRecovery: this.connectionRecoveryPolicy(),
+      selfHeal: this.selfHealPolicy(),
     };
   }
 
@@ -296,9 +648,45 @@ export class BridgeService {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    await this.maximumUtilizationReady?.catch(() => undefined);
+    await this.maximumUtilizationController?.close?.();
     this.compatibilityPolling?.stop();
+    for (const timer of this.tipConversationTimers.values()) clearTimeout(timer);
+    this.tipConversationTimers.clear();
+    this.tipConversations.clear();
     await this.registry.close();
     await this.usageLedger.flush();
+  }
+
+  async #observeCodexNativeUsageLimit(route, error) {
+    const details = error?.details?.upstream;
+    if (details?.kind !== CODEX_NATIVE_USAGE_LIMIT_KIND || details.preOutput !== true || details.noSideEffects !== true) return;
+    const observedAt = validIsoTimestamp(details.observedAt) ?? new Date().toISOString();
+    const resetAt = validIsoTimestamp(details.resetAt);
+    if (typeof this.accountStore.observeQuota === "function") {
+      try {
+        await this.accountStore.observeQuota(route.accountId, {
+          remaining: 0,
+          resetAt: resetAt ?? null,
+          renewalAt: null,
+          charge: null,
+          source: "codex-cli-usage-limit",
+          observedAt,
+        });
+      } catch (error) {
+        this.logger.warn("Could not persist native Codex quota observation", {
+          accountId: route.accountId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    try {
+      await this.refreshMaximumUtilizationNative();
+    } catch (error) {
+      this.logger.warn("Maximum-utilization native refresh failed after a Codex usage limit", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -313,62 +701,222 @@ export class BridgeService {
     if (typeof input.question !== "string" || input.question.trim().length === 0) {
       throw new RequestError(`${mode} requires a non-empty question`);
     }
-    const provider = input.provider ?? this.config.defaults?.provider;
-    if (!provider) throw new RequestError(`No provider supplied and no defaults.provider configured`);
-    const providerAdapter = this.registry.get(provider);
-    const model = input.model ?? providerAdapter.config.model ?? this.config.defaults?.model ?? "auto";
     const threadId = input.threadId ?? createId("thread");
     return this.convenienceThreads.run(threadId, options.signal, async () => {
-      const priorThread = input.threadId ? this.sessions.getThread(input.threadId) : undefined;
-      const newMessages = normalizeConsultInput(input);
+      const tipCall = input.metadata?.threadspan_tip_kind
+        ? await this.#authorizeTipCall(mode, input, threadId)
+        : null;
+      const effectiveInput = tipCall ? tipCall.input : input;
+      const provider = effectiveInput.provider ?? this.config.defaults?.provider;
+      if (!provider) throw new RequestError(`No provider supplied and no defaults.provider configured`);
+      const resolved = this.registry.resolveRoute({ providerId: provider, mode, model: effectiveInput.model, accountId: effectiveInput.accountId ?? effectiveInput.account_id });
+      const model = resolved.model;
+      const priorThread = tipCall?.kind === "ask"
+        ? this.tipConversations.get(threadId)
+        : effectiveInput.threadId ? this.sessions.getThread(effectiveInput.threadId) : undefined;
+      const priorBinding = priorThread ? continuationRouteChange(priorThread, resolved) : undefined;
+      if (priorBinding && !tipCall && !metadataBoolean(effectiveInput.continuityHandoff ?? effectiveInput.continuity_handoff)) {
+        throw new RequestError(`Thread '${threadId}' is bound to ${priorBinding.from}; explicit continuity handoff is required for ${priorBinding.to}`);
+      }
+      const newMessages = normalizeConsultInput(effectiveInput);
       const messages = priorThread?.messages?.length
         ? [...structuredClone(priorThread.messages), ...newMessages]
         : newMessages;
       const responseRequest = {
-        model: `${mode}/${provider}/${model}`,
+        model: `${mode}/${resolved.providerId}/${resolved.accountId === UNKNOWN_ACCOUNT_ID ? "" : `@${resolved.accountId}/`}${model}`,
         input: toBridgeResponsesInput(messages),
         stream: false,
         store: false,
+        ...(Number.isInteger(effectiveInput.maxOutputTokens) ? { max_output_tokens: effectiveInput.maxOutputTokens } : {}),
         metadata: {
-          ...(input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : {}),
-          ...(input.profile ? { bridge_profile: String(input.profile) } : {}),
-          ...(input.reasoningEffort ? { bridge_reasoning_effort: String(input.reasoningEffort) } : {}),
-          ...(input.maxTurns ? { bridge_max_turns: String(input.maxTurns) } : {}),
-          ...(input.expectedTurns ? { bridge_expected_turns: String(input.expectedTurns) } : {}),
-          ...(input.noPlan !== undefined ? { bridge_no_plan: input.noPlan === true } : {}),
-          ...(input.allowSubagents !== undefined ? { bridge_allow_subagents: input.allowSubagents === true } : {}),
-          ...(input.allowWebSearch !== undefined ? { bridge_allow_web_search: input.allowWebSearch === true } : {}),
-          ...(input.coordinatorId ? { bridge_coordinator_id: String(input.coordinatorId) } : {}),
-          ...(input.workerGroup ? { bridge_worker_group: String(input.workerGroup) } : {}),
-          ...(Array.isArray(input.acceptanceCommands) && input.acceptanceCommands.length > 0
-            ? { bridge_acceptance_commands: input.acceptanceCommands.map(String) }
+          ...(effectiveInput.metadata && typeof effectiveInput.metadata === "object" && !Array.isArray(effectiveInput.metadata) ? effectiveInput.metadata : {}),
+          ...(effectiveInput.profile ? { bridge_profile: String(effectiveInput.profile) } : {}),
+          ...(effectiveInput.voiceProfile ? { bridge_voice_profile: String(effectiveInput.voiceProfile) } : {}),
+          ...(effectiveInput.intentBrief ? { bridge_intent_brief: effectiveInput.intentBrief } : {}),
+          ...(effectiveInput.intentUpdates ? { bridge_intent_updates: effectiveInput.intentUpdates } : {}),
+          ...(effectiveInput.reasoningEffort ? { bridge_reasoning_effort: String(effectiveInput.reasoningEffort) } : {}),
+          ...(effectiveInput.maxTurns ? { bridge_max_turns: String(effectiveInput.maxTurns) } : {}),
+          ...(effectiveInput.expectedTurns ? { bridge_expected_turns: String(effectiveInput.expectedTurns) } : {}),
+          ...(effectiveInput.noPlan !== undefined ? { bridge_no_plan: effectiveInput.noPlan === true } : {}),
+          ...(effectiveInput.allowSubagents !== undefined ? { bridge_allow_subagents: effectiveInput.allowSubagents === true } : {}),
+          ...(effectiveInput.allowWebSearch !== undefined ? { bridge_allow_web_search: effectiveInput.allowWebSearch === true } : {}),
+          ...(effectiveInput.coordinatorId ? { bridge_coordinator_id: String(effectiveInput.coordinatorId) } : {}),
+          ...(effectiveInput.workerGroup ? { bridge_worker_group: String(effectiveInput.workerGroup) } : {}),
+          ...(Array.isArray(effectiveInput.acceptanceCommands) && effectiveInput.acceptanceCommands.length > 0
+            ? { bridge_acceptance_commands: effectiveInput.acceptanceCommands.map(String) }
             : {}),
-          ...(input.scope && typeof input.scope === "object"
-            ? { bridge_scope: input.scope }
-            : Array.isArray(input.allowedPaths)
-              ? { bridge_scope: { allowed: input.allowedPaths.map(String), denied: Array.isArray(input.deniedPaths) ? input.deniedPaths.map(String) : [], nonGoals: Array.isArray(input.nonGoals) ? input.nonGoals.map(String) : [] } }
+          ...(effectiveInput.scope && typeof effectiveInput.scope === "object"
+            ? { bridge_scope: effectiveInput.scope }
+            : Array.isArray(effectiveInput.allowedPaths)
+              ? { bridge_scope: { allowed: effectiveInput.allowedPaths.map(String), denied: Array.isArray(effectiveInput.deniedPaths) ? effectiveInput.deniedPaths.map(String) : [], nonGoals: Array.isArray(effectiveInput.nonGoals) ? effectiveInput.nonGoals.map(String) : [] } }
               : {}),
           bridge_mode: mode,
-          bridge_provider: provider,
+          bridge_provider: resolved.providerId,
+          bridge_account_id: resolved.accountId,
+          ...(effectiveInput.accountFallback === true || effectiveInput.account_fallback === true ? { bridge_account_fallback: true } : {}),
           bridge_thread_id: threadId,
-          ...(input.workspace
-            ? { bridge_workspace: input.workspace }
+          ...(effectiveInput.workspace
+            ? { bridge_workspace: effectiveInput.workspace }
             : { bridge_no_default_workspace: true }),
-          ...(input.timeoutMs ? { bridge_timeout_ms: String(input.timeoutMs) } : {}),
+          ...(effectiveInput.timeoutMs ? { bridge_timeout_ms: String(effectiveInput.timeoutMs) } : {}),
+          ...(tipCall ? { bridge_ephemeral_tip: true } : {}),
         },
       };
-      const response = await this.executeResponse(responseRequest, options);
+      const executionOptions = tipCall
+        ? {
+            ...options,
+            signal: options.signal
+              ? AbortSignal.any([options.signal, AbortSignal.timeout(effectiveInput.timeoutMs)])
+              : AbortSignal.timeout(effectiveInput.timeoutMs),
+          }
+        : options;
+      const response = await this.executeResponse(responseRequest, executionOptions);
+      const text = response.output_text ?? extractOutputText(response.output);
+      if (tipCall?.kind === "ask") {
+        const conversation = this.tipConversations.get(threadId);
+        if (conversation) {
+          conversation.messages = [...messages, { role: "assistant", content: text }];
+          conversation.providerId = resolved.providerId;
+          conversation.accountId = resolved.accountId;
+          conversation.mode = mode;
+          conversation.model = model;
+          conversation.updatedAt = Date.now();
+        }
+      }
+      if (tipCall) return { ...(tipCall.kind === "ask" ? { threadId } : {}), text };
       return {
         responseId: response.id,
         threadId,
-        provider,
+        provider: resolved.providerId,
+        accountId: response.metadata?.bridge_account_id ?? resolved.accountId,
         mode,
         model,
-        text: response.output_text ?? extractOutputText(response.output),
+        text,
         usage: response.usage,
         ...(response.bridge_provider_metadata ? { providerMetadata: response.bridge_provider_metadata } : {}),
         response,
       };
+    });
+  }
+
+  async #authorizeTipCall(mode, input, threadId) {
+    if (mode !== "consult") throw new RequestError("Tips may use only Consult");
+    if (this.config.tips?.enabled !== true) throw new RequestError("Tips are disabled");
+    const metadata = input.metadata;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new RequestError("Tip call metadata is required");
+    const metadataKeys = Object.keys(metadata);
+    if (metadataKeys.some((key) => !["threadspan_tip_kind", "threadspan_tip_id"].includes(key))) throw new RequestError("Tip call metadata contains unsupported fields");
+    const kind = metadata.threadspan_tip_kind;
+    if (!["refine", "ask"].includes(kind)) throw new RequestError("Unknown tip call kind");
+    const tip = tipById(metadata.threadspan_tip_id);
+    if (!tip) throw new RequestError("Unknown tip catalog key");
+    if (input.threadId !== undefined && (typeof input.threadId !== "string" || !/^thread_[0-9a-f]{32}$/.test(input.threadId))) {
+      throw new RequestError("Tip conversation threadId is malformed");
+    }
+    if (input.accountId !== undefined || input.account_id !== undefined || input.accountFallback !== undefined || input.account_fallback !== undefined
+      || input.context !== undefined || input.artifacts !== undefined || input.workspace !== undefined || input.profile !== undefined
+      || input.reasoningEffort !== undefined || input.reasoning_effort !== undefined || input.maxTurns !== undefined || input.max_turns !== undefined
+      || input.expectedTurns !== undefined || input.expected_turns !== undefined || input.scope !== undefined || input.allowedPaths !== undefined) {
+      throw new RequestError("Tip calls cannot carry account identifiers, host context, artifacts, workspace, or execution overrides");
+    }
+
+    const providers = await this.describeProviders();
+    const warranted = await this.#warrantedTip(providers);
+    if (!warranted || warranted.id !== tip.id) throw new RequestError("The current local heuristic did not warrant this tip");
+    const policy = publishedTipModel(this.config.tips, providers);
+    if (!policy || input.provider !== policy.provider || input.model !== policy.model) {
+      throw new RequestError("Tip model provider, privacy, capability, model, or live-availability gate failed");
+    }
+    const now = Date.now();
+    this.#sweepTipConversations(now);
+    if (kind === "refine") {
+      if (input.threadId !== undefined || now - this.tipRefinementLastAt < policy.cooldownMs) throw new RequestError("Tip refinement budget or cooldown is active");
+      this.tipRefinementLastAt = now;
+      return {
+        kind,
+        input: {
+          question: `Tip key: ${tip.id}\nCurrent copy: ${tip.text}`,
+          system: "Refine one Threadspan product tip. Return one plain sentence under 180 characters. Do not add facts, links, identifiers, or calls to action.",
+          provider: policy.provider,
+          model: policy.model,
+          maxOutputTokens: policy.maxOutputTokens,
+          timeoutMs: policy.maxLatencyMs,
+          allowWebSearch: false,
+          allowSubagents: false,
+          metadata,
+        },
+      };
+    }
+
+    if (!policy.ask) throw new RequestError("Tip conversation is disabled");
+    const question = input.question.trim();
+    if (question.length > 240) throw new RequestError("Tip conversation question exceeds 240 characters");
+    let conversation = input.threadId ? this.tipConversations.get(threadId) : undefined;
+    if (input.threadId && (!conversation || conversation.tipId !== tip.id)) throw new RequestError("Unknown or expired tip conversation");
+    if (!conversation) {
+      if (this.tipConversations.size >= TIP_CONVERSATION_LIMIT) throw new RequestError("Tip conversation capacity is full");
+      conversation = { tipId: tip.id, messages: [], turns: 0, createdAt: now, updatedAt: now };
+      this.tipConversations.set(threadId, conversation);
+    }
+    if (conversation.turns >= policy.ask.maxTurnsPerSession) throw new RequestError("Tip conversation turn budget is exhausted");
+    conversation.turns += 1;
+    conversation.updatedAt = now;
+    this.#scheduleTipConversationExpiry(threadId, now);
+    return {
+      kind,
+      input: {
+        question,
+        ...(!input.threadId ? { system: `Explain only this Threadspan product tip and its documented boundary: ${tip.text}. Do not infer or request the host prompt, identifiers, credentials, memory, files, or account details.` } : {}),
+        provider: policy.provider,
+        model: policy.model,
+        threadId: input.threadId,
+        maxOutputTokens: policy.ask.maxOutputTokens,
+        timeoutMs: policy.ask.maxLatencyMs,
+        allowWebSearch: false,
+        allowSubagents: false,
+        metadata,
+      },
+    };
+  }
+
+  #sweepTipConversations(now = Date.now()) {
+    const cutoff = now - TIP_CONVERSATION_TTL_MS;
+    for (const [id, conversation] of this.tipConversations.entries()) {
+      if (conversation.updatedAt < cutoff) {
+        this.tipConversations.delete(id);
+        clearTimeout(this.tipConversationTimers.get(id));
+        this.tipConversationTimers.delete(id);
+      }
+    }
+  }
+
+  #scheduleTipConversationExpiry(threadId, updatedAt) {
+    clearTimeout(this.tipConversationTimers.get(threadId));
+    const timer = setTimeout(() => {
+      if (this.tipConversations.get(threadId)?.updatedAt === updatedAt) this.tipConversations.delete(threadId);
+      this.tipConversationTimers.delete(threadId);
+    }, TIP_CONVERSATION_TTL_MS);
+    timer.unref?.();
+    this.tipConversationTimers.set(threadId, timer);
+  }
+
+  async #warrantedTip(providers) {
+    const mode = this.config.defaults?.mode ?? "consult";
+    const requestedProvider = this.config.defaults?.provider ?? "threadspan";
+    let route;
+    try {
+      route = this.registry.resolveRoute({ mode, providerId: requestedProvider, model: this.config.defaults?.model ?? "auto", accountId: this.config.defaults?.accountId });
+    } catch {
+      route = { providerId: requestedProvider };
+    }
+    const routeMap = await this.registry.routeMap(providers);
+    const selected = providers.find((item) => item.id === route.providerId);
+    const candidates = routeMap.edges.filter((edge) => edge.mode === mode && edge.provider !== route.providerId).slice(0, 2);
+    return selectTip({
+      mode,
+      routeVerified: selected?.health?.status === "available",
+      qualifiedFallbackCount: candidates.filter((edge) => routeMap.nodes.find((node) => node.id === edge.provider)?.availability !== "unavailable").length,
+      compatibilityChanged: summarizeCompatibility(this.config.compatibilityWatch, this.compatibilityReport).changed === true,
     });
   }
 
@@ -380,7 +928,7 @@ export class BridgeService {
 
 function usageEvidence(metadata) {
   const grok = metadata?.grokBuild ?? {};
-  const worker = metadata?.codexWorker ?? {};
+  const worker = metadata?.codexWorker ?? metadata?.codexNativeWorker ?? {};
   const upstream = metadata?.upstream ?? {};
   const costTicks = Number.isSafeInteger(grok.totalCostUsdTicks)
     ? grok.totalCostUsdTicks
@@ -392,6 +940,172 @@ function usageEvidence(metadata) {
     ...(costTicks === undefined ? {} : { costTicks }),
     ...(worker.process ? { processCount: 1 } : {}),
     ...(Number.isSafeInteger(grok.actualTurns) ? { turnCount: grok.actualTurns } : {}),
+  };
+}
+
+function publicBranchingPolicy(config = {}) {
+  return {
+    enabled: config.enabled === true,
+    automaticRecognition: config.automaticRecognition === true,
+    activationReasons: [...(config.activationReasons ?? [])],
+    routingFactors: [...(config.routingFactors ?? [])],
+    limits: {
+      maxBranches: config.maxBranches,
+      maxTurnsPerBranch: config.maxTurnsPerBranch,
+      maxCostUsd: config.maxCostUsd,
+    },
+    stopOnConvergence: config.stopOnConvergence === true,
+    nativeDefaults: config.nativeDefaults,
+    toolPolicy: config.toolPolicy,
+    imageDivergenceTool: config.imageDivergenceTool,
+    synthesisOwner: config.synthesisOwner,
+    note: "Branch only when independent evidence, genuine ideation divergence, or disjoint writes justify coordination cost; tool/plugin availability alone is never a trigger.",
+  };
+}
+
+function publicConnectionRecoveryPolicy(config = {}) {
+  return {
+    bounds: {
+      maxReconnectAttempts: config.maxReconnectAttempts,
+      maxRebindAttempts: config.maxRebindAttempts,
+      maxHandleAudits: config.maxHandleAudits,
+    },
+    preserveResumableState: config.preserveResumableState === true,
+    staleDetection: { processes: config.detectStaleProcesses === true, config: config.detectStaleConfig === true },
+    auditHandlesOnParentInterruption: config.auditHandlesOnParentInterruption === true,
+    requireAdapterSpecificRecovery: config.requireAdapterSpecificRecovery === true,
+    reroutePolicy: config.reroutePolicy,
+    reauthPolicy: config.reauthPolicy,
+    note: "Pre-output transport/auth failures and mid-turn provider failures remain distinct. Recovery and rollback stay adapter-specific; generic unavailable status is not recovery authority.",
+  };
+}
+
+function publicSelfHealPolicy(config = {}) {
+  return {
+    enabled: config.enabled === true,
+    subsystemOwner: config.subsystemOwner ?? "compatibility-watch",
+    maxAnalysisDepth: config.maxAnalysisDepth,
+    phases: [...(config.phases ?? [])],
+    immediateRecoveryFirst: config.immediateRecoveryFirst === true,
+    stopAfterMetaMeta: config.stopAfterMetaMeta === true,
+    requirements: {
+      owner: config.requireConcreteOwner === true,
+      evidence: config.requireEvidence === true,
+      regression: config.requireRegression === true,
+      hostRollout: config.requireHostRollout === true,
+      rollbackOrExpiryWhenRelevant: config.requireRollbackOrExpiryWhenRelevant === true,
+    },
+    updateRecognizerAndProcess: config.updateRecognizerAndProcess === true,
+    analyzeRetryChurn: config.analyzeRetryChurn === true,
+    contribution: {
+      policy: config.contributionPolicy,
+      destinations: [...(config.proposalDestinations ?? [])],
+      requiredEvidence: [...(config.requiredProposalEvidence ?? [])],
+      localMonitorReview: config.localMonitorReview,
+      localApplyAfterAcceptance: config.localApplyAfterAcceptance === true,
+      sanitizeMachineLocalData: config.sanitizeMachineLocalData === true,
+      autoMerge: config.autoMerge === true,
+    },
+    note: "Compatibility Watch detects app/provider drift, restores compatibility, runs bounded direct/meta/meta-meta hardening, and produces reviewed sanitized issue/PR proposals.",
+  };
+}
+
+function classifyConnectionFailure(error, state) {
+  const upstream = error.details?.upstream ?? error.details ?? {};
+  const message = String(error.message ?? "");
+  const upstreamClass = [upstream?.kind, upstream?.code, upstream?.retryPolicy, upstream?.cause]
+    .filter((value) => value !== undefined && value !== null)
+    .map(String)
+    .join(" ");
+  if (state.parentInterrupted) {
+    return {
+      class: "parent-turn-interruption",
+      stage: state.meaningfulOutput || state.observedSideEffect ? "mid-turn" : "pre-output",
+      providerHealth: "interrupted",
+      accountHealth: "unknown",
+      transportHealth: "audit-required",
+      safeReroute: false,
+      recovery: "audit-provider-handles-before-resume-or-retry",
+    };
+  }
+  if (state.meaningfulOutput || state.observedSideEffect) {
+    return {
+      class: "mid-turn-provider-failure",
+      stage: "mid-turn",
+      providerHealth: "degraded",
+      accountHealth: "unknown",
+      transportHealth: "unknown-after-output",
+      safeReroute: false,
+      recovery: "preserve-resumable-state-and-use-adapter-specific-resume-or-rollback",
+    };
+  }
+  if ([401, 403].includes(error.status) || /\b(?:auth|credential|sign[ -]?in|login|token)\b/i.test(message)) {
+    return {
+      class: "pre-output-auth-failure",
+      stage: "pre-output",
+      providerHealth: "unknown",
+      accountHealth: "reauth-required",
+      transportHealth: "not-authorized",
+      safeReroute: "existing-privacy-account-authority-gates-only",
+      recovery: "reauthenticate-through-provider-native-profile-then-rebind-same-account",
+    };
+  }
+  if (error.status === 408 || error.status >= 500 || /\b(?:transport|timeout|connection|socket|spawn|network)\b/i.test(`${message} ${upstreamClass}`)) {
+    return {
+      class: "pre-output-transport-failure",
+      stage: "pre-output",
+      providerHealth: "unknown",
+      accountHealth: "unknown",
+      transportHealth: "disconnected",
+      safeReroute: "existing-privacy-account-authority-gates-only",
+      recovery: "bounded-adapter-specific-reconnect-or-rebind",
+    };
+  }
+  return {
+    class: "pre-output-provider-failure",
+    stage: "pre-output",
+    providerHealth: "degraded",
+    accountHealth: "unknown",
+    transportHealth: "connected-or-unknown",
+    safeReroute: "existing-privacy-account-authority-gates-only",
+    recovery: "adapter-specific-diagnosis-required",
+  };
+}
+
+function connectionKey(providerId, accountId) {
+  return `${providerId}\u0000${accountId ?? UNKNOWN_ACCOUNT_ID}`;
+}
+
+function publishedTipModel(config, providers) {
+  const policy = config?.modelRefinement;
+  if (policy?.enabled !== true || policy.privacy !== "sanitized-tip-context-only") return null;
+  if (typeof policy.provider !== "string" || typeof policy.model !== "string") return null;
+  const provider = providers.find((item) => item.id === policy.provider);
+  const liveModels = (provider?.models ?? []).map((item) => item?.id).filter(Boolean);
+  if (provider?.health?.status !== "available" || provider.capabilities?.modes?.consult?.supported !== true || !liveModels.includes(policy.model)) return null;
+  const ask = config.ask?.enabled === true
+    ? {
+        maxTurnsPerSession: config.ask.maxTurnsPerSession,
+        maxOutputTokens: config.ask.maxOutputTokens,
+        maxLatencyMs: config.ask.maxLatencyMs,
+      }
+    : null;
+  return {
+    provider: policy.provider,
+    model: policy.model,
+    maxCallsPerSession: policy.maxCallsPerSession,
+    maxOutputTokens: policy.maxOutputTokens,
+    maxLatencyMs: policy.maxLatencyMs,
+    cooldownMs: policy.cooldownMs,
+    ...(ask ? { ask } : {}),
+    settings: {
+      mode: "consult",
+      accountRouting: "inherit-selected-provider-account",
+      providerAndHostSettings: "inherit",
+      privacy: "sanitized-tip-context-only",
+      web: false,
+      subagents: false,
+    },
   };
 }
 
@@ -407,11 +1121,138 @@ function summarizeCompatibility(config, report) {
   };
 }
 
+/** Conditionally publish validated provider links without adding account or quota state. */
+function publicProviderWebMetadata(provider) {
+  if (!provider || typeof provider !== "object" || Array.isArray(provider)) return {};
+  return Object.fromEntries(["officialUrl", "accountUrl", "usageUrl"]
+    .filter((key) => typeof provider[key] === "string")
+    .map((key) => [key, provider[key]]));
+}
+
+/** Keep authoritative quota facts separate, and collapse wholly unknown snapshots to null. */
+function publishedQuota(quota) {
+  if (!quota || typeof quota !== "object" || Array.isArray(quota)) return null;
+  const hasNumber = [quota.allowance, quota.remaining].some((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
+  const hasBoundary = [quota.resetAt, quota.renewalAt].some((value) => typeof value === "string" && Number.isFinite(Date.parse(value)));
+  if (!hasNumber && !hasBoundary) return null;
+  return {
+    allowance: typeof quota.allowance === "number" && Number.isFinite(quota.allowance) && quota.allowance >= 0 ? quota.allowance : null,
+    remaining: typeof quota.remaining === "number" && Number.isFinite(quota.remaining) && quota.remaining >= 0 ? quota.remaining : null,
+    unit: typeof quota.unit === "string" ? quota.unit : null,
+    resetAt: typeof quota.resetAt === "string" && Number.isFinite(Date.parse(quota.resetAt)) ? new Date(quota.resetAt).toISOString() : null,
+    renewalAt: typeof quota.renewalAt === "string" && Number.isFinite(Date.parse(quota.renewalAt)) ? new Date(quota.renewalAt).toISOString() : null,
+    source: typeof quota.source === "string" ? quota.source : "unspecified",
+    observedAt: typeof quota.observedAt === "string" && Number.isFinite(Date.parse(quota.observedAt)) ? new Date(quota.observedAt).toISOString() : null,
+  };
+}
+
 function continuationRouteChange(previousRecord, route) {
-  const previous = [previousRecord.mode, previousRecord.providerId, previousRecord.model].map((value) => String(value ?? ""));
-  const next = [route.mode, route.providerId, route.model].map((value) => String(value ?? ""));
+  const previous = [previousRecord.mode, previousRecord.providerId, previousRecord.accountId ?? UNKNOWN_ACCOUNT_ID, previousRecord.model].map((value) => String(value ?? ""));
+  const next = [route.mode, route.providerId, route.accountId ?? UNKNOWN_ACCOUNT_ID, route.model].map((value) => String(value ?? ""));
+  if (previous[0] === "" && previous[1] === "" && previous[2] === UNKNOWN_ACCOUNT_ID && previous[3] === "") return undefined;
   if (previous.every((value, index) => value === next[index])) return undefined;
   return { from: previous.join("/"), to: next.join("/") };
+}
+
+/** Require explicit provider evidence that a retryable failure preceded all output and side effects. */
+function canSafelyFallbackAccount(error, state) {
+  if (state.meaningfulOutput === true || state.observedSideEffect === true || error?.retryable !== true) return false;
+  const upstream = error?.details?.upstream;
+  const nativeUsageLimit = upstream?.kind === CODEX_NATIVE_USAGE_LIMIT_KIND
+    && upstream.preOutput === true
+    && upstream.noSideEffects === true
+    && upstream.safeToFallbackBeforeOutput === true;
+  return nativeUsageLimit || (state.mode !== "delegate" && upstream?.safeToFallbackBeforeOutput === true);
+}
+
+async function sanitizedMaximumUtilizationReadModel(controller) {
+  if (!controller || typeof controller.readModel !== "function") return null;
+  let raw;
+  try { raw = await controller.readModel(); } catch { raw = {}; }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) raw = {};
+  const phases = new Set(["disabled", "idle", "maximum-utilization", "exhausted"]);
+  const readiness = new Set(["disabled", "awaiting-native-quota", "native-quota-observed", "direct-exhaustion-observed", "active", "awaiting-exact-native-recovery", "native-recovery-confirmed", "owner-disabled"]);
+  const counts = raw.counts && typeof raw.counts === "object" ? raw.counts : {};
+  const statuses = raw.statuses && typeof raw.statuses === "object" ? raw.statuses : {};
+  const outbox = statuses.outbox && typeof statuses.outbox === "object" ? statuses.outbox : {};
+  const quota = raw.quota && typeof raw.quota === "object" ? raw.quota : {};
+  const automatic = raw.automatic && typeof raw.automatic === "object" ? raw.automatic : {};
+  const manual = raw.manual && typeof raw.manual === "object" ? raw.manual : {};
+  return {
+    phase: phases.has(raw.phase) ? raw.phase : "idle",
+    readiness: readiness.has(raw.readiness) ? raw.readiness : "awaiting-native-quota",
+    epoch: nonNegativeIntegerOrNull(raw.epoch),
+    quota: {
+      usedRatio: ratioOrNull(quota.usedRatio),
+      observedAt: validIsoTimestamp(quota.observedAt) ?? null,
+      resetAt: validIsoTimestamp(quota.resetAt) ?? null,
+    },
+    counts: {
+      protectedTasks: nonNegativeIntegerOrNull(counts.protectedTasks) ?? 0,
+      notices: nonNegativeIntegerOrNull(counts.notices) ?? 0,
+      inboxPending: nonNegativeIntegerOrNull(counts.inboxPending) ?? 0,
+      suspendedMonitors: nonNegativeIntegerOrNull(counts.suspendedMonitors) ?? 0,
+      overruns: nonNegativeIntegerOrNull(counts.overruns) ?? 0,
+      provisionalOutputs: nonNegativeIntegerOrNull(counts.provisionalOutputs) ?? 0,
+    },
+    statuses: {
+      pendingActions: nonNegativeIntegerOrNull(outbox.pending) ?? 0,
+      unsupportedActions: nonNegativeIntegerOrNull(outbox.unsupported) ?? 0,
+      executedActions: nonNegativeIntegerOrNull(outbox.executed) ?? 0,
+      manifest: ["not-requested", "requested"].includes(statuses.manifest) ? statuses.manifest : "not-requested",
+      fastCanary: ["not-requested", "requested"].includes(statuses.fastCanary) ? statuses.fastCanary : "not-requested",
+      recovery: ["unconfirmed", "confirmed"].includes(statuses.recovery) ? statuses.recovery : "unconfirmed",
+    },
+    automatic: {
+      enabled: automatic.enabled === true,
+      active: automatic.active === true,
+      scope: automatic.scope && typeof automatic.scope === "object" ? {
+        provider: String(automatic.scope.provider ?? "OpenAI Codex").slice(0, 80),
+        account: String(automatic.scope.account ?? "selected account").slice(0, 80),
+        bucket: String(automatic.scope.bucket ?? "native bucket").slice(0, 80),
+      } : null,
+    },
+    manual: {
+      active: manual.active === true,
+      scope: manual.scope && ["provider", "app", "account"].includes(manual.scope.kind) && typeof manual.scope.label === "string"
+        ? { kind: manual.scope.kind, label: manual.scope.label.slice(0, 80) }
+        : null,
+      manifestCount: nonNegativeIntegerOrNull(manual.manifestCount) ?? 0,
+    },
+  };
+}
+
+function validIsoTimestamp(value) {
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return undefined;
+  return new Date(value).toISOString();
+}
+
+function ratioOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : null;
+}
+
+function nonNegativeIntegerOrNull(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function createMaximumUtilizationController(config, dependencies, logger) {
+  if (config.maximumUtilization?.enabled !== true) return null;
+  const journal = maximumUtilizationJournal(config, dependencies);
+  return new MaximumUtilizationController({
+    policy: config.maximumUtilization,
+    journal,
+    quotaAdapter: dependencies.codexNativeQuotaAdapter ?? new CodexNativeQuotaAdapter({ accountStore: dependencies.accountStore, config }),
+    snapshotProvider: dependencies.maximumUtilizationSnapshotProvider,
+    capabilities: dependencies.maximumUtilizationCapabilities,
+    logger,
+  });
+}
+
+function maximumUtilizationJournal(config, dependencies) {
+  return dependencies.maximumUtilizationJournal ?? new MaximumUtilizationJournal({
+    path: join(dirname(config.configPath), "state", "maximum-utilization.json"),
+  });
 }
 
 /**
@@ -461,4 +1302,11 @@ function numberFromMetadata(value) {
 /** Parse a permissive boolean metadata value. */
 function metadataBoolean(value) {
   return value === true || value === "true" || value === 1 || value === "1";
+}
+
+/** Keep request-local intent material out of provider adapter metadata and wire extensions. */
+function providerVisibleMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return {};
+  const { bridge_intent_brief: _intentBrief, bridge_intent_updates: _intentUpdates, ...visible } = metadata;
+  return visible;
 }

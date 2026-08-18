@@ -1,6 +1,6 @@
 {
   "name": "threadspan",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "One task across OpenAI Codex, Cursor, Grok Build, Nous Portal, OpenRouter, and compatible providers.",
   "type": "module",
   "bin": {
@@ -18,8 +18,11 @@
     "docs",
     "examples",
     "scripts/check.mjs",
+    "scripts/release-bundle.mjs",
     "test",
     "ui",
+    "integrations",
+    "!**/.working*",
     "README.md",
     "DELIVERY.md",
     "LICENSE",
@@ -36,8 +39,10 @@
     "check": "node ./scripts/check.mjs",
     "test": "node --test --test-reporter=spec test/*.test.mjs",
     "test:watch": "node --test --watch test/*.test.mjs",
+    "test:release-bundle": "node --test --test-reporter=spec test/release-bundle.test.mjs",
     "verify": "npm run check && npm test",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "release:bundle": "node ./scripts/release-bundle.mjs"
   },
   "optionalDependencies": {
     "@cursor/sdk": "1.0.23"

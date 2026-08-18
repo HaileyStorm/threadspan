@@ -1,0 +1,16 @@
+# Preview only. Merge into the current Hermes MCP configuration after reviewing paths.
+mcp_servers:
+  threadspan:
+    transport: stdio
+    command: /absolute/path/to/node
+    args:
+      - /absolute/path/to/threadspan/src/cli.mjs
+      - mcp
+      - --config
+      - /absolute/path/to/threadspan/config.jsonc
+      - --remote
+      - http://127.0.0.1:8743/mcp
+      - --token-file
+      - /absolute/path/to/.threadspan/auth-token
+    tools:
+      include: [bridge_status, bridge_models, consult]

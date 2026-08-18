@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { appendFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   aggregateUsageEvents,
+  forecastRecentBurn,
   normalizeUsageEvent,
   resolveUsageLedgerPath,
   UsageLedger,
@@ -69,6 +70,7 @@ test("normalizes the exact privacy-minimized usage schema", async (t) => {
     schemaVersion: USAGE_LEDGER_SCHEMA_VERSION,
     timestamp: "2026-08-17T12:34:56.000Z",
     provider: "openai",
+    accountId: "unknown/default",
     model: "gpt-5.6-sol",
     mode: "integrated",
     status: "success",
@@ -78,6 +80,7 @@ test("normalizes the exact privacy-minimized usage schema", async (t) => {
     cachedInputTokens: 3,
     reasoningTokens: 2,
     evidenceClass: "live-provider",
+    observedMetrics: ["inputTokens", "outputTokens", "cachedInputTokens", "reasoningTokens", "costTicks", "processCount", "turnCount"],
     costTicks: 9001,
     processCount: 2,
     turnCount: 4,
@@ -134,6 +137,257 @@ test("pure aggregation ignores malformed or unsanitized records", () => {
   assert.deepEqual(summary.recentEvents, [valid]);
 });
 
+test("recent-burn forecasts distinguish no data, observed zero, and missing metrics", () => {
+  const now = "2026-08-17T18:00:00Z";
+  const noData = forecastRecentBurn([], {
+    now,
+    entitlements: [{ provider: "p", accountId: "acct_none", quota: { unit: "turns" } }],
+  });
+  assert.equal(noData.accounts[0].status, "no-data");
+  assert.equal(noData.accounts[0].burn.amount, null);
+
+  const zero = forecastRecentBurn([
+    normalizeUsageEvent(event({ timestamp: "2026-08-17T12:00:00Z", provider: "p", accountId: "acct_zero", turnCount: 0 })),
+    normalizeUsageEvent(event({ timestamp: "2026-08-17T18:00:00Z", provider: "p", accountId: "acct_zero", turnCount: 0 })),
+  ], { now });
+  assert.equal(zero.accounts[0].status, "zero-burn");
+  assert.equal(zero.accounts[0].burn.amount, 0);
+  assert.equal(zero.accounts[0].exhaustion, null);
+
+  const missing = forecastRecentBurn([
+    normalizeUsageEvent({ timestamp: now, provider: "p", accountId: "acct_missing", model: "m", mode: "consult", status: "failed", evidenceClass: "live-provider" }),
+  ], {
+    now,
+    entitlements: [{ provider: "p", accountId: "acct_missing", quota: { unit: "tokens", remaining: 10, source: "provider-api" } }],
+  });
+  assert.equal(missing.accounts[0].status, "stale-or-missing-metric");
+  assert.equal(missing.accounts[0].burn.amount, null);
+  assert.equal(missing.accounts[0].exhaustion, null);
+});
+
+test("forecasts aggregate only identical entitlement identity, unit, and window semantics", () => {
+  const now = "2026-08-17T18:00:00Z";
+  const accounts = ["acct_a", "acct_b"];
+  const events = accounts.flatMap((accountId) => [
+    normalizeUsageEvent(event({ timestamp: "2026-08-17T12:00:00Z", provider: "p", accountId, inputTokens: 100, outputTokens: 50 })),
+    normalizeUsageEvent(event({ timestamp: now, provider: "p", accountId, inputTokens: 100, outputTokens: 50 })),
+  ]);
+  const compatible = forecastRecentBurn(events, {
+    now,
+    entitlements: accounts.map((accountId) => ({ provider: "p", accountId, quota: { entitlementIdentity: "shared-pool", unit: "tokens", windowMs: 86_400_000 } })),
+  });
+  assert.equal(compatible.accounts.length, 2);
+  assert.equal(compatible.providers.p.length, 1);
+  assert.equal(compatible.combined.length, 1);
+  assert.deepEqual(compatible.combined[0].scope.accountIds, accounts);
+  assert.equal(compatible.combined[0].burn.amount, 600);
+  assert.equal(compatible.providers.p[0].compatibilityKey.split("\u0000")[0], "shared-pool");
+  assert.equal(compatible.combined[0].compatibilityKey.split("\u0000")[0], "shared-pool");
+
+  const incompatible = forecastRecentBurn(events, {
+    now,
+    entitlements: [
+      { provider: "p", accountId: "acct_a", quota: { entitlementIdentity: "shared-pool", unit: "tokens", windowMs: 86_400_000 } },
+      { provider: "p", accountId: "acct_b", quota: { entitlementIdentity: "shared-pool", unit: "requests", windowMs: 3_600_000 } },
+    ],
+  });
+  assert.equal(incompatible.providers.p.length, 2);
+  assert.equal(incompatible.combined.length, 2);
+});
+
+test("authoritative remaining produces a conservative rounded range while bad evidence fails closed", () => {
+  const now = "2026-08-17T18:00:00Z";
+  const events = ["12:00:00", "15:00:00", "18:00:00"].map((time) => normalizeUsageEvent(event({
+    timestamp: `2026-08-17T${time}Z`, provider: "p", accountId: "acct_a", turnCount: 10,
+  })));
+  const options = {
+    now,
+    entitlements: [{ provider: "p", accountId: "acct_a", quota: { entitlementIdentity: "turn-week", unit: "turns", windowMs: 604_800_000, remaining: 20, resetAt: "2026-08-19T00:00:00Z", source: "provider-api", observedAt: now } }],
+  };
+  const forecast = forecastRecentBurn(events, options).accounts[0];
+  assert.equal(forecast.status, "projected");
+  assert.match(forecast.burn.rateLabel, /turns\/hour/);
+  assert.match(forecast.exhaustion.label, /^\d+h–\d+h$/);
+  assert.equal(forecast.exhaustion.relation, "before-reset-or-renewal");
+  assert.equal(forecast.entitlement.source, "provider-api");
+  assert.equal(forecast.entitlement.freshness.status, "fresh");
+
+  assert.equal(forecastRecentBurn(events, { ...options, truncated: true }).accounts[0].status, "unknown");
+  assert.match(forecastRecentBurn(events, { ...options, malformedLines: 1 }).accounts[0].confidence.reason, /malformed/);
+  const stale = forecastRecentBurn(events, { ...options, now: "2026-08-18T18:00:01Z" }).accounts[0];
+  assert.equal(stale.status, "unknown");
+});
+
+test("January-2025 quota snapshots retain fresh burn but suppress stale exhaustion projections", () => {
+  const now = "2026-08-17T18:00:00Z";
+  const events = ["12:00:00", "15:00:00", "18:00:00"].map((time) => normalizeUsageEvent(event({
+    timestamp: `2026-08-17T${time}Z`, provider: "p", accountId: "acct_a", turnCount: 10,
+  })));
+  const result = forecastRecentBurn(events, {
+    now,
+    entitlements: [{ provider: "p", accountId: "acct_a", quota: {
+      entitlementIdentity: "turn-week",
+      unit: "turns",
+      windowMs: 604_800_000,
+      remaining: 20,
+      resetAt: "2026-08-19T00:00:00Z",
+      source: "provider-api",
+      observedAt: "2025-01-15T00:00:00Z",
+    } }],
+  });
+
+  for (const forecast of [result.accounts[0], result.providers.p[0], result.combined[0]]) {
+    assert.equal(forecast.status, "rate-only");
+    assert.equal(forecast.exhaustion, null);
+    assert.equal(forecast.freshness.status, "fresh");
+    assert.equal(forecast.confidence.level, "medium");
+    assert.equal(forecast.limitKnown, true);
+    assert.equal(forecast.entitlement.freshness.status, "stale");
+    assert.match(forecast.entitlement.freshness.reason, /freshness threshold/);
+  }
+});
+
+test("elapsed reset or renewal snapshots downgrade to rate-only with an explicit reason", () => {
+  const now = "2026-08-17T18:00:00Z";
+  const events = ["12:00:00", "15:00:00", "18:00:00"].map((time) => normalizeUsageEvent(event({
+    timestamp: `2026-08-17T${time}Z`, provider: "p", accountId: "acct_a", turnCount: 10,
+  })));
+
+  for (const boundary of ["resetAt", "renewalAt"]) {
+    const forecast = forecastRecentBurn(events, {
+      now,
+      entitlements: [{ provider: "p", accountId: "acct_a", quota: {
+        unit: "turns",
+        remaining: 20,
+        source: "provider-api",
+        observedAt: "2026-08-17T17:50:00Z",
+        [boundary]: "2026-08-17T17:55:00Z",
+      } }],
+    }).accounts[0];
+    assert.equal(forecast.status, "rate-only");
+    assert.equal(forecast.exhaustion, null);
+    assert.equal(forecast.freshness.status, "fresh");
+    assert.equal(forecast.entitlement.freshness.status, "stale");
+    assert.match(forecast.entitlement.freshness.reason, /elapsed after the entitlement observation/);
+  }
+});
+
+test("compatible pooled forecasts fail closed when any member quota snapshot is stale", () => {
+  const now = "2026-08-17T18:00:00Z";
+  const events = ["acct_a", "acct_b"].flatMap((accountId) => ["12:00:00", "18:00:00"].map((time) => normalizeUsageEvent(event({
+    timestamp: `2026-08-17T${time}Z`, provider: "p", accountId, turnCount: 10,
+  }))));
+  const result = forecastRecentBurn(events, {
+    now,
+    entitlements: [
+      { provider: "p", accountId: "acct_a", quota: { entitlementIdentity: "shared-turn-pool", unit: "turns", remaining: 20, source: "provider-api", observedAt: now } },
+      { provider: "p", accountId: "acct_b", quota: { entitlementIdentity: "shared-turn-pool", unit: "turns", remaining: 20, source: "provider-api", observedAt: "2025-01-15T00:00:00Z" } },
+    ],
+  });
+
+  assert.equal(result.accounts.find((forecast) => forecast.scope.accountId === "acct_a").status, "projected");
+  assert.equal(result.accounts.find((forecast) => forecast.scope.accountId === "acct_b").status, "rate-only");
+  for (const forecast of [result.providers.p[0], result.combined[0]]) {
+    assert.equal(forecast.status, "rate-only");
+    assert.equal(forecast.exhaustion, null);
+    assert.equal(forecast.entitlement.freshness.status, "stale");
+    assert.equal(forecast.compatibilityKey.split("\u0000")[0], "shared-turn-pool");
+  }
+});
+
+test("unknown reset timing still requires a fresh authoritative observation", () => {
+  const now = "2026-08-17T18:00:00Z";
+  const events = ["12:00:00", "15:00:00", "18:00:00"].map((time) => normalizeUsageEvent(event({
+    timestamp: `2026-08-17T${time}Z`, provider: "p", accountId: "acct_a", turnCount: 10,
+  })));
+  const entitlement = { provider: "p", accountId: "acct_a", quota: { unit: "turns", remaining: 20, source: "provider-api" } };
+  const missingObservation = forecastRecentBurn(events, { now, entitlements: [entitlement] }).accounts[0];
+  assert.equal(missingObservation.status, "rate-only");
+  assert.equal(missingObservation.exhaustion, null);
+  assert.equal(missingObservation.entitlement.freshness.status, "unknown");
+  assert.match(missingObservation.entitlement.freshness.reason, /observation time is unknown/);
+
+  const freshObservation = forecastRecentBurn(events, {
+    now,
+    entitlements: [{ ...entitlement, quota: { ...entitlement.quota, observedAt: now } }],
+  }).accounts[0];
+  assert.equal(freshObservation.status, "projected");
+  assert.equal(freshObservation.entitlement.freshness.status, "fresh");
+  assert.equal(freshObservation.exhaustion.relation, "reset-or-renewal-unknown");
+});
+
+test("unknown or invalid quota units cannot borrow a local metric for exhaustion", () => {
+  const now = "2026-08-17T18:00:00Z";
+  const events = ["12:00:00", "18:00:00"].map((time) => normalizeUsageEvent(event({
+    timestamp: `2026-08-17T${time}Z`, provider: "p", accountId: "acct_a", turnCount: 10,
+  })));
+  for (const unit of [undefined, "private-provider-units"]) {
+    const forecast = forecastRecentBurn(events, {
+      now,
+      entitlements: [{ provider: "p", accountId: "acct_a", quota: { unit, remaining: 20, source: "provider-api", observedAt: now } }],
+    }).accounts[0];
+    assert.equal(forecast.burn.unit, "turns");
+    assert.equal(forecast.entitlement.unit, null);
+    assert.equal(forecast.status, "rate-only");
+    assert.equal(forecast.exhaustion, null);
+  }
+});
+
+test("fresh quota observations use a deterministic conservative threshold", () => {
+  const now = "2026-08-17T18:00:00Z";
+  const events = ["12:00:00", "15:00:00", "18:00:00"].map((time) => normalizeUsageEvent(event({
+    timestamp: `2026-08-17T${time}Z`, provider: "p", accountId: "acct_a", turnCount: 10,
+  })));
+  const quota = { unit: "turns", remaining: 20, resetAt: "2026-08-19T00:00:00Z", source: "provider-api" };
+  const atThreshold = forecastRecentBurn(events, {
+    now,
+    entitlements: [{ provider: "p", accountId: "acct_a", quota: { ...quota, observedAt: "2026-08-17T17:45:00Z" } }],
+  }).accounts[0];
+  assert.equal(atThreshold.entitlement.freshness.thresholdMs, 15 * 60 * 1000);
+  assert.equal(atThreshold.entitlement.freshness.status, "fresh");
+  assert.equal(atThreshold.status, "projected");
+  assert.ok(atThreshold.exhaustion);
+
+  const beyondThreshold = forecastRecentBurn(events, {
+    now,
+    entitlements: [{ provider: "p", accountId: "acct_a", quota: { ...quota, observedAt: "2026-08-17T17:44:59.999Z" } }],
+  }).accounts[0];
+  assert.equal(beyondThreshold.entitlement.freshness.status, "stale");
+  assert.equal(beyondThreshold.status, "rate-only");
+  assert.equal(beyondThreshold.exhaustion, null);
+});
+
+test("exhaustion ranges never begin before now and classify reset straddles", () => {
+  const now = "2026-08-17T18:07:00Z";
+  const immediateEvents = ["12:07:00", "18:07:00"].map((time) => normalizeUsageEvent(event({
+    timestamp: `2026-08-17T${time}Z`, provider: "p", accountId: "acct_a", turnCount: 100,
+  })));
+  const immediate = forecastRecentBurn(immediateEvents, {
+    now,
+    entitlements: [{ provider: "p", accountId: "acct_a", quota: { unit: "turns", remaining: 0.1, source: "provider-api", observedAt: now } }],
+  }).accounts[0].exhaustion;
+  assert.equal(immediate.earliestAt, "2026-08-17T18:07:00.000Z");
+  assert.ok(Date.parse(immediate.latestAt) >= Date.parse(immediate.earliestAt));
+
+  const straddleNow = "2026-08-17T18:00:00Z";
+  const straddleEvents = ["12:00:00", "14:00:00", "16:00:00", "18:00:00"].map((time) => normalizeUsageEvent(event({
+    timestamp: `2026-08-17T${time}Z`, provider: "p", accountId: "acct_a", turnCount: 15,
+  })));
+  const straddle = forecastRecentBurn(straddleEvents, {
+    now: straddleNow,
+    entitlements: [{ provider: "p", accountId: "acct_a", quota: {
+      unit: "turns",
+      remaining: 15,
+      resetAt: "2026-08-17T19:30:00Z",
+      source: "provider-api",
+      observedAt: straddleNow,
+    } }],
+  }).accounts[0].exhaustion;
+  assert.equal(straddle.earliestAt, "2026-08-17T19:15:00.000Z");
+  assert.equal(straddle.latestAt, "2026-08-17T20:00:00.000Z");
+  assert.equal(straddle.relation, "straddles-reset-or-renewal");
+});
+
 test("bounds retention, repairs malformed tails, and leaves atomic artifacts cleaned", async (t) => {
   const { root, path, ledger } = await temporaryLedger(t, {
     maxEvents: 3,
@@ -173,6 +427,83 @@ test("applies age retention and fails closed on an abandoned lock", async (t) =>
   await rm(lockPath, { force: true });
   await ledger.append(event({ timestamp: "2026-08-17T12:00:10Z", inputTokens: 99 }));
   assert.equal((await ledger.read()).at(-1).inputTokens, 99);
+});
+
+test("retries confirmed Windows EPERM contention on an owned lock file", async (t) => {
+  let path;
+  let attempts = 0;
+  const lockRuntime = {
+    platform: "win32",
+    open: async (candidate, ...args) => {
+      attempts += 1;
+      assert.equal(candidate, `${path}.lock`);
+      if (attempts === 1) {
+        await writeFile(candidate, JSON.stringify({ token: "concurrent-owner" }), "utf8");
+        throw windowsOpenPermissionError(candidate);
+      }
+      await rm(candidate, { force: true });
+      return open(candidate, ...args);
+    },
+  };
+  const temporary = await temporaryLedger(t, { lockRetryMs: 1, lockRuntime });
+  path = temporary.path;
+
+  await temporary.ledger.append(event({ inputTokens: 77 }));
+
+  assert.equal(attempts, 2);
+  assert.equal(JSON.parse((await readFile(path, "utf8")).trim()).inputTokens, 77);
+  await assert.rejects(stat(`${path}.lock`), { code: "ENOENT" });
+});
+
+test("bounds confirmed Windows EPERM retries without stealing the owner lock", async (t) => {
+  let attempts = 0;
+  const owner = JSON.stringify({ token: "persistent-owner" });
+  const temporary = await temporaryLedger(t, {
+    lockTimeoutMs: 10,
+    lockRetryMs: 1,
+    lockRuntime: {
+      platform: "win32",
+      open: async (candidate) => {
+        attempts += 1;
+        await writeFile(candidate, owner, "utf8");
+        throw windowsOpenPermissionError(candidate);
+      },
+    },
+  });
+
+  await assert.rejects(temporary.ledger.append(event()), /Timed out acquiring usage ledger lock/);
+  assert.ok(attempts > 1);
+  assert.equal(await readFile(`${temporary.path}.lock`, "utf8"), owner);
+});
+
+test("does not retry unconfirmed or non-Windows EPERM failures", async (t) => {
+  for (const scenario of [
+    { name: "missing lock path", platform: "win32", owner: undefined },
+    { name: "malformed lock owner", platform: "win32", owner: "{}" },
+    { name: "non-Windows platform", platform: "linux", owner: JSON.stringify({ token: "concurrent-owner" }) },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      let path;
+      let attempts = 0;
+      const failure = windowsOpenPermissionError("pending");
+      const temporary = await temporaryLedger(t, {
+        lockRuntime: {
+          platform: scenario.platform,
+          open: async (candidate) => {
+            attempts += 1;
+            failure.path = candidate;
+            if (scenario.owner !== undefined) await writeFile(candidate, scenario.owner, "utf8");
+            throw failure;
+          },
+        },
+      });
+      path = temporary.path;
+
+      await assert.rejects(temporary.ledger.append(event()), (error) => error === failure);
+      assert.equal(attempts, 1);
+      assert.equal(failure.path, `${path}.lock`);
+    });
+  }
 });
 
 test("bounds reads and recent sanitized output", async (t) => {
@@ -254,5 +585,13 @@ function runChild(source, path, prefix) {
       if (code === 0) resolvePromise();
       else reject(new Error(`usage ledger child ${prefix} exited ${code}: ${stderr}`));
     });
+  });
+}
+
+function windowsOpenPermissionError(path) {
+  return Object.assign(new Error(`EPERM: operation not permitted, open '${path}'`), {
+    code: "EPERM",
+    syscall: "open",
+    path,
   });
 }

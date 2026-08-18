@@ -43,40 +43,62 @@ Remove only the managed block:
 node src/cli.mjs codex uninstall
 ```
 
+## Explicit optional full-access policy
+
+The portable installer also exposes `codex-full-access`. This component is never a default and is never included by `selection: "all"`; it can be selected only by its exact ID or the setup window's initially unchecked warning checkbox.
+
+When selected, Threadspan applies this policy to the selected host's user-level `$CODEX_HOME/config.toml`:
+
+```toml
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+approvals_reviewer = "user"
+
+[apps._default]
+approvals_reviewer = "user"
+default_tools_approval_mode = "approve"
+```
+
+It also sets `approvals_reviewer = "user"` and `default_tools_approval_mode = "approve"` in every existing `[apps.<id>]` table, and sets `default_tools_approval_mode = "approve"` in every existing `[mcp_servers.<id>]` and `[plugins.<plugin>.mcp_servers.<server>]` table. Per-tool approval overrides are deliberately left untouched and reported as residual conflicts.
+
+This removes command approval pauses and command sandboxing and preapproves app/MCP tools. It does not set `destructive_enabled`, `open_world_enabled`, tool enablement, app enablement, plugin enablement, or server enablement. The transform preserves comments, order, and unrelated TOML and fails closed on duplicate or ambiguous target tables/keys. Plans, previews, manifests, and logs contain only setting names, the target path, hashes, modes, effects, and bounded conflict descriptors—not raw config, tokens, headers, or credential values.
+
+Codex loads user-level configuration from `~/.codex/config.toml` by default and may layer trusted project `.codex/config.toml`, a selected profile, and CLI flags over it. Threadspan does not overwrite those project/profile/CLI layers, so they remain visible residual overrides where applicable. Per-tool app/MCP values also retain their narrower precedence. Review the [official Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) for current key definitions and layer behavior.
+
 ## Generated provider
 
 The block creates a custom model provider similar to:
 
 ```toml
-[model_providers.cursor_bridge]
-name = "Cursor Codex Bridge"
+[model_providers.threadspan_bridge]
+name = "Threadspan Bridge"
 base_url = "http://127.0.0.1:8743/v1"
-env_key = "CURSOR_BRIDGE_TOKEN"
+env_key = "THREADSPAN_TOKEN"
 wire_api = "responses"
-request_max_retries = 2
-stream_max_retries = 3
+request_max_retries = 0
+stream_max_retries = 0
 stream_idle_timeout_ms = 1800000
 ```
 
 Current Codex configuration supports custom provider `base_url`, environment-key auth, and the Responses wire API. The daemon must be running before a model-provider profile is used.
 
-## Generated profiles
+## Generated profile documents
 
 ```toml
-[profiles.bridge_consult]
-model_provider = "cursor_bridge"
+# threadspan_consult.config.toml
+model_provider = "threadspan_bridge"
 model = "consult/cursor-ultra/auto"
 
-[profiles.bridge_integrated]
-model_provider = "cursor_bridge"
-model = "integrated/nous/Hermes-4-70B"
+# threadspan_integrated.config.toml
+model_provider = "threadspan_bridge"
+model = "integrated/nous/deepseek/deepseek-v4-flash-0731"
 
-[profiles.bridge_delegate]
-model_provider = "cursor_bridge"
-model = "delegate/cursor-ultra/auto"
+# threadspan_delegate.config.toml
+model_provider = "threadspan_bridge"
+model = "delegate/grok-build/grok-4.6"
 ```
 
-These routes are configuration defaults, not hard-coded provider requirements. Re-run `codex install` with explicit choices when needed:
+These standalone profile documents are installed beside `config.toml`; Threadspan does not emit legacy inline `[profiles.*]` tables. The routes are configuration defaults, not hard-coded provider requirements. Re-run `codex install` with explicit choices when needed:
 
 ```bash
 node src/cli.mjs codex install \
@@ -89,7 +111,7 @@ node src/cli.mjs codex install \
 ### Recommended use
 
 - Use **MCP + skill** for Consult. It keeps the primary Codex model in charge and supplies a compact current-thread packet.
-- Use `bridge_integrated` when you intentionally want the external raw model to become the active model under Codex's tool loop.
+- Use `threadspan_integrated.config.toml` when you intentionally want the external raw model to become the active model under Codex's tool loop.
 - Use MCP `delegate` rather than making Delegate the active model profile unless a specific client workflow benefits from the Responses route.
 
 Profile selection and exact CLI flags can evolve. The installed TOML is the stable artifact; inspect the current Codex CLI help on the target machine for the invocation syntax supported by that version.
@@ -99,14 +121,14 @@ Profile selection and exact CLI flags can evolve. The installed TOML is the stab
 ```toml
 [mcp_servers.consult]
 command = "/absolute/path/to/node"
-args = ["/absolute/path/to/src/cli.mjs", "mcp", "--config", "/absolute/path/to/config.jsonc", "--remote", "http://127.0.0.1:8743"]
+args = ["/absolute/path/to/src/cli.mjs", "mcp", "--config", "/absolute/path/to/config.jsonc", "--remote", "http://127.0.0.1:8743/mcp", "--token-file", "/absolute/path/to/threadspan-connector-token"]
 startup_timeout_sec = 30
 tool_timeout_sec = 7200
 ```
 
 The long tool timeout is intentional: Cursor/agent delegation may be long-running. The MCP server itself remains cancellable. Adjust the timeout in Codex config if the local policy should be stricter.
 
-The MCP entry launches a tiny dedicated stdio process, but by default that process forwards to the same HTTP daemon used by the Responses profiles. This centralizes Grok admission/ledgers, retained Cursor agents, and thread state across multiple Desktop coordinators. Install with `--embedded-mcp` only when an intentionally independent bridge inside each MCP process is desired. The stdio shim itself exposes no additional TCP port.
+The MCP entry launches a tiny dedicated stdio process, but by default that process forwards to the same HTTP daemon used by the Responses profiles. The remote shim is restricted to `/mcp` and reads a connector-only bearer from `--token-file`; it must never reuse the daemon owner token file. This centralizes Grok admission/ledgers, retained Cursor agents, and thread state across multiple Desktop coordinators. Install with `--embedded-mcp` only when an intentionally independent bridge inside each MCP process is desired. The stdio shim itself exposes no additional TCP port.
 
 ## Multiple Desktop coordinators
 
@@ -178,7 +200,7 @@ The package deliberately does not install a custom `model_catalog_json`. The bri
 
 Codex sends the environment variable named by `env_key` as a bearer token. The bridge compares it against the process environment variable named by `server.authTokenEnv`.
 
-Set the token in the environment that launches both Codex and the daemon. The default MCP shim traverses loopback HTTP and therefore follows the daemon's auth policy. Only `--embedded-mcp` avoids that HTTP hop; unauthenticated loopback remains an explicit server setting, not an assumption.
+Set the owner token in the environment that launches both Codex and the daemon. The default MCP shim traverses loopback HTTP with the distinct connector token file configured by `server.connectorTokenFile`; it never receives the owner token. Only `--embedded-mcp` avoids that HTTP hop; unauthenticated loopback remains an explicit server setting, not an assumption.
 
 ## Failure diagnosis
 

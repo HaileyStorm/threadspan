@@ -2,6 +2,13 @@ import { ProviderAdapter, resolveApiKey } from "./base.mjs";
 import { ProviderError } from "../core/errors.mjs";
 import { toOpenAiChatMessages, toOpenAiChatTools } from "../core/input-normalizer.mjs";
 
+export const OPENAI_ACCOUNT_FALLBACK_POLICY = Object.freeze({
+  errorContract: "provider-error-upstream",
+  safeBeforeOutput: true,
+  safeBeforeSideEffects: true,
+  httpStatuses: Object.freeze([429]),
+});
+
 /** OpenAI-compatible Chat Completions adapter with streaming and tool-call translation. */
 export class OpenAiChatProvider extends ProviderAdapter {
   capabilities() {
@@ -9,9 +16,21 @@ export class OpenAiChatProvider extends ProviderAdapter {
     return {
       ...base,
       tools: true,
-      images: this.config.images === true,
+      images: false,
       durableThreads: false,
+      userFacingProsePolicy: true,
     };
+  }
+
+  /** Keep style policy transient; it is rendered only into this upstream request, never replay state. */
+  attachUserFacingProsePolicy(request, policy) {
+    if (request.mode !== "consult") return request;
+    return { ...request, userFacingProsePolicy: structuredClone(policy) };
+  }
+
+  /** Certify the narrow HTTP failure class eligible for opt-in account fallback. */
+  accountFallbackPolicy() {
+    return OPENAI_ACCOUNT_FALLBACK_POLICY;
   }
 
   async listModels() {
@@ -42,24 +61,41 @@ export class OpenAiChatProvider extends ProviderAdapter {
         yield event;
       }
     } catch (error) {
-      if (emittedMeaningfulEvent || this.config.retryWithoutStreaming === false) throw error;
+      if (emittedMeaningfulEvent
+        || this.config.retryWithoutStreaming === false
+        || error?.details?.upstream?.safeToRetryWithoutStreaming !== true) throw error;
       this.logger.warn("Streaming request failed before output; retrying without upstream streaming", {
         error: error instanceof Error ? error.message : String(error),
       });
       yield { type: "warning", message: "Upstream streaming failed; retried as a buffered request." };
-      yield* this.#runNonStreaming({ ...body, stream: false }, request.signal);
+      try {
+        yield* this.#runNonStreaming({ ...body, stream: false }, request.signal);
+      } catch (retryError) {
+        if (retryError?.details?.upstream && typeof retryError.details.upstream === "object") {
+          retryError.details.upstream.safeToFallbackBeforeOutput = false;
+        }
+        throw retryError;
+      }
     }
   }
 
   /** Build the provider-specific Chat Completions request body. */
   buildRequestBody(request) {
     const tools = request.mode === "integrated" ? toOpenAiChatTools(request.tools) : undefined;
+    const messages = toOpenAiChatMessages(request.messages, { developerAsSystem: this.config.developerAsSystem === true });
+    if (typeof request.userFacingProsePolicy?.instruction === "string") {
+      const role = "system";
+      let insertionIndex = 0;
+      while (insertionIndex < messages.length && ["system", "developer"].includes(messages[insertionIndex].role)) insertionIndex += 1;
+      messages.splice(insertionIndex, 0, { role, content: request.userFacingProsePolicy.instruction });
+    }
     const body = {
       model: request.model,
-      messages: toOpenAiChatMessages(request.messages, { developerAsSystem: this.config.developerAsSystem === true }),
+      messages,
       stream: this.config.streaming !== false,
       ...(tools ? { tools } : {}),
       ...(request.toolChoice && tools ? { tool_choice: normalizeToolChoice(request.toolChoice) } : {}),
+      ...(typeof request.parallelToolCalls === "boolean" && tools ? { parallel_tool_calls: request.parallelToolCalls } : {}),
       ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
       ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
       ...(this.config.extraBody && typeof this.config.extraBody === "object" ? this.config.extraBody : {}),
@@ -82,6 +118,7 @@ export class OpenAiChatProvider extends ProviderAdapter {
     const toolCalls = new Map();
     let text = "";
     let reasoningContent = "";
+    let reasoningDetails;
     let usage;
     let finishReason;
     let providerMetadata;
@@ -101,6 +138,7 @@ export class OpenAiChatProvider extends ProviderAdapter {
       finishReason ??= choice.finish_reason ?? undefined;
       const delta = choice.delta ?? {};
       const reasoningDelta = delta.reasoning_content ?? delta.reasoning ?? delta.thinking;
+      if (Array.isArray(delta.reasoning_details)) reasoningDetails = structuredClone(delta.reasoning_details);
       if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
         reasoningContent += reasoningDelta;
         yield { type: "reasoning-delta", delta: reasoningDelta };
@@ -141,6 +179,7 @@ export class OpenAiChatProvider extends ProviderAdapter {
         role: "assistant",
         content: text,
         ...(reasoningContent ? { reasoningContent } : {}),
+        ...(reasoningDetails ? { reasoningDetails } : {}),
         ...(completedToolCalls.length > 0 ? { toolCalls: completedToolCalls } : {}),
       },
       usage,
@@ -162,6 +201,7 @@ export class OpenAiChatProvider extends ProviderAdapter {
     const choice = payload.choices?.[0] ?? {};
     const message = choice.message ?? {};
     const reasoningContent = message.reasoning_content ?? message.reasoning ?? message.thinking;
+    const reasoningDetails = Array.isArray(message.reasoning_details) ? structuredClone(message.reasoning_details) : undefined;
     const text = typeof message.content === "string" ? message.content : renderNonStringContent(message.content);
     if (reasoningContent) yield { type: "reasoning-delta", delta: String(reasoningContent) };
     if (text) yield { type: "text-delta", delta: text };
@@ -180,6 +220,7 @@ export class OpenAiChatProvider extends ProviderAdapter {
         role: "assistant",
         content: text,
         ...(reasoningContent ? { reasoningContent: String(reasoningContent) } : {}),
+        ...(reasoningDetails ? { reasoningDetails } : {}),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
       },
       usage,
@@ -189,23 +230,39 @@ export class OpenAiChatProvider extends ProviderAdapter {
 
   #headers() {
     const apiKey = resolveApiKey(this.config);
+    const binding = this.accountBinding();
+    const requiresAccountCredential = binding?.isolated === true && ["api-key-env", "secret-file-ref"].includes(binding.authKind);
+    if (requiresAccountCredential && !apiKey) {
+      throw new ProviderError(this.id, "Account-specific API credential is unavailable", { retryable: false });
+    }
+    const configured = { ...(this.config.headers ?? {}) };
+    if (apiKey || requiresAccountCredential) {
+      for (const key of Object.keys(configured)) {
+        if (key.toLowerCase() === "authorization") delete configured[key];
+      }
+    }
     return {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
+      ...configured,
       ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-      ...(this.config.headers && typeof this.config.headers === "object" ? this.config.headers : {}),
     };
   }
 
   async #httpError(response, prefix) {
     const text = await response.text().catch(() => "");
-    let details = text;
-    try { details = text ? JSON.parse(text) : undefined; } catch {}
+    let body = text;
+    try { body = text ? JSON.parse(text) : undefined; } catch {}
     const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
     return new ProviderError(this.id, `${prefix}: HTTP ${response.status}${text ? ` — ${truncate(text, 800)}` : ""}`, {
       status: response.status === 401 || response.status === 403 ? 502 : response.status,
       retryable,
-      details,
+      details: {
+        httpStatus: response.status,
+        safeToFallbackBeforeOutput: response.status === 429,
+        safeToRetryWithoutStreaming: isStreamingUnsupported(response.status, text),
+        ...(body === undefined ? {} : { body }),
+      },
     });
   }
 }
@@ -278,6 +335,11 @@ function renderNonStringContent(content) {
 
 function truncate(text, max) {
   return text.length <= max ? text : `${text.slice(0, max)}…`;
+}
+
+function isStreamingUnsupported(status, text) {
+  if (![400, 404, 405, 415, 422].includes(status)) return false;
+  return /(?:stream(?:ing)?).{0,80}(?:not supported|unsupported|unavailable|disabled)|(?:not supported|unsupported|unavailable|disabled).{0,80}(?:stream(?:ing)?)/is.test(text);
 }
 
 /** Parse data fields from an SSE byte stream. */
