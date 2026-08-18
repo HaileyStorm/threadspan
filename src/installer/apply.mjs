@@ -75,6 +75,7 @@ function previewOperation(operation) {
 export async function applyInstallerPlan(plan, options) {
   validatePlan(plan);
   if (!options || options.approvedDigest !== plan.digest) throw new Error("Installer apply requires the digest from previewInstallerPlan");
+  if (options.checkpoint && !process.env.NODE_TEST_CONTEXT) throw new Error("Installer component checkpoints are restricted to the offline Node test harness");
 
   const root = await canonicalInstallRoot(plan.installRoot);
   const targets = plan.operations.map((operation) => resolveOperationTarget(root, operation, options));
@@ -83,7 +84,16 @@ export async function applyInstallerPlan(plan, options) {
   assertDistinctTargets(targets.map(({ path }) => path));
   await assertSafeTarget(root, manifestPath);
   await assertSafeTarget(root, backupRoot, { directoryTarget: true });
-  if (await safeLstat(manifestPath)) throw new Error(`Installer plan id already has a rollback manifest: ${plan.planId}`);
+  if (await safeLstat(manifestPath)) {
+    const manifest = parseInstallerManifest(await readFile(manifestPath));
+    await assertInstallerManifestMatchesPlan(manifest, plan, root);
+    if (manifest.status === "applied") {
+      await assertInstallerPlanApplied(plan, root, options);
+      return installerApplyReceipt(plan, manifestPath, manifest.entries, root);
+    }
+    if (manifest.status === "prepared") return resumeInstallerPlan(plan, options, root, manifestPath, manifest);
+    throw new Error(`Installer plan id already has a rollback manifest: ${plan.planId}`);
+  }
   if (await safeLstat(backupRoot)) throw new Error(`Installer plan id already has a backup directory: ${plan.planId}`);
 
   const entries = [];
@@ -114,11 +124,11 @@ export async function applyInstallerPlan(plan, options) {
     entries.push({
       component: operation.component,
       target: displayTarget,
+      originalMode,
       ...(operation.operationKind === "codex-config-transform" ? {
         targetKind: "codex-user-config",
         transformId: operation.transformId,
         expectedNextSha256: operation.expectedNextSha256,
-        originalMode,
         conflicts: operation.conflicts ?? [],
       } : {}),
       existed: Boolean(existing),
@@ -160,10 +170,12 @@ export async function applyInstallerPlan(plan, options) {
         ? { strictMode: true, beforeRename: async () => { await materializeCodexTransform(path, operation, entry); } }
         : {});
       written.push(path);
+      await options.checkpoint?.(`component-written:${operation.component}`);
     }
     manifest.status = "applied";
     await atomicJsonWrite(manifestPath, manifest, 0o600);
   } catch (error) {
+    if (error?.simulatedProcessExit === true) throw error;
     const writtenTargets = new Set(written);
     const rollbackErrors = await restoreEntries(root, entries.filter((entry) => writtenTargets.has(resolveEntryTarget(root, entry))));
     manifest.status = rollbackErrors.length === 0 ? "rolled-back-after-error" : "rollback-incomplete";
@@ -177,6 +189,135 @@ export async function applyInstallerPlan(plan, options) {
   }
 
   return { planId: plan.planId, digest: plan.digest, manifestPath, backups, written };
+}
+
+/** Pure durable-state validation for a completed component apply; runs no mutation or command. */
+export async function validateInstallerAppliedState(plan, options = {}) {
+  validatePlan(plan);
+  const root = await canonicalInstallRoot(plan.installRoot);
+  const manifestPath = boundedPath(root, plan.rollbackManifest);
+  await assertSafeTarget(root, manifestPath);
+  const stats = await safeLstat(manifestPath);
+  if (!stats?.isFile() || stats.isSymbolicLink()) throw new Error("Applied component manifest is unavailable");
+  const manifest = parseInstallerManifest(await readFile(manifestPath));
+  if (manifest.status !== "applied") throw new Error(`Component child durable state is ${manifest.status}, not applied`);
+  await assertInstallerManifestMatchesPlan(manifest, plan, root);
+  await assertInstallerPlanApplied(plan, root, options);
+  return true;
+}
+
+/** Create an exact, separately approved component uninstall plan from an applied manifest. */
+export async function createInstallerUninstallPlan(manifestPath, options = {}) {
+  const resolvedManifest = resolve(manifestPath);
+  await assertAbsoluteTargetSafe(resolvedManifest);
+  const stats = await lstat(resolvedManifest);
+  if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Installer rollback manifest must be a regular file");
+  const bytes = await readFile(resolvedManifest);
+  const manifest = parseInstallerManifest(bytes);
+  if (!['applied', 'uninstalling', 'uninstall-incomplete'].includes(manifest.status)) {
+    throw new Error(`Installer manifest is not uninstallable while ${manifest.status}`);
+  }
+  const root = await canonicalInstallRoot(manifest.installRoot);
+  const expectedPath = boundedPath(root, `.threadspan-installer/rollbacks/${manifest.planId}.json`);
+  if (canonicalPathKey(await realpath(resolvedManifest)) !== canonicalPathKey(await realpath(expectedPath))) {
+    throw new Error("Installer rollback manifest is outside its canonical install root");
+  }
+  const entries = [];
+  for (const entry of manifest.entries) {
+    const target = resolveEntryTarget(root, entry);
+    if (entry.targetKind === "codex-user-config") await assertSafeCodexTarget(target);
+    else await assertSafeTarget(root, target);
+    const targetStats = await safeLstat(target);
+    if (!targetStats?.isFile() || targetStats.isSymbolicLink()) throw new Error(`Installed component target is unavailable: ${entry.component}`);
+    const installedSha256 = await sha256File(target);
+    const installedMode = targetStats.mode & 0o777;
+    if (entry.existed) {
+      const backup = boundedPath(root, entry.backup);
+      const backupStats = await safeLstat(backup);
+      if (!backupStats?.isFile() || backupStats.isSymbolicLink() || await sha256File(backup) !== entry.originalSha256) {
+        throw new Error(`Installer preimage backup changed: ${entry.component}`);
+      }
+    }
+    entries.push({ ...entry, installedSha256, installedMode });
+  }
+  const basePlan = {
+    schemaVersion: 1,
+    kind: "threadspan-component-uninstall",
+    planId: normalizeUninstallPlanId(options.planId ?? `uninstall-${manifest.planId}`),
+    installPlanId: manifest.planId,
+    installPlanDigest: manifest.planDigest,
+    installRoot: root,
+    manifestPath: resolvedManifest,
+    manifestSha256: sha256Bytes(bytes),
+    entries,
+  };
+  return Object.freeze({ ...basePlan, digest: computeComponentUninstallPlanDigest(basePlan) });
+}
+
+/** Preview the exact component preimages restored by an uninstall plan. */
+export function previewInstallerUninstallPlan(plan) {
+  validateComponentUninstallPlan(plan);
+  return {
+    digest: plan.digest,
+    text: `Threadspan component uninstall plan ${plan.planId}\nInstall plan: ${plan.installPlanId}\nRestores:\n${plan.entries.map((entry) => `  ${entry.component}: ${entry.target} (${entry.existed ? "exact preimage" : "remove installed file"})`).join("\n")}\nApproval digest: ${plan.digest}\n`,
+  };
+}
+
+/** Apply an exact component uninstall and retain a sanitized terminal replay receipt. */
+export async function applyInstallerUninstallPlan(plan, options) {
+  validateComponentUninstallPlan(plan);
+  if (!options || options.approvedDigest !== plan.digest) throw new Error("Component uninstall requires the digest from previewInstallerUninstallPlan");
+  if (options.checkpoint && !process.env.NODE_TEST_CONTEXT) throw new Error("Component uninstall checkpoints are restricted to the offline Node test harness");
+  const root = await canonicalInstallRoot(plan.installRoot);
+  const expectedManifestPath = boundedPath(root, `.threadspan-installer/rollbacks/${plan.installPlanId}.json`);
+  if (canonicalPathKey(resolve(plan.manifestPath)) !== canonicalPathKey(expectedManifestPath)) {
+    throw new Error("Component uninstall manifest path is outside its canonical install root");
+  }
+  await assertSafeTarget(root, plan.manifestPath);
+  const manifestStats = await safeLstat(plan.manifestPath);
+  if (!manifestStats?.isFile() || manifestStats.isSymbolicLink()) throw new Error("Installer rollback manifest must be a regular file");
+  const manifestBytes = await readFile(plan.manifestPath);
+  const manifest = parseInstallerManifest(manifestBytes);
+  if (manifest.status === "uninstalled") return readTerminalInstallerUninstallReceipt(plan, manifest, root);
+  const manifestHashMatchesPreview = sha256Bytes(manifestBytes) === plan.manifestSha256;
+  if (!manifestHashMatchesPreview && (!manifest.activeUninstall
+    || manifest.activeUninstall.planId !== plan.planId || manifest.activeUninstall.digest !== plan.digest
+    || manifest.activeUninstall.approvedManifestSha256 !== plan.manifestSha256
+    || !["uninstalling", "uninstall-incomplete"].includes(manifest.status))) {
+    throw new Error("Installer rollback manifest changed after uninstall preview");
+  }
+  if (!['applied', 'uninstalling', 'uninstall-incomplete'].includes(manifest.status)
+    || manifest.planId !== plan.installPlanId || manifest.planDigest !== plan.installPlanDigest) {
+    throw new Error("Installer rollback manifest does not match the approved uninstall plan");
+  }
+  const projection = manifest.entries.map((entry) => {
+    const approved = plan.entries.find((candidate) => candidate.target === entry.target);
+    return approved ? { ...entry, installedSha256: approved.installedSha256, installedMode: approved.installedMode } : null;
+  });
+  if (projection.some((entry) => entry === null) || stableStringify(projection) !== stableStringify(plan.entries)) {
+    throw new Error("Installer uninstall operations differ from the approved preview");
+  }
+  manifest.status = "uninstalling";
+  manifest.activeUninstall = { planId: plan.planId, digest: plan.digest, approvedManifestSha256: plan.manifestSha256 };
+  await atomicJsonWrite(plan.manifestPath, manifest, 0o600);
+  await options.checkpoint?.("component-uninstalling-persisted");
+  const restoreErrors = await restoreInstallerUninstallEntries(root, plan.entries);
+  if (restoreErrors.length > 0) {
+    manifest.status = "uninstall-incomplete";
+    manifest.uninstallErrors = restoreErrors;
+    await atomicJsonWrite(plan.manifestPath, manifest, 0o600);
+    throw new AggregateError([], `Component uninstall could not restore: ${restoreErrors.map((item) => item.component).join(", ")}`);
+  }
+  const receipt = componentUninstallReceipt(plan);
+  manifest.status = "uninstalled";
+  manifest.terminalUninstallReceipt = receipt;
+  manifest.terminalUninstallPlan = {
+    planId: plan.planId,
+    digest: plan.digest,
+    manifestSha256: plan.manifestSha256,
+  };
+  await atomicJsonWrite(plan.manifestPath, manifest, 0o600);
+  return receipt;
 }
 
 /** Render the exact service lifecycle files and command phases covered by its approval digest. */
@@ -208,6 +349,9 @@ export function previewDaemonServicePlan(plan) {
  * values, absolute paths, PIDs, ports, and private runtime telemetry.
  */
 export async function applyDaemonServicePlan(plan, options) {
+  if (plan?.platform !== process.platform && typeof options?.commandRunner !== "function") {
+    throw new Error(`Daemon lifecycle plan platform ${plan?.platform} does not match native platform ${process.platform}`);
+  }
   validateDaemonServicePlan(plan);
   if (!options || options.approvedDigest !== plan.digest) throw new Error("Daemon lifecycle apply requires the digest from previewDaemonServicePlan");
   assertLifecycleRunnerPolicy(options);
@@ -220,6 +364,22 @@ export async function applyDaemonServicePlan(plan, options) {
   } finally {
     await releaseLifecycleClaim(claim);
   }
+}
+
+/** Pure durable-state validation for a completed service apply; runs no lifecycle command. */
+export async function validateDaemonServiceAppliedState(plan) {
+  validateDaemonServicePlan(plan);
+  const stateRoot = resolve(plan.stateRoot);
+  await assertAbsoluteTargetSafe(stateRoot, { directoryTarget: true });
+  const manifestPath = resolve(stateRoot, "manifests", `${plan.planId}.json`);
+  await assertAbsoluteTargetSafe(manifestPath);
+  const stats = await safeLstat(manifestPath);
+  if (!stats?.isFile() || stats.isSymbolicLink()) throw new Error("Applied service manifest is unavailable");
+  const manifest = parseLifecycleManifest(await readFile(manifestPath));
+  if (manifest.status !== SERVICE_PENDING_RUNTIME_STATUS) throw new Error(`Service child durable state is ${manifest.status}, not applied`);
+  assertLifecycleManifestMatchesPlan(manifest, plan);
+  await assertEntriesInState(manifest.entries, "installed");
+  return true;
 }
 
 async function applyDaemonServicePlanClaimed(plan, options) {
@@ -300,6 +460,7 @@ async function applyDaemonServicePlanClaimed(plan, options) {
     }
     manifest.status = "activating";
     await atomicJsonWrite(manifestPath, manifest, 0o600);
+    await options.beforeActivation?.();
     await lifecycleCheckpoint(options, "activation-ownership-began");
     activationOwnershipBegan = true;
     commandReceipts.push(...await runLifecyclePhase(plan.commands.activate, runCommand, "activate"));
@@ -337,6 +498,7 @@ async function applyDaemonServicePlanClaimed(plan, options) {
 /** Create a separately digest-bound uninstall plan from a completed local lifecycle manifest. */
 export async function createDaemonServiceUninstallPlan(manifestPath, options = {}) {
   const resolvedManifest = resolve(manifestPath);
+  await assertAbsoluteTargetSafe(resolvedManifest);
   const manifestStats = await lstat(resolvedManifest);
   if (!manifestStats.isFile() || manifestStats.isSymbolicLink()) throw new Error("Daemon lifecycle manifest must be a regular canonical file");
   const bytes = await readFile(resolvedManifest);
@@ -381,6 +543,9 @@ export function previewDaemonServiceUninstallPlan(plan) {
 
 /** Apply a digest-bound service uninstall, restoring every exact preimage recorded at install. */
 export async function applyDaemonServiceUninstallPlan(plan, options) {
+  if (plan?.platform !== process.platform && typeof options?.commandRunner !== "function") {
+    throw new Error(`Daemon lifecycle uninstall platform ${plan?.platform} does not match native platform ${process.platform}`);
+  }
   validateUninstallPlan(plan);
   if (!options || options.approvedDigest !== plan.digest) throw new Error("Daemon lifecycle uninstall requires the digest from previewDaemonServiceUninstallPlan");
   assertLifecycleRunnerPolicy(options);
@@ -401,8 +566,14 @@ async function applyDaemonServiceUninstallPlanClaimed(plan, options) {
   validateUninstallPlan(plan);
   if (!options || options.approvedDigest !== plan.digest) throw new Error("Daemon lifecycle uninstall requires the digest from previewDaemonServiceUninstallPlan");
   const manifestBytes = await readFile(plan.manifestPath);
-  if (sha256Bytes(manifestBytes) !== plan.manifestSha256) throw new Error("Daemon lifecycle manifest changed after uninstall preview");
   const manifest = parseLifecycleManifest(manifestBytes);
+  const manifestHashMatchesPreview = sha256Bytes(manifestBytes) === plan.manifestSha256;
+  if (!manifestHashMatchesPreview && (!manifest.activeUninstall
+    || manifest.activeUninstall.planId !== plan.planId || manifest.activeUninstall.digest !== plan.digest
+    || manifest.activeUninstall.approvedManifestSha256 !== plan.manifestSha256
+    || ![SERVICE_PENDING_RUNTIME_STATUS, "uninstalling", "uninstall-incomplete"].includes(manifest.status))) {
+    throw new Error("Daemon lifecycle manifest changed after uninstall preview");
+  }
   const expectedManifestPath = resolve(manifest.stateRoot, "manifests", `${manifest.planId}.json`);
   if (resolve(plan.manifestPath) !== expectedManifestPath || resolve(plan.stateRoot) !== resolve(manifest.stateRoot)) {
     throw new Error("Daemon lifecycle uninstall manifest path or state root is not canonical");
@@ -443,6 +614,7 @@ async function applyDaemonServiceUninstallPlanClaimed(plan, options) {
   const ownership = await inspectLifecycleOwnership(ownershipPlan, runCommand, { expected: manifest.status === SERVICE_PENDING_RUNTIME_STATUS ? "present" : "any" });
   await validateLifecycleUninstallEntries(manifest.entries, { allowRestored: manifest.status !== SERVICE_PENDING_RUNTIME_STATUS });
   manifest.status = "uninstalling";
+  manifest.activeUninstall = { planId: plan.planId, digest: plan.digest, approvedManifestSha256: plan.manifestSha256 };
   await atomicJsonWrite(plan.manifestPath, manifest, 0o600);
   await lifecycleCheckpoint(options, "uninstalling-persisted");
   const uninstallCommandReceipts = [];
@@ -609,11 +781,7 @@ async function restoreEntries(root, entries) {
       if (entry.targetKind === "codex-user-config") await assertSafeCodexTarget(target);
       if (entry.existed) {
         const backup = boundedPath(root, entry.backup);
-        if (entry.targetKind === "codex-user-config") {
-          await atomicWrite(target, await readFile(backup), entry.originalMode, { strictMode: true });
-        } else {
-          await atomicCopy(backup, target);
-        }
+        await atomicWrite(target, await readFile(backup), entry.originalMode, { strictMode: true });
       } else {
         await rm(target, { force: true });
       }
@@ -624,11 +792,223 @@ async function restoreEntries(root, entries) {
   return errors;
 }
 
+function parseInstallerManifest(bytes) {
+  const manifest = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.planId !== "string"
+    || !/^[0-9a-f]{64}$/.test(manifest.planDigest ?? "") || typeof manifest.installRoot !== "string"
+    || !isAbsolute(manifest.installRoot) || !Array.isArray(manifest.entries)
+    || !["prepared", "applied", "rolled-back-after-error", "rollback-incomplete", "uninstalling", "uninstall-incomplete", "uninstalled"].includes(manifest.status)) {
+    throw new Error("Invalid installer rollback manifest");
+  }
+  for (const entry of manifest.entries) {
+    if (!entry || typeof entry.component !== "string" || typeof entry.target !== "string" || typeof entry.existed !== "boolean"
+      || !(entry.originalSha256 === undefined || entry.originalSha256 === null || /^[0-9a-f]{64}$/.test(entry.originalSha256))
+      || (entry.existed && (typeof entry.backup !== "string" || !Number.isInteger(entry.originalMode)))) {
+      throw new Error("Invalid installer rollback manifest entry");
+    }
+  }
+  return manifest;
+}
+
+async function assertInstallerManifestMatchesPlan(manifest, plan, root) {
+  if (manifest.planId !== plan.planId || manifest.planDigest !== plan.digest
+    || canonicalPathKey(resolve(manifest.installRoot)) !== canonicalPathKey(root)) {
+    throw new Error("Durable component installer state does not match the approved plan");
+  }
+  const expectedTargets = plan.operations.map((operation) => operation.targetPath ?? operation.relativePath);
+  if (stableStringify(manifest.entries.map((entry) => entry.target)) !== stableStringify(expectedTargets)) {
+    throw new Error("Durable component installer targets do not match the approved plan");
+  }
+}
+
+async function assertInstallerPlanApplied(plan, root, options = {}) {
+  for (const operation of plan.operations) {
+    const path = resolveOperationTarget(root, operation, options).path;
+    const stats = await safeLstat(path);
+    const expectedSha256 = operation.operationKind === "codex-config-transform"
+      ? operation.expectedNextSha256
+      : sha256Bytes(Buffer.from(operation.content, "utf8"));
+    if (!stats?.isFile() || stats.isSymbolicLink() || await sha256File(path) !== expectedSha256
+      || (process.platform !== "win32" && (stats.mode & 0o777) !== operation.mode)) {
+      throw new Error(`Applied component target drifted: ${operation.component}`);
+    }
+  }
+}
+
+async function resumeInstallerPlan(plan, options, root, manifestPath, manifest) {
+  const states = await classifyInstallerEntries(plan, root, manifest.entries, options);
+  if (states.some((item) => item.state === "drift")) {
+    manifest.status = "rollback-incomplete";
+    manifest.error = "Prepared component recovery found target drift";
+    await atomicJsonWrite(manifestPath, manifest, 0o600);
+    throw new Error("Prepared component installer recovery found target drift");
+  }
+  for (const entry of manifest.entries.filter((item) => item.existed)) {
+    const backup = boundedPath(root, entry.backup);
+    const stats = await safeLstat(backup);
+    if (!stats?.isFile() || stats.isSymbolicLink() || await sha256File(backup) !== entry.originalSha256) {
+      manifest.status = "rollback-incomplete";
+      manifest.error = "Prepared component recovery found backup drift";
+      await atomicJsonWrite(manifestPath, manifest, 0o600);
+      throw new Error("Prepared component installer recovery found backup drift");
+    }
+  }
+  try {
+    for (const operation of plan.operations) {
+      const target = operation.targetPath ?? operation.relativePath;
+      const state = states.find((item) => item.entry.target === target);
+      if (state?.state === "installed") continue;
+      const path = resolveOperationTarget(root, operation, options).path;
+      const entry = manifest.entries.find((candidate) => candidate.target === target);
+      const content = operation.operationKind === "codex-config-transform"
+        ? await materializeCodexTransform(path, operation, entry)
+        : operation.content;
+      await atomicWrite(path, content, operation.mode, operation.operationKind === "codex-config-transform" ? { strictMode: true } : {});
+      await options.checkpoint?.(`component-written:${operation.component}`);
+    }
+    manifest.status = "applied";
+    delete manifest.error;
+    await atomicJsonWrite(manifestPath, manifest, 0o600);
+    return installerApplyReceipt(plan, manifestPath, manifest.entries, root);
+  } catch (error) {
+    if (error?.simulatedProcessExit === true) throw error;
+    const currentStates = await classifyInstallerEntries(plan, root, manifest.entries, options);
+    const rollbackErrors = await restoreEntries(root, currentStates.filter((item) => item.state === "installed").map((item) => item.entry));
+    manifest.status = rollbackErrors.length === 0 ? "rolled-back-after-error" : "rollback-incomplete";
+    manifest.error = error instanceof Error ? error.message : String(error);
+    if (rollbackErrors.length > 0) manifest.rollbackErrors = rollbackErrors;
+    await atomicJsonWrite(manifestPath, manifest, 0o600).catch(() => undefined);
+    if (rollbackErrors.length > 0) throw new AggregateError([error], "Component installer resume failed and rollback was incomplete");
+    throw error;
+  }
+}
+
+async function classifyInstallerEntries(plan, root, entries, options) {
+  const results = [];
+  for (const operation of plan.operations) {
+    const target = operation.targetPath ?? operation.relativePath;
+    const entry = entries.find((candidate) => candidate.target === target);
+    if (!entry) { results.push({ entry: { target }, state: "drift" }); continue; }
+    const path = resolveOperationTarget(root, operation, options).path;
+    const stats = await safeLstat(path);
+    if (!stats) {
+      results.push({ entry, state: entry.existed ? "drift" : "preimage" });
+      continue;
+    }
+    if (!stats.isFile() || stats.isSymbolicLink()) { results.push({ entry, state: "drift" }); continue; }
+    const digest = await sha256File(path);
+    const mode = stats.mode & 0o777;
+    const installedSha256 = operation.operationKind === "codex-config-transform"
+      ? operation.expectedNextSha256
+      : sha256Bytes(Buffer.from(operation.content, "utf8"));
+    if (digest === installedSha256 && (process.platform === "win32" || mode === operation.mode)) {
+      results.push({ entry, state: "installed" });
+    } else if (entry.existed && digest === entry.originalSha256 && (process.platform === "win32" || mode === entry.originalMode)) {
+      results.push({ entry, state: "preimage" });
+    } else {
+      results.push({ entry, state: "drift" });
+    }
+  }
+  return results;
+}
+
+function installerApplyReceipt(plan, manifestPath, entries, root = plan.installRoot) {
+  return {
+    planId: plan.planId,
+    digest: plan.digest,
+    manifestPath,
+    backups: entries.filter((entry) => entry.existed).map((entry) => boundedPath(root, entry.backup)),
+    written: entries.map((entry) => resolveEntryTarget(root, entry)),
+  };
+}
+
+async function restoreInstallerUninstallEntries(root, entries) {
+  const errors = [];
+  for (const entry of [...entries].reverse()) {
+    try {
+      const target = resolveEntryTarget(root, entry);
+      if (entry.targetKind === "codex-user-config") await assertSafeCodexTarget(target);
+      else await assertSafeTarget(root, target);
+      const stats = await safeLstat(target);
+      const restored = entry.existed
+        ? stats?.isFile() && !stats.isSymbolicLink() && await sha256File(target) === entry.originalSha256
+          && (process.platform === "win32" || (stats.mode & 0o777) === entry.originalMode)
+        : !stats;
+      if (restored) continue;
+      if (!stats?.isFile() || stats.isSymbolicLink() || await sha256File(target) !== entry.installedSha256
+        || (process.platform !== "win32" && (stats.mode & 0o777) !== entry.installedMode)) {
+        throw new Error("installed target changed after uninstall preview");
+      }
+      if (entry.existed) {
+        const backup = boundedPath(root, entry.backup);
+        const backupBytes = await readFile(backup);
+        if (sha256Bytes(backupBytes) !== entry.originalSha256) throw new Error("preimage backup changed after uninstall preview");
+        await atomicWrite(target, backupBytes, entry.originalMode, { strictMode: true });
+      } else {
+        await rm(target);
+      }
+    } catch (error) {
+      errors.push({ component: entry.component, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return errors;
+}
+
+function computeComponentUninstallPlanDigest(plan) {
+  const { digest: _digest, ...payload } = plan;
+  return sha256Bytes(Buffer.from(stableStringify(payload), "utf8"));
+}
+
+function validateComponentUninstallPlan(plan) {
+  if (!plan || plan.schemaVersion !== 1 || plan.kind !== "threadspan-component-uninstall"
+    || !/^[0-9a-f]{64}$/.test(plan.digest ?? "") || !/^[0-9a-f]{64}$/.test(plan.installPlanDigest ?? "")
+    || !/^[0-9a-f]{64}$/.test(plan.manifestSha256 ?? "") || !isAbsolute(plan.installRoot ?? "")
+    || !isAbsolute(plan.manifestPath ?? "") || !Array.isArray(plan.entries)
+    || plan.entries.some((entry) => !entry || !/^[0-9a-f]{64}$/.test(entry.installedSha256 ?? "") || !Number.isInteger(entry.installedMode))) {
+    throw new TypeError("Invalid component uninstall plan");
+  }
+  if (computeComponentUninstallPlanDigest(plan) !== plan.digest) throw new Error("Component uninstall plan integrity check failed");
+}
+
+function componentUninstallReceipt(plan) {
+  return {
+    schemaVersion: 1,
+    kind: "threadspan-component-uninstall-receipt",
+    status: "uninstalled",
+    planId: plan.planId,
+    digest: plan.digest,
+    installPlanId: plan.installPlanId,
+    installPlanDigest: plan.installPlanDigest,
+    files: plan.entries.map((entry) => ({ component: entry.component, restoredPreimage: true })),
+  };
+}
+
+async function readTerminalInstallerUninstallReceipt(plan, manifest, root) {
+  const transition = manifest.terminalUninstallPlan;
+  const receipt = manifest.terminalUninstallReceipt;
+  if (!transition || transition.planId !== plan.planId || transition.digest !== plan.digest
+    || transition.manifestSha256 !== plan.manifestSha256 || stableStringify(receipt) !== stableStringify(componentUninstallReceipt(plan))) {
+    throw new Error("Terminal component uninstall receipt does not match the approved plan");
+  }
+  for (const entry of plan.entries) {
+    const target = resolveEntryTarget(root, entry);
+    const stats = await safeLstat(target);
+    if (!entry.existed) {
+      if (stats) throw new Error(`Terminal component uninstall target was recreated: ${entry.component}`);
+    } else if (!stats?.isFile() || stats.isSymbolicLink() || await sha256File(target) !== entry.originalSha256
+      || (process.platform !== "win32" && (stats.mode & 0o777) !== entry.originalMode)) {
+      throw new Error(`Terminal component preimage is not restored: ${entry.component}`);
+    }
+  }
+  return receipt;
+}
+
 function resolveEntryTarget(root, entry) {
   return entry.targetKind === "codex-user-config" ? entry.target : boundedPath(root, entry.target);
 }
 
 async function assertSafeCodexTarget(path) {
+  await assertAbsoluteTargetSafe(path);
   const parent = dirname(path);
   const parentStats = await safeLstat(parent);
   if (parentStats?.isSymbolicLink()) throw new Error(`Refusing Codex user config through symbolic-link parent: ${parent}`);
@@ -731,6 +1111,7 @@ async function resumeDaemonServiceApplication(plan, options, runCommand, recover
     }
     manifest.status = "activating";
     await atomicJsonWrite(manifestPath, manifest, 0o600);
+    await options.beforeActivation?.();
     await lifecycleCheckpoint(options, "activation-ownership-began");
     if (activationOwnershipBegan) receipts.push(...await runLifecyclePhase(plan.commands.recover, runCommand, "recover"));
     else {

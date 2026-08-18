@@ -18,12 +18,18 @@ import { Logger } from "./core/logger.mjs";
 import {
   applyDaemonServicePlan,
   applyDaemonServiceUninstallPlan,
+  applyFreshInstallPlan,
+  applyFreshInstallUninstallPlan,
   applyInstallerPlan,
   createDaemonServicePlan,
   createDaemonServiceUninstallPlan,
+  createFreshInstallPlan,
+  createFreshInstallUninstallPlan,
   createInstallerPlan,
   previewDaemonServicePlan,
   previewDaemonServiceUninstallPlan,
+  previewFreshInstallPlan,
+  previewFreshInstallUninstallPlan,
   previewInstallerPlan,
   readDaemonServiceLifecycleClaim,
   resolveDaemonServiceClaimRoot,
@@ -85,6 +91,75 @@ export async function main(argv = process.argv.slice(2)) {
       if (!planPath || !approvedDigest) throw new Error("install apply requires --plan PLAN.json and --approve-digest SHA256");
       const plan = JSON.parse(await readFile(resolve(planPath), "utf8"));
       process.stdout.write(`${JSON.stringify(await applyInstallerPlan(plan, { approvedDigest }), null, 2)}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "fresh-plan") {
+      if (parsed.options.sourceRevision !== undefined) throw new Error("install fresh-plan derives source revision from authenticated provenance; --source-revision is forbidden");
+      const installRoot = valueOption(parsed.options.root);
+      const outputPath = valueOption(parsed.options.output);
+      const configPath = valueOption(parsed.options.config);
+      const ownerTokenPath = valueOption(parsed.options.ownerTokenFile);
+      const connectorTokenPath = valueOption(parsed.options.connectorTokenFile);
+      if (!installRoot || !outputPath || !configPath || !ownerTokenPath || !connectorTokenPath) {
+        throw new Error("install fresh-plan requires --root, --output, --config, --owner-token-file, and --connector-token-file");
+      }
+      const plan = await createFreshInstallPlan({
+        planId: valueOption(parsed.options.planId),
+        platform: valueOption(parsed.options.platform) ?? process.platform,
+        installRoot,
+        configPath,
+        ownerTokenPath,
+        connectorTokenPath,
+        sourceRoot: valueOption(parsed.options.sourceRoot) ?? PACKAGE_ROOT,
+        stateRoot: valueOption(parsed.options.stateRoot),
+        serviceDirectory: valueOption(parsed.options.serviceDirectory),
+        legacyStartupPath: valueOption(parsed.options.legacyStartupPath),
+        componentIds: arrayOption(parsed.options.component).length > 0 ? arrayOption(parsed.options.component) : ["daemon"],
+        ...(arrayOption(parsed.options.provider).length > 0 ? { providerIds: arrayOption(parsed.options.provider) } : {}),
+        taskProtection: { disposition: "manual-confirmed", trusted: false, taskIds: [] },
+      });
+      const destination = await writePlanDocument(outputPath, plan);
+      process.stdout.write(previewFreshInstallPlan(plan).text);
+      process.stdout.write(`Plan file: ${destination}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "fresh-apply") {
+      const planPath = valueOption(parsed.options.plan);
+      const approvedDigest = valueOption(parsed.options.approveDigest);
+      const approvedTaskProtectionDigest = valueOption(parsed.options.approveTaskProtectionDigest);
+      if (!planPath || !approvedDigest || !approvedTaskProtectionDigest) {
+        throw new Error("install fresh-apply requires --plan, --approve-digest, and --approve-task-protection-digest");
+      }
+      const plan = JSON.parse(await readFile(resolve(planPath), "utf8"));
+      const receipt = await applyFreshInstallPlan(plan, {
+        approvedDigest,
+        approvedTaskProtectionDigest,
+        recoverClaimDigest: valueOption(parsed.options.recoverClaimDigest),
+      });
+      process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "fresh-uninstall-plan") {
+      const installPlanPath = valueOption(parsed.options.installPlan);
+      const outputPath = valueOption(parsed.options.output);
+      if (!installPlanPath || !outputPath) throw new Error("install fresh-uninstall-plan requires --install-plan and --output");
+      const installPlan = JSON.parse(await readFile(resolve(installPlanPath), "utf8"));
+      const plan = await createFreshInstallUninstallPlan(installPlan, { planId: valueOption(parsed.options.planId) });
+      const destination = await writePlanDocument(outputPath, plan);
+      process.stdout.write(previewFreshInstallUninstallPlan(plan).text);
+      process.stdout.write(`Plan file: ${destination}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "fresh-uninstall") {
+      const planPath = valueOption(parsed.options.plan);
+      const approvedDigest = valueOption(parsed.options.approveDigest);
+      if (!planPath || !approvedDigest) throw new Error("install fresh-uninstall requires --plan and --approve-digest");
+      const plan = JSON.parse(await readFile(resolve(planPath), "utf8"));
+      const receipt = await applyFreshInstallUninstallPlan(plan, {
+        approvedDigest,
+        recoverClaimDigest: valueOption(parsed.options.recoverClaimDigest),
+      });
+      process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
       return;
     }
     if (command === "install" && subcommand === "service-apply") {
@@ -423,6 +498,10 @@ async function runCodexCommand(subcommand, options, bridgeConfigPath, config) {
 }
 
 async function runInstallerGui(options, config) {
+  if (!["127.0.0.1", "::1", "localhost"].includes(config.server.host)
+    || !Number.isInteger(config.server.port) || config.server.port < 1 || config.server.port > 65535) {
+    throw new Error("Installer GUI refuses plaintext authentication to a non-loopback or invalid daemon endpoint");
+  }
   const tokenEnv = config.server.authTokenEnv ?? "THREADSPAN_TOKEN";
   let token = process.env[tokenEnv];
   const tokenFile = valueOption(options.tokenFile) ?? config.server.authTokenFile;
@@ -762,6 +841,10 @@ Usage:
   threadspan install gui [--root PATH] [--origin codex|grok|cursor|hermes|direct] [--origin-id ID] [--origin-project PATH] [--browser PATH]
   threadspan install plan --root PATH --output PLAN.json [--all|--component ID ...] [--long-context all|NAME ...]
   threadspan install apply --plan PLAN.json --approve-digest SHA256
+  threadspan install fresh-plan --root PATH --config PATH --owner-token-file PATH --connector-token-file PATH --output PLAN.json [--component ID ...] [--provider ID ...] [--source-root PATH] [--service-directory PATH] [--state-root PATH]
+  threadspan install fresh-apply --plan PLAN.json --approve-digest SHA256 --approve-task-protection-digest SHA256 [--recover-claim-digest SHA256]
+  threadspan install fresh-uninstall-plan --install-plan PLAN.json --output PLAN.json
+  threadspan install fresh-uninstall --plan PLAN.json --approve-digest SHA256 [--recover-claim-digest SHA256]
   threadspan install service-plan --root PATH --output PLAN.json --source-revision REVISION --lifecycle-owner OPAQUE_ID [--service-directory PATH] [--state-root PATH] [--legacy-startup-path PATH]
   threadspan install service-apply --plan PLAN.json --approve-digest SHA256 [--recover-claim-digest SHA256]
   threadspan install service-uninstall-plan --manifest PATH --output PLAN.json

@@ -262,7 +262,7 @@ test("Codex full-access apply rejects content drift and a symlinked config paren
   const movedHome = join(root, "moved-codex-home");
   await rename(realHome, movedHome);
   await symlink(redirectedHome, realHome, "dir");
-  await assert.rejects(applyInstallerPlan(symlinkPlan, { approvedDigest: symlinkPlan.digest, environment: symlinkEnvironment }), /symbolic-link parent/);
+  await assert.rejects(applyInstallerPlan(symlinkPlan, { approvedDigest: symlinkPlan.digest, environment: symlinkEnvironment }), /symbolic link|symbolic-link parent/);
   await assert.rejects(readFile(join(redirectedHome, "config.toml")), /ENOENT/);
 });
 
@@ -522,7 +522,7 @@ test("apply requires a preview digest, backs up existing files, and writes a rol
   assert.equal(installed.component, "daemon");
   assert.deepEqual(installed.projectSetting, { preserveMe: true });
   assert.equal(installed.port, 8743);
-  await assert.rejects(applyInstallerPlan(plan, { approvedDigest: preview.digest }), /already has a rollback manifest/);
+  assert.deepEqual(await applyInstallerPlan(plan, { approvedDigest: preview.digest }), result);
 });
 
 test("installer skips matching files and visibly excludes unmanaged native settings", async (t) => {

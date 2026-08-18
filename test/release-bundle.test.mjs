@@ -16,7 +16,11 @@ import {
   readNpmPacklist,
   RELEASE_PUBLIC_KEY_RELATIVE_PATH,
 } from "../scripts/release-bundle.mjs";
-import { inspectReleaseArchive, loadReleasePublicKey } from "../src/installer/update-check.mjs";
+import {
+  inspectReleaseArchive,
+  loadReleasePublicKey,
+  verifyChecksumManifestSignature,
+} from "../src/installer/update-check.mjs";
 
 const execFileAsync = promisify(execFile);
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,7 +73,10 @@ test("release bundle is canonical, deterministic, excluded, and installer-extrac
   assert.equal(firstManifest, secondManifest);
   const independentSha256 = createHash("sha256").update(firstArchive).digest("hex");
   assert.equal(first.archiveSha256, independentSha256);
-  assert.equal(firstManifest, `${first.archiveSha256}  threadspan-1.2.3.tar.gz\n`);
+  assert.equal(
+    firstManifest,
+    `${first.archiveSha256}  threadspan-1.2.3.tar.gz\n# threadspan-source-commit ${sourceCommit}\n`,
+  );
   assert.equal(firstArchive.readUInt32LE(4), 0, "gzip mtime must be zero");
 
   const headers = readTarHeaders(firstArchive);
@@ -163,6 +170,19 @@ test("release producer signs SHA256SUMS only with an explicit external Ed25519 k
   assert.equal(result.signatureName, "SHA256SUMS.sig");
   assert.equal(signature.length, 64);
   assert.equal(verify(null, manifest, publicKey, signature), true);
+  assert.equal(
+    manifest.toString("utf8"),
+    `${result.archiveSha256}  threadspan-1.2.3.tar.gz\n# threadspan-source-commit ${result.sourceCommit}\n`,
+  );
+  verifyChecksumManifestSignature(manifest, signature, publicKey);
+  const tamperedManifest = Buffer.from(manifest);
+  const provenanceOffset = tamperedManifest.indexOf(result.sourceCommit);
+  assert.notEqual(provenanceOffset, -1);
+  tamperedManifest[provenanceOffset] = tamperedManifest[provenanceOffset] === 0x30 ? 0x31 : 0x30;
+  assert.throws(
+    () => verifyChecksumManifestSignature(tamperedManifest, signature, publicKey),
+    /invalid publisher signature/,
+  );
   assert.equal(JSON.stringify(result).includes(keyPath), false, "private key path is not returned or logged in release metadata");
   assert.equal(result.metadata.signed, true);
   assert.equal(JSON.stringify(result.metadata).includes(root), false);

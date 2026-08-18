@@ -3,7 +3,7 @@ const stepDefs=[
   ["Select","Choose what to add","Start small. You can add anything later."],
   ["Protect","Protect active work","Choose what must finish before setup."],
   ["Review","Review","Check files, usage, and rollback."],
-  ["Install","Install","Approve shutdown and writes separately."],
+  ["Install","Install","Approve protected work and reviewed writes."],
   ["Prove","Verify","Keep results and rollback together."],
 ];
 const THEME_STORAGE_KEY="threadspanInstallerTheme";
@@ -104,7 +104,7 @@ function renderTasks(){
 }
 
 async function makePlan(){
-  state.plan=await api("plan",{components:[...state.selected],longContextProfiles:state.selected.has("context-profiles")?[...state.longContext]:[],...(state.selected.has("voice-profiles")?{voice:voicePlanInput()}:{}),taskProtection:{taskIds:state.taskIds,disposition:state.taskDisposition}},"POST");
+  state.plan=await api("plan",{freshInstall:state.bootstrap.freshInstall?.available===true,components:[...state.selected],longContextProfiles:state.selected.has("context-profiles")?[...state.longContext]:[],...(state.selected.has("voice-profiles")?{voice:voicePlanInput()}:{}),taskProtection:{taskIds:state.taskIds,disposition:state.taskDisposition}},"POST");
   addEvent("Plan","Digest-bound preview created");
 }
 
@@ -112,20 +112,24 @@ function renderReview(){
   if(!state.plan){content.innerHTML='<p class="empty">Preparing the exact plan…</p>';makePlan().then(render).catch(fail);return}
   const p=state.plan.plan,estimate=state.plan.usageEstimate.acceptanceModelTokens;
   const exclusions=(p.exclusions||[]).map(item=>`<li><code>${esc(item.relativePath)}</code> — ${esc(item.reason)}</li>`).join("");
-  content.innerHTML=`${p.hasChanges?"":'<p class="empty"><strong>No writable installation changes are planned.</strong> Matching managed files remain unchanged and exclusions remain visibly preserved, so no task protection, Desktop closure, or write approval is needed.</p>'}<div class="review"><pre class="preview">${esc(state.plan.preview.text)}</pre><aside class="evidence"><div><span>Operations</span><strong>${p.operations.length}</strong></div><div><span>Unchanged</span><strong>${(p.unchanged||[]).length}</strong></div><div><span>Excluded</span><strong>${(p.exclusions||[]).length}</strong></div><div><span>Plan digest</span><strong title="${p.digest}">${p.digest.slice(0,12)}…</strong></div><div><span>Acceptance estimate</span><strong>${fmt(estimate.low)}-${fmt(estimate.high)} tokens</strong></div></aside></div>${exclusions?`<section class="approval"><h2>Preserved exclusions</h2><p>These native project/user settings were not changed. Each reason is bound into the plan digest.</p><ul>${exclusions}</ul></section>`:""}${resilienceNote()}`;
+  const operations=p.kind==="threadspan-fresh-install"?(p.componentChild?.plan?.operations?.length||0)+2:(p.operations?.length||0);
+  content.innerHTML=`${p.hasChanges===false?'<p class="empty"><strong>No writable installation changes are planned.</strong> Matching managed files remain unchanged and exclusions remain visibly preserved, so no task protection, Desktop closure, or write approval is needed.</p>':""}<div class="review"><pre class="preview">${esc(state.plan.preview.text)}</pre><aside class="evidence"><div><span>Operations</span><strong>${operations}</strong></div><div><span>Unchanged</span><strong>${(p.unchanged||[]).length}</strong></div><div><span>Excluded</span><strong>${(p.exclusions||[]).length}</strong></div><div><span>Plan digest</span><strong title="${p.digest}">${p.digest.slice(0,12)}…</strong></div><div><span>Acceptance estimate</span><strong>${fmt(estimate.low)}-${fmt(estimate.high)} tokens</strong></div></aside></div>${exclusions?`<section class="approval"><h2>Preserved exclusions</h2><p>These native project/user settings were not changed. Each reason is bound into the plan digest.</p><ul>${exclusions}</ul></section>`:""}${resilienceNote()}`;
 }
 
 function renderApproval(){
   if(state.plan.plan.hasChanges===false){content.innerHTML='<p class="empty"><strong>Nothing to approve.</strong> The digest records matching managed files and any visibly preserved exclusions; no Desktop closure or file write will occur.</p>';return}
-  content.innerHTML=`<section class="approval"><h2>Desktop closure</h2><p>Selected active tasks must finish, or be explicitly paused, before Desktop closes. Threadspan will not force-kill an app.</p><label><input id="tasks-ready" type="checkbox"> <span>I confirmed the selected tasks are finished or intentionally paused.</span></label><label><input id="desktop-approved" type="checkbox"> <span>I approve closing/restarting Desktop when the reviewed installation requires it.</span></label></section><section class="approval"><h2>File writes</h2><p>Apply only the digest shown in Review. Existing files receive preimage backups and a rollback manifest.</p><label><input id="write-approved" type="checkbox"> <span>Apply plan <code>${state.plan.plan.digest.slice(0,16)}…</code>.</span></label></section>`;
-  const sync=()=>next.disabled=!["tasks-ready","desktop-approved","write-approved"].every(id=>$(id).checked);content.querySelectorAll("input").forEach(el=>el.addEventListener("change",sync));sync();
+  const fresh=state.plan.plan.kind==="threadspan-fresh-install";
+  content.innerHTML=`<section class="approval"><h2>${fresh?"Task protection":"Desktop closure"}</h2><p>${fresh?"Selected active tasks must finish or be explicitly paused. The fresh installer does not close, restart, or kill Desktop or provider apps.":"Selected active tasks must finish, or be explicitly paused, before Desktop closes. Threadspan will not force-kill an app."}</p><label><input id="tasks-ready" type="checkbox"> <span>I confirmed the selected tasks are finished or intentionally paused.</span></label>${fresh?"":'<label><input id="desktop-approved" type="checkbox"> <span>I approve closing/restarting Desktop when the reviewed installation requires it.</span></label>'}</section><section class="approval"><h2>File writes</h2><p>Apply only the digest shown in Review. Existing files receive preimage backups and a rollback manifest.</p><label><input id="write-approved" type="checkbox"> <span>Apply plan <code>${state.plan.plan.digest.slice(0,16)}…</code>.</span></label></section>`;
+  const required=fresh?["tasks-ready","write-approved"]:["tasks-ready","desktop-approved","write-approved"];const sync=()=>next.disabled=!required.every(id=>$(id).checked);content.querySelectorAll("input").forEach(el=>el.addEventListener("change",sync));sync();
 }
 
 function renderProof(){
   const r=state.applied;
   const unchanged=r?.status==="unchanged";
   const preserved=r?.status==="preserved";
-  content.innerHTML=(r?`<div class="choice-list"><div class="choice"><span>✓</span><span><strong>${unchanged?"Installation already matched":preserved?"Existing settings preserved":"Installation applied"}</strong><small>${unchanged?"No files or host state changed.":preserved?"No files changed; review the digest-bound exclusions before any future install.":`${esc(r.written?.length||0)} files written. Rollback manifest retained.`}</small></span><span class="tier">Proved</span></div></div><pre class="preview">${esc(JSON.stringify(r,null,2))}</pre>`:`<p class="empty">No apply result is available.</p>`)+roadmapNote();
+  const pending=String(r?.status||"").includes("pending");
+  const providerSummary=(r?.providerEvidence||[]).map(item=>`${item.providerId}: ${item.status}`).join(", ");
+  content.innerHTML=(r?`<div class="choice-list"><div class="choice"><span>${pending?"…":"✓"}</span><span><strong>${unchanged?"Installation already matched":preserved?"Existing settings preserved":pending?"Files and service lifecycle applied; activation remains pending":"Installation applied"}</strong><small>${unchanged?"No files or host state changed.":preserved?"No files changed; review the digest-bound exclusions before any future install.":pending?`Provider/runtime evidence is not yet ready${providerSummary?`: ${esc(providerSummary)}`:""}. Host surfaces remain ${esc(r.hostSurface?.status||"pending")}.`:`${esc(r.written?.length||0)} files written. Rollback manifest retained.`}</small></span><span class="tier">${pending?"Pending":"Proved"}</span></div></div><pre class="preview">${esc(JSON.stringify(r,null,2))}</pre>`:`<p class="empty">No apply result is available.</p>`)+roadmapNote();
 }
 
 function roadmapNote(){return '<aside class="roadmap-note"><p class="eyebrow">Coming next</p><p><strong>Roadmap, not current functionality:</strong> provider-aware Continuity handoffs, richer reverse-host parity, more provider adapters, smarter availability and utilization planning, and an awesome, sleek, effective memory system.</p></aside>'}
@@ -155,7 +159,7 @@ next.addEventListener("click",async()=>{try{
   if(state.step===4){
     next.disabled=true;
     const noChanges=state.plan.plan.hasChanges===false;
-    state.applied=await api("apply",noChanges?{approvedDigest:state.plan.plan.digest}:{approvedDigest:state.plan.plan.digest,desktopClosureApproved:true,manualTaskConfirmation:$("tasks-ready").checked},"POST");
+    const fresh=state.plan.plan.kind==="threadspan-fresh-install";state.applied=await api("apply",noChanges?{approvedDigest:state.plan.plan.digest}:{approvedDigest:state.plan.plan.digest,...(fresh?{}:{desktopClosureApproved:true}),manualTaskConfirmation:$("tasks-ready").checked},"POST");
     addEvent("Install",noChanges?"No changes required; approval prompts skipped":"Plan applied and rollback manifest written");
   }
   state.step++;render();

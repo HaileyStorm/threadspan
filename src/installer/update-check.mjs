@@ -186,6 +186,7 @@ export class InstallerStableUpdater {
       }
       verifyChecksumManifestSignature(manifestBytes, signatureBytes, publicKey);
       const expected = parseChecksumManifest(manifestBytes.toString("utf8"), assets.archive.name);
+      const authenticatedSourceCommit = parseSignedReleaseSourceCommit(manifestBytes.toString("utf8"));
 
       await runBoundedPhase("archive-download", this.timeouts.archiveDownloadMs, context.signal, (signal) => this.download(
         assets.archive.browser_download_url,
@@ -219,16 +220,30 @@ export class InstallerStableUpdater {
         if (error?.code !== "ENOENT") throw error;
       }
       await rename(extractedRoot, finalRoot);
+      if (authenticatedSourceCommit) {
+        await Promise.all([
+          writeFile(join(finalRoot, ".threadspan-release.tar.gz"), archiveBytes, { flag: "wx", mode: 0o600 }),
+          writeFile(join(finalRoot, ".threadspan-release.SHA256SUMS"), manifestBytes, { flag: "wx", mode: 0o600 }),
+          writeFile(join(finalRoot, ".threadspan-release.SHA256SUMS.sig"), signatureBytes, { flag: "wx", mode: 0o600 }),
+        ]);
+      }
       await writeFile(join(finalRoot, ".threadspan-release.json"), `${JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: authenticatedSourceCommit ? 2 : 1,
         repository: OFFICIAL_REPOSITORY,
         version: latestVersion,
         tag: release.tag_name,
         bundleSha256: actual,
+        ...(authenticatedSourceCommit ? {
+          provenanceKind: "publisher-signed-release-manifest",
+          sourceCommit: authenticatedSourceCommit,
+          signedManifestSha256: sha256(manifestBytes),
+        } : {}),
       }, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
       await rm(temporaryRoot, { recursive: true, force: true });
       temporaryRoot = undefined;
-      return await this.#relaunchVerified(finalRoot, currentVersion, latestVersion, release, context, "verified-release-bundle");
+      return await this.#relaunchVerified(finalRoot, currentVersion, latestVersion, release, context, "verified-release-bundle", {
+        sourceCommit: authenticatedSourceCommit,
+      });
     } catch (error) {
       if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true }).catch(() => {});
       return blocked(error?.updateCode ?? "release-staging-failed", error, {
@@ -238,7 +253,7 @@ export class InstallerStableUpdater {
     }
   }
 
-  async #relaunchVerified(root, currentVersion, latestVersion, release, context, sourceKind) {
+  async #relaunchVerified(root, currentVersion, latestVersion, release, context, sourceKind, provenance = {}) {
     if (typeof this.relaunch !== "function") {
       return blocked("relaunch-unavailable", "The verified release is ready, but no installer relaunch controller is available.", {
         ...versions(currentVersion, latestVersion),
@@ -274,6 +289,7 @@ export class InstallerStableUpdater {
         message: `Verified Threadspan ${latestVersion}; opening the updated setup window.`,
         relaunchPid: launched?.pid,
         preparedRoot: root,
+        ...(provenance.sourceCommit ? { sourceCommit: provenance.sourceCommit } : {}),
       };
     } catch (error) {
       return blocked("relaunch-failed", error, {
@@ -306,6 +322,17 @@ export function parseChecksumManifest(text, archiveName) {
   }
   if (!found) throw updateError("checksum-missing", `Checksum manifest does not name '${archiveName}' exactly`);
   return found;
+}
+
+/** Read one exact source commit carried inside publisher-signed checksum-manifest bytes. */
+export function parseSignedReleaseSourceCommit(text) {
+  const matches = String(text).split(/\r?\n/)
+    .map((line) => /^# threadspan-source-commit ([0-9a-f]{40,64})$/.exec(line.trim()))
+    .filter(Boolean)
+    .map((match) => match[1]);
+  if (matches.length === 0) return undefined;
+  if (matches.length !== 1) throw updateError("ambiguous-source-commit", "Signed release metadata repeats the source commit");
+  return matches[0];
 }
 
 /** Verify the exact checksum-manifest bytes with the pinned Ed25519 publisher key. */

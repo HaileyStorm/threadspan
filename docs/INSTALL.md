@@ -4,6 +4,62 @@ The deterministic installer is wired into the CLI and source-run setup window.
 
 Use `threadspan install gui` for the guided flow. Use `threadspan install plan` and `threadspan install apply` for automation. Both use the same component registry, digest, backups, atomic writes, and rollback manifest.
 
+## Canonical fresh install
+
+The shared fresh-install coordinator closes component files, initial config and
+credentials, and the per-user service lifecycle under one versioned parent
+plan. CLI and GUI hooks serialize the same plan object; child plans are embedded
+byte-for-byte and their digests are bound into the parent digest.
+
+```text
+threadspan install fresh-plan --root PATH --config PATH --owner-token-file PATH --connector-token-file PATH --output fresh-plan.json [--component ID ...] [--provider ID ...] [--source-root PATH] [--service-directory PATH] [--state-root PATH]
+threadspan install fresh-apply --plan fresh-plan.json --approve-digest SHA256 --approve-task-protection-digest SHA256
+threadspan install fresh-uninstall-plan --install-plan fresh-plan.json --output fresh-uninstall.json
+threadspan install fresh-uninstall --plan fresh-uninstall.json --approve-digest SHA256
+```
+
+`fresh-plan` never accepts `--source-revision`. It derives the service revision
+from either an exact clean Git `HEAD` equal to the inspected official
+`origin/main` tracking ref, or owner-local staged provenance written after
+publisher-signature verification. Source-run Git evidence binds the full commit
+tree but is explicitly not a publisher signature; published installs use the
+signed-bundle path. Bundle provenance is accepted
+only when the signed checksum-manifest bytes carried exactly one
+`# threadspan-source-commit COMMIT` record; older staged bundles remain usable by
+the existing installer but are not provenance-complete enough for fresh apply.
+The staged updater retains the authenticated archive, checksum manifest, and
+signature. Planning and apply verify the pinned publisher-key fingerprint,
+archive digest, and every extracted regular-file path and hash before trusting
+the source commit.
+
+The owner API token and connector-only MCP token are independent 32-byte random
+values generated only after apply owns the exclusive parent claim. Plans,
+previews, journals, receipts, stdout, and logs contain paths and scopes but never
+token values. The files are create-only, exact `0600` on POSIX, and referenced
+separately from the initial config. Existing config or token targets fail closed;
+there is no force flag, overwrite, implicit migration, or same-file reuse.
+Windows plan rendering remains available for offline parity, but native fresh
+apply currently fails closed before any write because Node cannot guarantee an
+owner-only ACL atomically at secret-file creation. The reviewed ACL hardening and
+read-back implementation is retained for the future native helper; it is not yet
+Windows acceptance.
+
+Fresh apply serializes through one canonical current-user claim and is resumable
+through a bounded owner-local journal. A later failure
+reverses service lifecycle, component files, config, connector token, and owner
+token in that order. Component and service rollback each have a separately
+digest-bound child plan and terminal replay. A completed parent receipt remains
+`applied-pending-provider-and-host-activation`: offline setup does not prove
+provider authentication, runtime reachability, live inference, or host-surface
+activation. Provider evidence reports each dimension and a closed reason code;
+a descriptor alone is never `ready`.
+
+Production apply rejects a plan created for another native platform. Synthetic
+Linux/Windows planning remains useful for offline tests, but it is not host
+acceptance. Fresh apply does not close, restart, launch, or kill ChatGPT Desktop
+or provider applications. Task protection is digest-bound and must be approved
+before mutation.
+
 Daemon/Desktop-host lifecycle is a separate approval boundary because it writes
 user service definitions and executes activation commands. Use:
 
@@ -50,10 +106,14 @@ second uninstall.
 
 The GUI is loopback-only and uses a short-lived installer session created through the authenticated daemon. It never receives provider credentials.
 
-The source-run GUI currently covers component-file installation only. Service
-lifecycle plan/apply/uninstall remains CLI-only until the GUI can compose both
-transactions under one atomic approval and recovery contract; the GUI does not
-silently activate services or restart Desktop/provider apps.
+The GUI controller exposes the shared fresh plan/apply hooks only when its
+authenticated native helper supplies reviewed source, config, token, state, and
+service paths. The current `threadspan install gui` command still requires an
+already authenticated daemon configuration, so native zero-state GUI bootstrap
+remains an explicit residual rather than a simulated success. The legacy
+component-only path retains its older Desktop-closure approval; the shared fresh
+path removes that obsolete approval and never closes or restarts Desktop/provider
+apps.
 
 Host-specific MCP/plugin writes are generated from neutral descriptors and merged with existing configuration. Do not replace unrelated MCP servers. Back up the exact host file before mutation and keep credentials in environment/provider-native state.
 

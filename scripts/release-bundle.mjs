@@ -176,7 +176,7 @@ export async function buildReleaseBundle(options = {}) {
   const archiveBytes = createTarGzip(names.rootName, files);
   if (archiveBytes.byteLength > MAX_BUNDLE_BYTES) throw new Error("Release bundle exceeds installer download limit");
   const archiveSha256 = createHash("sha256").update(archiveBytes).digest("hex");
-  const manifest = `${archiveSha256}  ${names.archiveName}\n`;
+  const manifest = `${archiveSha256}  ${names.archiveName}\n# threadspan-source-commit ${sourceCommit}\n`;
   const signature = options.signingPrivateKeyPath === undefined
     ? undefined
     : await signManifest(Buffer.from(manifest), options.signingPrivateKeyPath, root, identity.publicKey);

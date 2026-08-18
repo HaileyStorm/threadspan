@@ -4,7 +4,16 @@ The setup window is a loopback web UI launched in Chromium app mode. It is not a
 
 `threadspan install gui` authenticates to the daemon, creates a short-lived installer-only session, and puts its nonce in the URL fragment. The browser strips the fragment immediately. The nonce cannot call `/v1`, and no provider credential enters the browser.
 
-The GUI reuses `createInstallerPlan()`, `previewInstallerPlan()`, and `applyInstallerPlan()`. It cannot write an unpreviewed plan or mismatched digest. Planning inspects current managed files: matching content and permissions are recorded as unchanged, not as writes, and an all-no-op plan skips task protection, Desktop closure, and file-write approval.
+The legacy component-only GUI path reuses `createInstallerPlan()`,
+`previewInstallerPlan()`, and `applyInstallerPlan()`. When an authenticated
+native helper supplies the reviewed fresh-install roots, the controller instead
+calls `createFreshInstallPlan()` and `applyFreshInstallPlan()` directly. The
+returned parent object is the same closed/versioned plan used by the CLI, with
+the same parent and child digests; the browser does not reconstruct it. Neither
+path can write an unpreviewed plan or mismatched digest. Planning inspects current
+managed files: matching content and permissions are recorded as unchanged, not
+as writes, and an all-no-op legacy plan skips task protection, Desktop closure,
+and file-write approval.
 
 Existing Threadspan-managed JSON is merged so unowned project/user keys survive reviewed updates. An existing Codex profile is replaced only when it carries Threadspan's ownership marker. Unmanaged, unreadable, linked, or wrong-type targets are preserved and shown as exclusions with a visible reason. Changes, unchanged targets, exclusions, content hashes, scopes, reversal metadata, and reasons are all bound into the plan digest; any real change requires a newly reviewed digest.
 
@@ -44,9 +53,24 @@ After verification, a detached loopback helper serves only the staged GUI files,
 
 The helper reports ready only after it has bound its loopback port and launched the updated app window. The old setup window exits after that readiness receipt. A failed check, download, checksum, extraction, identity check, helper startup, asset recheck, or browser launch leaves the current installer window usable and never executes an unverified candidate asset.
 
-Active Codex tasks are read through App Server and grouped by working directory. Every group defaults to waiting for completion. A pause action must call the originating host's documented interrupt/cancel surface and preserve a native resume identifier; it must not kill arbitrary processes.
+Active Codex tasks are read through App Server and grouped by working directory. Every group defaults to waiting for completion. A pause action must call the originating host's documented interrupt/cancel surface and preserve a native resume identifier; it must not kill arbitrary processes. Fresh-install task selection and inventory evidence are hashed into a closed task-protection binding in the parent plan.
 
-Desktop closure and file-write approval are separate controls and appear only when the inspected plan contains real writes. The GUI never force-kills Desktop. Installer recovery records contain IDs, host kind, project path, component IDs, digest, state, timestamps, and bounded results, but no prompts, credentials, browser state, or provider response text.
+Desktop closure and file-write approval remain separate controls only on the
+legacy component path. The shared fresh path asks for task protection and the
+parent digest, does not show a Desktop close/restart approval, and never launches,
+restarts, closes, or force-kills Desktop or provider apps. Its proof labels
+provider and host activation pending unless closed server-issued evidence proves
+every configured/descriptor/auth/runtime/live dimension. Installer recovery
+records contain IDs, host kind, project path, component IDs, digests, state,
+timestamps, and bounded results, but no prompts, credential values, browser
+state, provider response text, or owner-local telemetry.
+
+The shipped setup command still obtains its loopback session from an existing
+authenticated daemon. A native zero-state launcher capable of creating that
+first authenticated helper is not yet shipped. The GUI advertises the canonical
+fresh hooks as unavailable with reason `authenticated-native-bootstrap-required`
+unless such a helper is explicitly present; this residual is not reported as a
+successful fresh installation.
 
 The installed host-surface manifest records the same provider-neutral policy shown by the daemon: raw APIs are host-owned; managed workers inherit provider-native user/project settings unless an explicit, visible override is requested; brainstorming branches are bounded and convergence-stopped under one caller-owned synthesis; and host tools/plugins such as ImageGen are invoked only when they materially improve a decision.
 

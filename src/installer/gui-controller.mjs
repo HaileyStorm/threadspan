@@ -2,7 +2,15 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyInstallerPlan, createInstallerPlan, previewInstallerPlan } from "./index.mjs";
+import {
+  applyFreshInstallPlan,
+  applyInstallerPlan,
+  createFreshTaskProtectionBinding,
+  createFreshInstallPlan,
+  createInstallerPlan,
+  previewFreshInstallPlan,
+  previewInstallerPlan,
+} from "./index.mjs";
 import { ALL_COMPONENT_IDS, COMPONENT_IDS, EXPLICIT_ONLY_COMPONENT_IDS, OPTIONAL_COMPONENT_IDS, readInstalledVoiceConfig } from "./components.mjs";
 import { COPY_CHECK_DISCLAIMER, COPY_CHECK_NO_PARTNERSHIP } from "../core/copy-check.mjs";
 import { DEFAULT_VOICE_PROFILE_ID, voicePresetCards } from "../core/voice-profiles.mjs";
@@ -42,6 +50,7 @@ export class InstallerGuiController {
       currentRoot: fileURLToPath(new URL("../../", import.meta.url)),
       relaunch: options.relaunchUpdatedInstaller ?? relaunchUpdatedInstaller,
     });
+    this.freshInstallOptions = options.freshInstallOptions ?? null;
     this.ready = this.#rehydrate();
     const weakController = new WeakRef(this);
     const timer = setInterval(() => {
@@ -80,7 +89,7 @@ export class InstallerGuiController {
     await this.recovery.create({ sessionId, origin });
     return {
       sessionId,
-      url: `http://${this.config.server.host}:${this.config.server.port}/threadspan/install/#session=${encodeURIComponent(nonce)}`,
+      url: `http://${formatHost(this.config.server.host)}:${this.config.server.port}/threadspan/install/#session=${encodeURIComponent(nonce)}`,
       expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
     };
   }
@@ -144,6 +153,11 @@ export class InstallerGuiController {
       voice: { selectedProfile: installedVoice.selectedProfile ?? DEFAULT_VOICE_PROFILE_ID, profiles: installedVoice.profiles, presets: voicePresetCards() },
       usageEstimate: estimateInstallationUsage(defaultComponents()),
       rollback: { enabled: true, policy: "preimage-backup-and-manifest" },
+      freshInstall: this.freshInstallOptions ? { available: true, canonicalCoordinator: true } : {
+        available: false,
+        canonicalCoordinator: true,
+        reason: "authenticated-native-bootstrap-required",
+      },
       donation,
     };
   }
@@ -153,6 +167,7 @@ export class InstallerGuiController {
     const session = this.authorize(nonce);
     if (["applying", "complete", "cancelled", "update-relaunching"].includes(session.state)) throw new Error(`Installer session cannot plan while ${session.state}`);
     const selected = Array.isArray(input.components) ? input.components : defaultComponents();
+    if (input.freshInstall === true) return this.#planFreshInstall(session, input, selected);
     const plan = createInstallerPlan({
       installRoot: session.installRoot,
       selection: selected,
@@ -184,6 +199,7 @@ export class InstallerGuiController {
     if (session.state !== "planned") throw new Error(`Installer session cannot apply while ${session.state}`);
     if (!session.plan) throw new Error("Preview a plan before applying it");
     if (input.approvedDigest !== session.plan.digest) throw new Error("Approved digest does not match the previewed plan");
+    if (session.plan.kind === "threadspan-fresh-install") return this.#applyFreshInstall(session, input);
     const refreshedPlan = createInstallerPlan({
       installRoot: session.installRoot,
       selection: session.plan.selectedComponents,
@@ -195,7 +211,7 @@ export class InstallerGuiController {
     if (refreshedPlan.digest !== session.plan.digest) {
       throw new Error("Installer targets or prerequisites changed after review; create and approve a fresh plan");
     }
-    if (session.plan.hasChanges === false || session.plan.operations.length === 0) {
+    if (session.plan.hasChanges === false || (session.plan.kind === "install" && session.plan.operations.length === 0)) {
       const result = {
         status: session.plan.exclusions?.length > 0 ? "preserved" : "unchanged",
         planId: session.plan.planId,
@@ -221,6 +237,89 @@ export class InstallerGuiController {
       await this.recovery.update(session.sessionId, { state: "complete", result: sanitizeResult(result) });
       return result;
     } catch (error) {
+      session.state = "planned";
+      await this.recovery.update(session.sessionId, { state: "planned" });
+      throw error;
+    }
+  }
+
+  async #planFreshInstall(session, input, selected) {
+    throwIfSessionCancelled(session);
+    if (!this.freshInstallOptions) throw new Error("Native fresh-install bootstrap is unavailable in this authenticated GUI session");
+    const freshOptions = typeof this.freshInstallOptions === "function"
+      ? await this.freshInstallOptions(session, input)
+      : this.freshInstallOptions;
+    throwIfSessionCancelled(session);
+    const planningInput = {
+      ...freshOptions,
+      installRoot: session.installRoot,
+      sourceRoot: session.updateRoot ?? freshOptions.sourceRoot,
+      componentIds: selected,
+      ...(Array.isArray(input.providers) && input.providers.length > 0 ? { providerIds: input.providers } : {}),
+      planId: session.sessionId,
+      environment: this.environment,
+      taskProtection: {
+        ...(input.taskProtection ?? { taskIds: [], disposition: "manual-confirmed" }),
+        trusted: session.taskEvidence?.trusted === true,
+        inventory: session.taskEvidence,
+      },
+    };
+    const plan = await createFreshInstallPlan(planningInput);
+    throwIfSessionCancelled(session);
+    session.plan = plan;
+    session.freshPlanningInput = planningInput;
+    session.planIssuedAt = new Date().toISOString();
+    session.taskProtection = normalizeTaskProtection(input.taskProtection ?? { taskIds: [], disposition: "manual-confirmed" }, session.taskGroups ?? []);
+    session.taskReceipt = null;
+    session.state = "planned";
+    session.lastHeartbeatAt = Date.now();
+    await this.recovery.update(session.sessionId, {
+      state: "planned",
+      selectedComponents: plan.selectedComponentIds,
+      planDigest: plan.digest,
+      result: { taskProtection: null, freshInstall: { providerEvidence: plan.providerEvidence, hostSurface: plan.hostSurfaceChild } },
+    });
+    throwIfSessionCancelled(session);
+    return { plan, preview: previewFreshInstallPlan(plan), usageEstimate: estimateInstallationUsage(plan.selectedComponentIds) };
+  }
+
+  async #applyFreshInstall(session, input) {
+    throwIfSessionCancelled(session);
+    const refreshed = await createFreshInstallPlan(session.freshPlanningInput);
+    throwIfSessionCancelled(session);
+    if (refreshed.digest !== session.plan.digest) throw new Error("Fresh-install targets or provenance changed after review; create and approve a fresh plan");
+    const manualTaskFallback = session.taskEvidence?.trusted === false;
+    if (manualTaskFallback && input.manualTaskConfirmation !== true) throw new Error("Task inventory is incomplete; manual task confirmation is required");
+    if (!manualTaskFallback) assertTaskProtectionReceipt(session);
+    const currentTaskBinding = createFreshTaskProtectionBinding({
+      ...session.taskProtection,
+      trusted: session.taskEvidence?.trusted === true,
+      inventory: session.taskEvidence,
+    });
+    if (currentTaskBinding.digest !== session.plan.taskProtection.digest) {
+      throw new Error("Fresh task inventory or protection selection changed after review; create and approve a fresh plan");
+    }
+    throwIfSessionCancelled(session);
+    session.state = "applying";
+    await this.recovery.update(session.sessionId, { state: "applying" });
+    try {
+      const freshOptions = typeof this.freshInstallOptions === "function"
+        ? await this.freshInstallOptions(session, input)
+        : this.freshInstallOptions;
+      const result = await applyFreshInstallPlan(session.plan, {
+        approvedDigest: input.approvedDigest,
+        approvedTaskProtectionDigest: session.plan.taskProtection.digest,
+        environment: this.environment,
+        signal: session.cancelController.signal,
+        ...(freshOptions?.commandRunner ? { commandRunner: freshOptions.commandRunner } : {}),
+        ...(freshOptions?.checkpoint ? { checkpoint: freshOptions.checkpoint } : {}),
+      });
+      throwIfSessionCancelled(session);
+      session.state = "complete";
+      await this.recovery.update(session.sessionId, { state: "complete", result: sanitizeResult(result) });
+      return result;
+    } catch (error) {
+      if (session.closeIntent === "cancel" || session.state === "cancelled") throw error;
       session.state = "planned";
       await this.recovery.update(session.sessionId, { state: "planned" });
       throw error;
@@ -258,7 +357,7 @@ export class InstallerGuiController {
     const session = this.authorize(nonce);
     if (!session.plan) throw new Error("Preview a plan before protecting tasks");
     if (session.state !== "planned") throw new Error(`Installer session cannot protect tasks while ${session.state}`);
-    if (session.plan.hasChanges === false || session.plan.operations.length === 0) {
+    if (session.plan.hasChanges === false || (session.plan.kind === "install" && session.plan.operations.length === 0)) {
       return { sessionId: session.sessionId, planDigest: session.plan.digest, taskIds: [], disposition: "none", noChanges: true };
     }
     const protection = normalizeTaskProtection(input, session.taskGroups ?? []);
@@ -491,6 +590,24 @@ function estimateInstallationUsage(components) {
 }
 
 function sanitizeResult(result) {
+  if (result?.kind === "threadspan-fresh-install-receipt") {
+    return {
+      schemaVersion: result.schemaVersion,
+      kind: result.kind,
+      status: result.status,
+      planId: result.planId,
+      digest: result.digest,
+      platform: result.platform,
+      sourceCommit: result.sourceCommit,
+      componentDigest: result.componentDigest,
+      serviceDigest: result.serviceDigest,
+      taskProtectionDigest: result.taskProtectionDigest,
+      serviceStatus: result.serviceStatus,
+      providerEvidence: result.providerEvidence,
+      hostSurface: result.hostSurface,
+      credentialEvidence: result.credentialEvidence,
+    };
+  }
   return {
     status: result.status,
     manifestPath: result.manifestPath,
@@ -507,6 +624,7 @@ function sanitizeUpdateResult(result) {
     currentVersion: result.currentVersion,
     latestVersion: result.latestVersion,
     sourceKind: result.sourceKind,
+    sourceCommit: result.sourceCommit,
     releaseUrl: result.releaseUrl,
     canContinueCurrent: result.canContinueCurrent === true,
     retryable: result.retryable === true,

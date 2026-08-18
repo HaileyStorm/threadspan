@@ -10,13 +10,18 @@ export {
   applyDaemonServicePlan,
   applyDaemonServiceUninstallPlan,
   applyInstallerPlan,
+  applyInstallerUninstallPlan,
   boundedPath,
   createDaemonServiceUninstallPlan,
+  createInstallerUninstallPlan,
   previewDaemonServicePlan,
   previewDaemonServiceUninstallPlan,
   previewInstallerPlan,
+  previewInstallerUninstallPlan,
   readDaemonServiceLifecycleClaim,
   resolveDaemonServiceClaimRoot,
+  validateDaemonServiceAppliedState,
+  validateInstallerAppliedState,
 } from "./apply.mjs";
 export {
   DAEMON_SERVICE_LIFECYCLE_API_VERSION,
@@ -26,3 +31,16 @@ export {
   validateDaemonLifecycleCommands,
   validateDaemonServicePlan,
 } from "./service.mjs";
+export {
+  FRESH_INSTALL_SCHEMA_VERSION,
+  applyFreshInstallPlan,
+  applyFreshInstallUninstallPlan,
+  createFreshInstallConfig,
+  createFreshInstallPlan,
+  createFreshInstallUninstallPlan,
+  createFreshTaskProtectionBinding,
+  previewFreshInstallPlan,
+  previewFreshInstallUninstallPlan,
+  resolveFreshInstallClaimRoot,
+  resolveFreshInstallProvenance,
+} from "./fresh-install.mjs";

@@ -3,10 +3,13 @@
     "host": "127.0.0.1",
     "port": 8743,
     "authTokenEnv": "THREADSPAN_TOKEN",
+    // Canonical fresh install replaces null with a create-only owner API token
+    // file. It is always distinct from connectorTokenFile and never embeds a value.
     "authTokenFile": null,
     "connectorTokenEnv": "THREADSPAN_CONNECTOR_TOKEN",
-    // Optional owner-local connector credential. The daemon may read it for
-    // scoped /mcp auth; clients receive only the file path, never the value.
+    // Optional owner-local connector credential. Canonical fresh install creates
+    // an independent connector-only value at apply time. The daemon may read it
+    // for scoped /mcp auth; clients receive only the file path, never the value.
     "connectorTokenFile": null,
     "allowUnauthenticatedLoopback": false,
     "maxBodyBytes": 8388608,
