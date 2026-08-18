@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { applyModePolicy } from "../core/policies.mjs";
 import { asBridgeError, ProviderError, RequestError } from "../core/errors.mjs";
@@ -20,6 +21,11 @@ import { CodexNativeQuotaAdapter } from "../core/codex-native-quota.mjs";
 import { selectTip, tipById } from "../core/tips.mjs";
 import { renderVoiceInstruction, resolveVoiceProfile } from "../core/voice-profiles.mjs";
 import { applyIntentBriefUpdates, deriveIntentBrief } from "../core/intent-brief.mjs";
+import { CodexContinuityController } from "../codex/continuity-controller.mjs";
+import { AutomaticTakeoverController } from "../core/automatic-takeover-controller.mjs";
+import { naturalizeCopy } from "../core/copy-naturalizer.mjs";
+import { checkCopy, describeCopyCheck, sanitizeCopyCheckRecord } from "../core/copy-check.mjs";
+import { reviewReleaseCopy } from "../core/release-copy-review.mjs";
 
 const TIP_CONVERSATION_TTL_MS = 30 * 60 * 1000;
 const TIP_CONVERSATION_LIMIT = 16;
@@ -30,15 +36,52 @@ const TIP_CONVERSATION_LIMIT = 16;
 export class BridgeService {
   /**
    * @param {Record<string, any>} config Validated bridge configuration.
-   * @param {{logger?: Logger, registry?: ProviderRegistry, sessions?: SessionStore, accountStore?: AccountStore, maximumUtilizationController?: any, maximumUtilizationCapabilities?: Record<string, Function>, maximumUtilizationJournal?: MaximumUtilizationJournal}} [dependencies] Injectable dependencies.
+   * @param {{logger?: Logger, registry?: ProviderRegistry, sessions?: SessionStore, accountStore?: AccountStore, continuityController?: CodexContinuityController, automaticTakeoverController?: AutomaticTakeoverController, maximumUtilizationController?: any, maximumUtilizationCapabilities?: Record<string, Function>, maximumUtilizationJournal?: MaximumUtilizationJournal}} [dependencies] Injectable dependencies.
    */
   constructor(config, dependencies = {}) {
     this.config = config;
+    this.copyCheckEffects = dependencies.copyCheckEffects ?? {};
+    this.copyCheckRecords = [];
     this.logger = dependencies.logger ?? new Logger({ level: config.logging?.level ?? "info" });
     this.sessions = dependencies.sessions ?? new SessionStore(config.sessions);
     this.usageLedger = dependencies.usageLedger ?? new UsageLedger({ ...(config.usageLedger ?? {}), enabled: config.usageLedger?.enabled === true });
     this.accountStore = dependencies.accountStore ?? dependencies.registry?.accountStore ?? new AccountStore(config.accounts);
     this.registry = dependencies.registry ?? new ProviderRegistry(config, { logger: this.logger, usageLedger: this.usageLedger, accountStore: this.accountStore });
+    this.automaticTakeoverTargets = new Map();
+    this.inlineTakeovers = new Map();
+    this.automaticTakeoverController = config.automaticTakeover?.enabled === true
+      ? dependencies.automaticTakeoverController ?? new AutomaticTakeoverController({
+          statePath: config.automaticTakeover.statePath ?? join(dirname(config.configPath ?? join(process.cwd(), "threadspan-config.jsonc")), "automatic-takeover-state.json"),
+          policy: {
+            enabled: true,
+            crossProviderEnabled: config.automaticTakeover.crossProviderEnabled,
+            batchSize: config.automaticTakeover.maxSubagentsPerTick,
+            staggerMs: config.automaticTakeover.subagentSpacingMs,
+            tickIntervalMs: config.automaticTakeover.externalMonitoringEnabled ? config.automaticTakeover.pollIntervalMs : 0,
+          },
+          adapters: {
+            readLiveness: async (target) => this.automaticTakeoverTargets.get(target.targetId)?.status ?? "unknown",
+            listCandidates: async (target) => structuredClone(this.automaticTakeoverTargets.get(target.targetId)?.candidates ?? []),
+            startReplacement: async (request) => {
+              const runtime = this.automaticTakeoverTargets.get(request.target.targetId);
+              if (!runtime) return { supported: false };
+              const key = takeoverRouteKey(request.candidate);
+              if (runtime.failedRouteKeys.has(key)) return { status: "exhausted" };
+              if (runtime.activeRoute && takeoverRouteKey(runtime.activeRoute) === key) {
+                return { status: "active", receipt: { evidence: "bridge-inline-completed", provider: runtime.activeRoute.providerId } };
+              }
+              return { supported: false };
+            },
+          },
+          logger: this.logger,
+        })
+      : null;
+    this.continuityController = config.continuity?.enabled === true
+      ? dependencies.continuityController ?? new CodexContinuityController({
+          ...config.continuity,
+          command: config.providers?.["openai-codex"]?.command ?? "codex",
+        }, { logger: this.logger })
+      : null;
     this.maximumUtilizationController = config.maximumUtilization?.enabled === true && dependencies.maximumUtilizationController
       ? dependencies.maximumUtilizationController
       : createMaximumUtilizationController(config, { ...dependencies, accountStore: this.accountStore }, this.logger);
@@ -70,7 +113,7 @@ export class BridgeService {
   async initialize() {
     this.#assertOpen();
     this.maximumUtilizationReady ??= this.#initializeMaximumUtilization();
-    await this.maximumUtilizationReady;
+    await Promise.all([this.maximumUtilizationReady, this.automaticTakeoverController?.initialize?.()]);
   }
 
   async #initializeMaximumUtilization() {
@@ -179,10 +222,45 @@ export class BridgeService {
       });
     }
 
+    let detachedTakeover = false;
+    let takeoverDeferred;
+    let takeoverTargetId;
+    const emitResponseEvents = async (events) => {
+      try {
+        await emitAll(events, options.onEvent);
+      } catch (error) {
+        if (!detachedTakeover) throw error;
+        this.logger.warn("Client event sink disconnected after certified automatic takeover; daemon completion continues", {
+          traceId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    let responseBegan = false;
+    const ensureResponseBegan = async () => {
+      if (responseBegan) return;
+      responseBegan = true;
+      await emitResponseEvents(assembler.begin());
+    };
+
     try {
-      await emitAll(assembler.begin(), options.onEvent);
       let terminal;
       let activeRoute = route;
+      const selectAssemblerRoute = (selected) => {
+        activeRoute = selected;
+        assembler.route = { ...assembler.route, ...selected };
+        assembler.request.model = `${selected.mode}/${selected.providerId}/${selected.model}`;
+        assembler.request.metadata = {
+          ...(assembler.request.metadata ?? {}),
+          bridge_provider: selected.providerId,
+          bridge_account_id: selected.accountId,
+          bridge_upstream_model: selected.model,
+          ...(selected.providerId !== route.providerId ? {
+            bridge_route_change: "automatic-takeover",
+            bridge_takeover_from_provider: route.providerId,
+          } : selected.accountId !== route.accountId ? { bridge_route_change: "same-provider-account" } : {}),
+        };
+      };
       const providerRequest = {
         mode: route.mode,
         model: route.model,
@@ -198,25 +276,47 @@ export class BridgeService {
         timeoutMs: numberFromMetadata(request.metadata?.bridge_timeout_ms),
         metadata: providerVisibleMetadata(request.metadata),
       };
-      const fallbackEnabled = this.config.accounts?.fallback?.enabled === true && metadataBoolean(request.metadata?.bridge_account_fallback);
-      const candidates = fallbackEnabled
+      const automaticTakeoverEnabled = this.config.automaticTakeover?.enabled === true
+        && ((route.smart === true && route.explicitAccount !== true) || metadataBoolean(request.metadata?.bridge_automatic_takeover));
+      const maximumAtStart = automaticTakeoverEnabled ? await sanitizedMaximumUtilizationReadModel(this.maximumUtilizationController) : null;
+      const protectedDelegate = route.mode === "delegate" && ["maximum-utilization", "exhausted"].includes(maximumAtStart?.phase);
+      const fallbackEnabled = automaticTakeoverEnabled
+        || (this.config.accounts?.fallback?.enabled === true && metadataBoolean(request.metadata?.bridge_account_fallback));
+      const candidates = fallbackEnabled && !protectedDelegate
         ? this.registry.fallbackRoutes(route, this.config.accounts.fallback.maxCandidates).slice(0, 1)
         : [];
-      const attempts = [route, ...candidates];
+      const takeoverCandidates = automaticTakeoverEnabled && !protectedDelegate && this.config.automaticTakeover.crossProviderEnabled === true
+        ? this.registry.takeoverRoutes(route, {
+            maximum: this.config.automaticTakeover.maxCrossProviderCandidates,
+            minimumIntelligence: Number(this.config.routing?.providerProfiles?.[route.providerId]?.intelligence ?? 0) * this.config.automaticTakeover.minimumIntelligenceRatio,
+            requiredContextWindow: numberFromMetadata(request.metadata?.bridge_required_context_tokens) ?? 1,
+            privacyClass: this.config.routing?.providerProfiles?.[route.providerId]?.privacyClass,
+          })
+        : [];
+      const attempts = [route, ...candidates, ...takeoverCandidates];
       const attemptGroupId = createId("attempt_group");
+      const takeoverIntentDigest = createHash("sha256").update(JSON.stringify({ threadId, mode: route.mode, workspace: workspace ?? null, messages })).digest("hex");
+      let takeoverRegistered = false;
+      const failedRouteKeys = new Set();
       for (const [index, attemptRoute] of attempts.entries()) {
         const attemptId = createId("attempt");
         const attemptStartedAt = Date.now();
         let meaningfulOutput = false;
         let observedSideEffect = false;
         let attemptTerminal;
-        let attemptCommitted = index + 1 >= attempts.length;
+        let attemptCommitted = false;
         const pendingEvents = [];
         const baseAttemptRequest = {
           ...providerRequest,
+          signal: detachedTakeover ? undefined : providerRequest.signal,
           model: attemptRoute.model,
           accountId: attemptRoute.accountId,
-          metadata: { ...providerRequest.metadata, bridge_account_id: attemptRoute.accountId },
+          metadata: {
+            ...providerRequest.metadata,
+            bridge_provider: attemptRoute.providerId,
+            bridge_account_id: attemptRoute.accountId,
+            bridge_upstream_model: attemptRoute.model,
+          },
         };
         const attemptRequest = attemptRoute.mode === "consult" && attemptRoute.provider.capabilities?.().userFacingProsePolicy === true
           ? attemptRoute.provider.attachUserFacingProsePolicy(baseAttemptRequest, userFacingProsePolicy)
@@ -225,7 +325,9 @@ export class BridgeService {
         const commitAttempt = async () => {
           if (attemptCommitted) return;
           attemptCommitted = true;
-          for (const event of pendingEvents.splice(0)) await emitAll(assembler.accept(event), options.onEvent);
+          selectAssemblerRoute(attemptRoute);
+          await ensureResponseBegan();
+          for (const event of pendingEvents.splice(0)) await emitResponseEvents(assembler.accept(event));
         };
         try {
           for await (const providerEvent of attemptRoute.provider.run(attemptRequest)) {
@@ -240,14 +342,14 @@ export class BridgeService {
             const event = providerEvent.type === "done" && (effectiveSettings || connectionLifecycle)
               ? { ...providerEvent, providerMetadata: { ...(providerEvent.providerMetadata ?? {}), ...(effectiveSettings ? { effectiveSettings } : {}), ...(connectionLifecycle ? { connectionLifecycle } : {}) } }
               : providerEvent;
-            if (options.signal?.aborted) throw options.signal.reason ?? new Error("Request aborted");
+            if (options.signal?.aborted && !detachedTakeover) throw options.signal.reason ?? new Error("Request aborted");
             if (["text-delta", "reasoning-delta", "tool-call-delta"].includes(event.type)) meaningfulOutput = true;
             if (["tool-call-delta", "usage"].includes(event.type)) observedSideEffect = true;
             if (event.type === "done") attemptTerminal = event;
             if (attemptCommitted) {
-              await emitAll(assembler.accept(event), options.onEvent);
+              await emitResponseEvents(assembler.accept(event));
             } else {
-              if (["text-delta", "reasoning-delta", "tool-call-delta", "usage", "done"].includes(event.type)) pendingEvents.push(event);
+              pendingEvents.push(event);
               if (meaningfulOutput || observedSideEffect) await commitAttempt();
             }
             if (assembler.output.length > 0) meaningfulOutput = true;
@@ -260,7 +362,6 @@ export class BridgeService {
           }
           await commitAttempt();
           terminal = attemptTerminal;
-          activeRoute = attemptRoute;
           this.connectionHealth.set(connectionKey(activeRoute.providerId, activeRoute.accountId), {
             providerHealth: "available",
             accountHealth: "available",
@@ -298,26 +399,92 @@ export class BridgeService {
             observedAt: new Date().toISOString(),
           });
           await this.#observeCodexNativeUsageLimit(attemptRoute, bridgeError);
+          failedRouteKeys.add(takeoverRouteKey(attemptRoute));
           if (!options.signal?.aborted && (bridgeError.code === "provider_error" || bridgeError.status >= 500)) {
             await this.registry.recordFailure(attemptRoute, bridgeError, { durationMs: Date.now() - attemptStartedAt, partial: meaningfulOutput || observedSideEffect, attemptId, attemptGroupId, attemptOrdinal: index + 1, fallbackFromAccountId: attemptRoute.fallbackFromAccountId });
           }
-          const hasNext = index + 1 < attempts.length;
-          if (!hasNext || !canSafelyFallbackAccount(bridgeError, { meaningfulOutput, observedSideEffect, mode: attemptRoute.mode })) throw bridgeError;
+          const nextRoute = attempts[index + 1];
+          const hasNext = Boolean(nextRoute);
+          const safeToContinue = nextRoute?.providerId === attemptRoute.providerId
+            ? canSafelyFallbackAccount(bridgeError, { meaningfulOutput, observedSideEffect, mode: attemptRoute.mode })
+            : canSafelyTakeoverProvider(bridgeError, { meaningfulOutput, observedSideEffect, mode: attemptRoute.mode });
+          if (!hasNext || !safeToContinue) throw bridgeError;
+          if (automaticTakeoverEnabled) {
+            detachedTakeover = this.config.automaticTakeover.externalMonitoringEnabled === true;
+            if (this.automaticTakeoverController && !takeoverRegistered) {
+              const quotaWindowId = String(bridgeError.details?.upstream?.resetAt ?? "unknown-window");
+              takeoverTargetId = `${threadId}:${takeoverIntentDigest}:${route.providerId}:${route.accountId}:${quotaWindowId}`;
+              const existingTakeover = this.inlineTakeovers.get(takeoverTargetId);
+              if (existingTakeover) {
+                const recovered = structuredClone(await existingTakeover.promise);
+                if (options.onEvent) {
+                  await options.onEvent({ type: "response.created", sequence_number: 0, response: { ...recovered, status: "in_progress", output: [] } }).catch(() => undefined);
+                  await options.onEvent({ type: "response.completed", sequence_number: 1, response: recovered }).catch(() => undefined);
+                }
+                return recovered;
+              }
+              let resolveTakeover;
+              let rejectTakeover;
+              const takeoverPromise = new Promise((resolve, reject) => { resolveTakeover = resolve; rejectTakeover = reject; });
+              takeoverPromise.catch(() => undefined);
+              takeoverDeferred = { resolve: resolveTakeover, reject: rejectTakeover };
+              this.inlineTakeovers.set(takeoverTargetId, { promise: takeoverPromise, createdAt: Date.now() });
+              const frozen = takeoverFrozen(route, request, workspace, this.config.routing?.providerProfiles?.[route.providerId]);
+              this.automaticTakeoverTargets.set(takeoverTargetId, {
+                status: "failed",
+                activeRoute: null,
+                failedRouteKeys,
+                candidates: attempts.slice(1).map((candidate) => takeoverCandidate(candidate, frozen, quotaWindowId)),
+              });
+              await this.automaticTakeoverController.registerTarget({
+                targetId: takeoverTargetId,
+                providerId: route.providerId,
+                accountId: route.accountId,
+                quotaWindowId,
+                role: "coordinator",
+                frozen,
+                explicitRoute: route.smart !== true,
+                automaticTakeoverOptIn: metadataBoolean(request.metadata?.bridge_automatic_takeover),
+                crossProviderEnabled: this.config.automaticTakeover.crossProviderEnabled,
+                maximumUtilizationProtected: protectedDelegate,
+                successorLaneEnabled: !protectedDelegate,
+              });
+              const observed = await this.automaticTakeoverController.observeFailure({
+                targetId: takeoverTargetId,
+                providerId: route.providerId,
+                accountId: route.accountId,
+                quotaWindowId,
+                kind: "quota",
+              });
+              if (observed.duplicate && observed.phase === "replacement-active") {
+                throw new ProviderError(route.providerId, "A prior automatic takeover is active but this daemon has no resumable response receipt", { retryable: false, details: { kind: "takeover-resume-required" } });
+              }
+              takeoverRegistered = true;
+            }
+          }
           terminal = undefined;
         }
       }
-      assembler.route = { ...assembler.route, ...activeRoute };
-      assembler.request.metadata = { ...(assembler.request.metadata ?? {}), bridge_account_id: activeRoute.accountId };
-      await emitAll(assembler.finish(terminal), options.onEvent);
+      selectAssemblerRoute(activeRoute);
+      if (takeoverRegistered) {
+        const runtime = this.automaticTakeoverTargets.get(takeoverTargetId);
+        runtime.activeRoute = activeRoute;
+        for (let index = 0; index <= attempts.length; index += 1) {
+          const takeover = await this.automaticTakeoverController.tick();
+          if (takeover.counts.active > 0 || takeover.phase === "blocked" || takeover.phase === "unsupported") break;
+        }
+      }
+      await ensureResponseBegan();
+      await emitResponseEvents(assembler.finish(terminal));
 
       const assistant = assembler.assistantMessage();
       const storedMessages = [...messages, assistant];
       if (request.metadata?.bridge_ephemeral_tip !== true) {
         const thread = this.sessions.getOrCreateThread(threadId, {
-          providerId: route.providerId,
+          providerId: activeRoute.providerId,
           accountId: activeRoute.accountId,
-          mode: route.mode,
-          model: route.model,
+          mode: activeRoute.mode,
+          model: activeRoute.model,
           workspace: workspace ? String(workspace) : undefined,
         });
         thread.messages = structuredClone(storedMessages);
@@ -355,10 +522,20 @@ export class BridgeService {
           body: boundedRedactedJson(assembler.response),
         });
       }
+      if (takeoverDeferred && takeoverTargetId) {
+        takeoverDeferred.resolve(structuredClone(assembler.response));
+        const timer = setTimeout(() => this.inlineTakeovers.delete(takeoverTargetId), 5 * 60 * 1000);
+        timer.unref?.();
+      }
       return assembler.response;
     } catch (error) {
       const bridgeError = asBridgeError(error);
-      await emitAll(assembler.fail({ code: bridgeError.code, message: bridgeError.message }), options.onEvent).catch(() => undefined);
+      if (takeoverDeferred && takeoverTargetId) {
+        takeoverDeferred.reject(bridgeError);
+        this.inlineTakeovers.delete(takeoverTargetId);
+      }
+      await ensureResponseBegan().catch(() => undefined);
+      await emitResponseEvents(assembler.fail({ code: bridgeError.code, message: bridgeError.message })).catch(() => undefined);
       this.logger.error("Response failed", {
         traceId,
         responseId: assembler.responseId,
@@ -537,6 +714,12 @@ export class BridgeService {
     });
     const maximumUtilization = await sanitizedMaximumUtilizationReadModel(this.maximumUtilizationController);
     const compatibility = summarizeCompatibility(this.config.compatibilityWatch, this.compatibilityReport);
+    let continuity;
+    try {
+      continuity = this.continuityController ? await this.continuityController.view() : { enabled: false, tasks: [], reason: "disabled" };
+    } catch (error) {
+      continuity = { enabled: true, controlEnabled: false, provider: "codex", evidence: "unavailable", tasks: [], capabilities: { rename: false, rollover: false, nativeChatListGrouping: false }, reason: error instanceof Error ? error.message : String(error) };
+    }
     const tip = this.config.tips?.enabled === true
       ? selectTip({
           mode,
@@ -592,11 +775,177 @@ export class BridgeService {
       routeMap,
       accounts,
       compatibility,
+      continuity,
+      automaticTakeover: this.automaticTakeoverController ? await this.automaticTakeoverController.readModel() : { phase: "disabled", counts: { targets: 0, monitors: 0, queued: 0, active: 0, unsupported: 0, blocked: 0 }, monitors: [] },
       branching: this.branchingPolicy(),
       connectionRecovery: this.connectionRecoveryPolicy(),
       selfHeal: this.selfHealPolicy(),
       ...(maximumUtilization ? { maximumUtilization } : {}),
+      copyCheck: describeCopyCheck({
+        ...this.config.copyCheck,
+        records: this.copyCheckRecords,
+      }),
     };
+  }
+
+  async continuityState() {
+    this.#assertOpen();
+    if (!this.continuityController) return { enabled: false, tasks: [], reason: "disabled" };
+    return this.continuityController.view();
+  }
+
+  async renameContinuityTask(input) {
+    this.#assertOpen();
+    if (!this.continuityController) throw new RequestError("Continuity is disabled");
+    return this.continuityController.rename(input);
+  }
+
+  async previewContinuityRollover(input) {
+    this.#assertOpen();
+    if (!this.continuityController) throw new RequestError("Continuity is disabled");
+    return this.continuityController.previewRollover(input);
+  }
+
+  async requestContinuityRollover(input) {
+    this.#assertOpen();
+    if (!this.continuityController) throw new RequestError("Continuity is disabled");
+    return this.continuityController.rollover(input);
+  }
+
+  async disableAutomaticTakeover() {
+    this.#assertOpen();
+    if (!this.automaticTakeoverController) return { accepted: false, reason: "disabled" };
+    return this.automaticTakeoverController.ownerDisable();
+  }
+
+  async reviewCopy(input = {}) {
+    this.#assertOpen();
+    const policy = this.config.copyNaturalizer ?? {};
+    if (policy.enabled !== true) throw new RequestError("Copy review is disabled");
+    const profile = input.profile ?? policy.profile;
+    const voice = resolveVoiceProfile(this.config.voice, input.voiceProfile);
+    const rewriteAdapter = policy.useModel === true
+      ? async (text, context) => {
+          const result = await this.consult({
+            provider: policy.provider,
+            model: policy.model,
+            question: text,
+            system: [context.profile.guidance, ...context.rules, "Return only the rewritten text; do not add framing or commentary."].join("\n"),
+            maxOutputTokens: policy.maxOutputTokens,
+            timeoutMs: policy.timeoutMs,
+            allowWebSearch: false,
+            allowSubagents: false,
+          });
+          return { text: result.text, usage: result.usage };
+        }
+      : null;
+    try {
+      return await naturalizeCopy(String(input.text ?? ""), {
+        enabled: true,
+        profile,
+        maxInputChars: policy.maxInputChars,
+        maxPasses: policy.maxPasses,
+        adapterTimeoutMs: policy.timeoutMs,
+        rewriteAdapter,
+        voiceConstraints: {
+          id: voice.id,
+          parameters: voice.parameters,
+          preferredTerms: voice.preferredTerms,
+          avoidedTerms: voice.avoidedTerms,
+        },
+      });
+    } catch (error) {
+      throw new RequestError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Owner-started external copy check. Credentials existing never enable it.
+   * Results are advisory and are stored only as sanitized records.
+   */
+  async checkCopy(input = {}) {
+    this.#assertOpen();
+    try {
+      const result = await checkCopy(String(input.text ?? ""), {
+        ...this.config.copyCheck,
+        trigger: input.trigger,
+        action: input.action,
+        confirmed: input.confirmed,
+        requestedAdapters: input.adapters,
+        acknowledgeRetention: input.acknowledgeRetention,
+        pangramResult: input.pangramResult ?? input.result ?? input.displayText,
+        environment: this.copyCheckEffects.environment ?? process.env,
+        fetch: this.copyCheckEffects.fetch ?? globalThis.fetch,
+        openUrl: this.copyCheckEffects.openUrl,
+        writeClipboard: this.copyCheckEffects.writeClipboard,
+        signal: input.signal,
+      });
+      this.#rememberCopyCheck(result.results);
+      return result;
+    } catch (error) {
+      throw new RequestError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * User-started release companion. External timeout/failure/skip cannot fail it.
+   */
+  async reviewReleaseCopy(input = {}) {
+    this.#assertOpen();
+    if (input.userStarted !== true) throw new RequestError("Release copy review runs only when a user starts it");
+    const policy = this.config.copyNaturalizer ?? {};
+    const voice = resolveVoiceProfile(this.config.voice, input.voiceProfile);
+    const rewriteAdapter = policy.useModel === true
+      ? async (text, context) => {
+          const result = await this.consult({
+            provider: policy.provider,
+            model: policy.model,
+            question: text,
+            system: [context.profile.guidance, ...context.rules, "Return only the rewritten text; do not add framing or commentary."].join("\n"),
+            maxOutputTokens: policy.maxOutputTokens,
+            timeoutMs: policy.timeoutMs,
+            allowWebSearch: false,
+            allowSubagents: false,
+          });
+          return { text: result.text, usage: result.usage };
+        }
+      : null;
+    try {
+      const result = await reviewReleaseCopy(String(input.text ?? ""), {
+        userStarted: true,
+        copyNaturalizer: policy,
+        copyCheck: this.config.copyCheck,
+        rewriteAdapter,
+        voiceConstraints: {
+          id: voice.id,
+          parameters: voice.parameters,
+          preferredTerms: voice.preferredTerms,
+          avoidedTerms: voice.avoidedTerms,
+        },
+        confirmed: input.confirmed,
+        requestedAdapters: input.adapters,
+        acknowledgeRetention: input.acknowledgeRetention,
+        pangramResult: input.pangramResult ?? input.result,
+        environment: this.copyCheckEffects.environment ?? process.env,
+        fetch: this.copyCheckEffects.fetch ?? globalThis.fetch,
+        openUrl: this.copyCheckEffects.openUrl,
+        writeClipboard: this.copyCheckEffects.writeClipboard,
+        signal: input.signal,
+      });
+      this.#rememberCopyCheck(result.external?.results);
+      return result;
+    } catch (error) {
+      throw new RequestError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  #rememberCopyCheck(results) {
+    if (!Array.isArray(results)) return;
+    for (const item of results) {
+      const sanitized = sanitizeCopyCheckRecord(item);
+      if (sanitized) this.copyCheckRecords.push(sanitized);
+    }
+    if (this.copyCheckRecords.length > 8) this.copyCheckRecords = this.copyCheckRecords.slice(-8);
   }
 
   /** Request a daemon-owned native quota refresh for the selected Codex account. */
@@ -650,6 +999,7 @@ export class BridgeService {
     this.closed = true;
     await this.maximumUtilizationReady?.catch(() => undefined);
     await this.maximumUtilizationController?.close?.();
+    await this.automaticTakeoverController?.close?.();
     this.compatibilityPolling?.stop();
     for (const timer of this.tipConversationTimers.values()) clearTimeout(timer);
     this.tipConversationTimers.clear();
@@ -1163,6 +1513,41 @@ function canSafelyFallbackAccount(error, state) {
     && upstream.noSideEffects === true
     && upstream.safeToFallbackBeforeOutput === true;
   return nativeUsageLimit || (state.mode !== "delegate" && upstream?.safeToFallbackBeforeOutput === true);
+}
+
+function canSafelyTakeoverProvider(error, state) {
+  return canSafelyFallbackAccount(error, state);
+}
+
+function takeoverFrozen(route, request, workspace, profile = {}) {
+  return {
+    providerId: route.providerId,
+    mode: route.mode,
+    tools: Array.isArray(request.tools) ? request.tools.map((tool) => String(tool?.name ?? tool?.function?.name ?? tool?.type ?? "")).filter(Boolean).sort() : [],
+    workspace: String(workspace ?? "no-workspace"),
+    privacy: Number(profile.privacy ?? 0),
+    context: Math.max(1, numberFromMetadata(request.metadata?.bridge_required_context_tokens) ?? 1),
+    intelligence: Math.max(0, Number(profile.intelligence ?? 0)),
+  };
+}
+
+function takeoverCandidate(route, frozen, quotaWindowId) {
+  return {
+    providerId: route.providerId,
+    accountId: route.accountId,
+    quotaWindowId,
+    certifiedHealthy: route.certifiedHealthy === true || route.providerId === frozen.providerId,
+    mode: route.mode,
+    tools: route.mode === "integrated" ? frozen.tools : Array.isArray(route.takeoverTools) ? route.takeoverTools : [],
+    workspace: frozen.workspace,
+    privacy: Number(route.privacy ?? frozen.privacy),
+    context: Math.max(frozen.context, Number(route.contextWindow ?? route.provider?.config?.contextWindow ?? frozen.context)),
+    intelligence: Math.max(frozen.intelligence, Number(route.intelligence ?? frozen.intelligence)),
+  };
+}
+
+function takeoverRouteKey(route) {
+  return `${route.providerId}\0${route.accountId}`;
 }
 
 async function sanitizedMaximumUtilizationReadModel(controller) {

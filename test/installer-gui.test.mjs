@@ -41,6 +41,8 @@ test("GUI checks stable release first, reuses the digest plan, and defaults acti
   assert.equal(bootstrap.defaults.includes("beads"), false);
   assert.equal(bootstrap.defaults.includes("project-bootstrap"), false);
   assert.equal(bootstrap.defaults.includes("codex-full-access"), false);
+  assert.equal(bootstrap.defaults.includes("copy-naturalizer"), false);
+  assert.equal(bootstrap.defaults.includes("copy-check"), false);
   assert.equal(bootstrap.defaults.includes("agentrouter-free"), false);
   for (const id of ["mistral-api-free", "groqcloud-free", "cloudflare-workers-ai-free", "gemini-api-free"]) {
     assert.equal(bootstrap.defaults.includes(id), false);
@@ -49,6 +51,23 @@ test("GUI checks stable release first, reuses the digest plan, and defaults acti
   assert.equal(bootstrap.components.find(item => item.id === "beads").optional, true);
   assert.equal(bootstrap.components.find(item => item.id === "project-bootstrap").optional, true);
   assert.equal(bootstrap.components.find(item => item.id === "codex-full-access").optional, true);
+  const copyNaturalizer = bootstrap.components.find(item => item.id === "copy-naturalizer");
+  assert.equal(copyNaturalizer.optional, true);
+  assert.equal(copyNaturalizer.group, "writing-tools");
+  assert.match(copyNaturalizer.localHeuristicsTooltip, /without leaving this device/);
+  assert.match(copyNaturalizer.configuredRewriteTooltip, /already configured and explicitly choose/);
+  assert.match(copyNaturalizer.configuredRewriteTooltip, /does not select or enable one/);
+  assert.match(copyNaturalizer.localDisclaimer, /never auto-apply/i);
+  const copyCheck = bootstrap.components.find(item => item.id === "copy-check");
+  assert.equal(copyCheck.optional, true);
+  assert.equal(copyCheck.group, "writing-tools");
+  assert.match(copyCheck.destinationTooltip, /api.sapling.ai\/api\/v1\/aidetect/);
+  assert.match(copyCheck.payloadTooltip, /12,000/);
+  assert.match(copyCheck.retentionTooltip, /stores submitted text and uses it to improve/i);
+  assert.match(copyCheck.trialTooltip, /limited 2,000-credit developer trial/i);
+  assert.match(copyCheck.trialTooltip, /not permanently free/i);
+  assert.match(copyCheck.partnershipTooltip, /no partnership/i);
+  assert.match(copyCheck.detectorDisclaimer, /cannot prove authorship/i);
   assert.equal(bootstrap.components.find(item => item.id === "agentrouter-free").optional, true);
   assert.equal(bootstrap.components.find(item => item.id === "agentrouter-free").offerEndDate, null);
   assert.equal(bootstrap.components.find(item => item.id === "agentrouter-free").visibilityFreshnessDays, 7);
@@ -75,8 +94,9 @@ test("volatile offer visibility expires to check-first and hides after a known e
 test("installer GUI presents Codex full access as an explicit unchecked warning", async () => {
   const source = await readFile(new URL("../ui/install.js", import.meta.url), "utf8");
   assert.match(source, /c\.id==="codex-full-access"/);
-  assert.match(source, /removes command approval pauses and command sandboxing; app\/MCP approvals become preapproved/);
-  assert.match(source, /does not enable destructive or open-world access/);
+  assert.match(source, /explicit-only and separately confirmed/);
+  assert.match(source, /Existing tools may read and write files, execute commands, and use the network without approvals/);
+  assert.match(source, /does not install or enable new tools, apps, plugins, or servers/);
   assert.match(source, /state\.selected\.has\(c\.id\)\?"checked":""/);
 });
 
@@ -170,6 +190,28 @@ test("installer presents maximum utilization as optional unchecked with fail-clo
   assert.match(source, /Needs authoritative native quota \+ capable host adapter; otherwise remains observational\/pending\./);
   assert.match(source, /state\.selected\.has\(c\.id\)\?"checked":""/);
   assert.doesNotMatch(source, /Roadmap[^<]*maximum utilization/i);
+});
+
+test("installer presents Copy Naturalizer collapsed and unchecked without setup metrics", async () => {
+  const [source, styles] = await Promise.all([
+    readFile(new URL("../ui/install.js", import.meta.url), "utf8"),
+    readFile(new URL("../ui/install.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(source, /<details class="writing-tools">/);
+  assert.doesNotMatch(source, /<details class="writing-tools"[^>]*\bopen\b/);
+  assert.match(source, />Writing tools <span>/);
+  assert.match(source, /groups\.writingTools\.map\(componentChoiceMarkup\)/);
+  assert.match(source, /state\.selected\.has\(c\.id\)\?"checked":""/);
+  assert.match(source, /data-tooltip=.*localHeuristicsTooltip/);
+  assert.match(source, /data-tooltip=.*configuredRewriteTooltip/);
+  assert.match(source, /\.help-tip"\)\.forEach\(el=>el\.addEventListener\("click",event=>\{event\.preventDefault\(\);event\.stopPropagation\(\);el\.focus\(\)\}\)\)/);
+  assert.match(source, /copy-disclaimer/);
+  const copyMarkup = source.slice(source.indexOf("function copyNaturalizerDetails"), source.indexOf("function componentReadiness"));
+  assert.doesNotMatch(copyMarkup, /story|build|metric|score|cost/i);
+  assert.match(styles, /\.writing-tools/);
+  assert.match(styles, /\.writing-tools \.choice-list\{overflow:visible\}/);
+  assert.match(styles, /\.help-tip:hover::after,\.help-tip:focus::after/);
+  assert.match(styles, /\.copy-disclaimer/);
 });
 
 test("installer GUI presents Voice presets, customization, live preview, and reset", async () => {

@@ -211,3 +211,6 @@ Set the owner token in the environment that launches both Codex and the daemon. 
 5. Test buffered `/v1/responses` with the mock provider before testing Codex.
 6. Validate MCP independently by launching `node src/cli.mjs mcp --config ...` through an MCP inspector/client.
 7. Only then enable `--live` provider checks or paid inference.
+## Native Continuity and Goals
+
+Threadspan reads task, status, name, lineage, and Goal state through Codex App Server. The HUD never edits Codex databases. Promotion and rollover are requests to the installed certified Continuity supervisor, which performs native Goal lifecycle operations and proves predecessor fencing, exactly one successor, receipts, and fresh read-back before changing the accepted generation. Goal-free tasks may be promoted without fabricating a Goal; existing Goals retain one logical identity while their native binding generation advances.

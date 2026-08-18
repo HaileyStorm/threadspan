@@ -16,6 +16,174 @@ import { createTestConfig, silentLogger } from "./helpers.mjs";
 const execFileAsync = promisify(execFile);
 const gitAvailable = await execFileAsync("git", ["--version"]).then(() => true, () => false);
 
+test("automatic takeover exhausts one same-provider alternate before a compatible provider", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-provider-takeover-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const firstKey = join(root, "first.key");
+  const secondKey = join(root, "second.key");
+  await writeFile(firstKey, "first\n", { mode: 0o600 });
+  await writeFile(secondKey, "second\n", { mode: 0o600 });
+  const order = [];
+  let disconnectController;
+  const primary = createServer(async (request, response) => {
+    for await (const _chunk of request) { /* consume */ }
+    order.push(request.headers.authorization);
+    if (request.headers.authorization === "Bearer second") await new Promise((resolve) => setTimeout(resolve, 30));
+    response.writeHead(429, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: { message: "private upstream detail must not escape" } }));
+  });
+  const backup = createServer(async (request, response) => {
+    for await (const _chunk of request) { /* consume */ }
+    order.push("backup");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: "continued" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+  });
+  await Promise.all([
+    new Promise((resolve) => primary.listen(0, "127.0.0.1", resolve)),
+    new Promise((resolve) => backup.listen(0, "127.0.0.1", resolve)),
+  ]);
+  t.after(() => Promise.all([
+    new Promise((resolve) => primary.close(resolve)),
+    new Promise((resolve) => backup.close(resolve)),
+  ]));
+  const primaryUrl = `http://127.0.0.1:${primary.address().port}/v1`;
+  const backupUrl = `http://127.0.0.1:${backup.address().port}/v1`;
+  const store = new AccountStore({ path: join(root, "accounts.json") });
+  const first = await store.create({ providerId: "api", label: "First", authKind: "secret-file-ref", authSourceRef: "first" });
+  await store.create({ providerId: "api", label: "Second", authKind: "secret-file-ref", authSourceRef: "second" });
+  await store.select(first.id);
+  const config = createTestConfig({
+    accounts: { path: store.path, profileSources: {}, fallback: { enabled: false, maxCandidates: 1 } },
+    automaticTakeover: { enabled: true, crossProviderEnabled: true, statePath: join(root, "automatic-takeover.json") },
+    defaults: { provider: "api", mode: "consult", model: "m" },
+    routing: {
+      providerOrder: { consult: ["api", "backup"] },
+      providerProfiles: {
+        api: { intelligence: 80, privacyClass: "owner-private" },
+        backup: { intelligence: 80, privacyClass: "owner-private" },
+      },
+    },
+    providers: {
+      api: { adapter: "openai-chat", baseUrl: primaryUrl, model: "m", contextWindow: 1000, capabilities: ["consult"], accountSources: { first: { kind: "secret-file", path: firstKey }, second: { kind: "secret-file", path: secondKey } }, retryWithoutStreaming: false },
+      backup: { adapter: "openai-chat", baseUrl: backupUrl, model: "better", contextWindow: 1000, capabilities: ["consult"], retryWithoutStreaming: false },
+    },
+  });
+  const registry = new ProviderRegistry(config, { logger: silentLogger(), accountStore: store });
+  assert.equal(registry.resolveRoute({ providerId: "threadspan", accountId: first.id, mode: "consult", model: "m" }).explicitAccount, true);
+  const healthyBackup = registry.resolveRoute({ providerId: "backup", mode: "consult", model: "better" });
+  await registry.recordSuccess(healthyBackup, {});
+  const service = new BridgeService(config, { logger: silentLogger(), registry, accountStore: store });
+  t.after(() => service.close());
+
+  await assert.rejects(service.executeResponse({ model: "consult/api/m", input: "fixed route" }), /HTTP 429/);
+  assert.deepEqual(order, ["Bearer first"]);
+  order.length = 0;
+  disconnectController = new AbortController();
+  const takeoverRequest = { model: "consult/api/m", input: "continue", metadata: { bridge_automatic_takeover: true, bridge_thread_id: "stable-takeover-thread" } };
+  const firstTakeover = service.executeResponse(takeoverRequest, {
+    signal: disconnectController.signal,
+    onEvent: () => { throw new Error("event sink disconnected"); },
+  });
+  const replayTakeover = service.executeResponse(takeoverRequest);
+  for (let attempt = 0; attempt < 500 && !order.includes("Bearer second"); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.ok(order.includes("Bearer second"), "the certified first-account limit must start same-provider fallback before disconnect");
+  disconnectController.abort(new Error("client disconnected"));
+  const [response, replayed] = await Promise.all([firstTakeover, replayTakeover]);
+  assert.equal(response.output_text, "continued");
+  assert.equal(replayed.id, response.id, "the same interrupted turn reuses the in-flight takeover result");
+  assert.equal(order.filter((value) => value === "Bearer first").length, 2);
+  assert.equal(order.filter((value) => value === "Bearer second").length, 1);
+  assert.equal(order.filter((value) => value === "backup").length, 1);
+  assert.equal(response.metadata.bridge_provider, "backup");
+  assert.equal(response.metadata.bridge_upstream_model, "better");
+  assert.equal(response.metadata.bridge_route_change, "automatic-takeover");
+  assert.equal(response.metadata.bridge_takeover_from_provider, "api");
+  assert.equal(response.model, "consult/backup/better");
+  assert.doesNotMatch(JSON.stringify(response), /private upstream detail/);
+});
+
+test("cross-provider takeover requires explicit equal privacy classes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-takeover-privacy-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = {
+    accounts: { path: join(root, "accounts.json") },
+    defaults: { provider: "source", mode: "consult", model: "source-model" },
+    routing: {
+      providerOrder: { consult: ["source", "equal", "mismatch", "unclassified"] },
+      providerProfiles: {
+        source: { intelligence: 80, privacyClass: "owner-private" },
+        equal: { intelligence: 80, privacyClass: "owner-private" },
+        mismatch: { intelligence: 80, privacyClass: "external-provider" },
+        unclassified: { intelligence: 80 },
+      },
+    },
+    providers: Object.fromEntries(["source", "equal", "mismatch", "unclassified"].map((id) => [id, {
+      adapter: "mock",
+      model: `${id}-model`,
+      contextWindow: 1_000,
+      capabilities: ["consult"],
+    }])),
+  };
+  const registry = new ProviderRegistry(config, { logger: silentLogger() });
+  t.after(() => registry.close());
+  const source = registry.resolveRoute({ providerId: "source", mode: "consult", model: "source-model" });
+  for (const providerId of ["equal", "mismatch", "unclassified"]) {
+    await registry.recordSuccess(registry.resolveRoute({ providerId, mode: "consult" }), {});
+  }
+
+  assert.deepEqual(
+    registry.takeoverRoutes(source, { maximum: 8, privacyClass: "owner-private" }).map((route) => route.providerId),
+    ["equal"],
+  );
+  delete config.routing.providerProfiles.source.privacyClass;
+  assert.deepEqual(
+    registry.takeoverRoutes(source, { maximum: 8, privacyClass: "owner-private" }),
+    [],
+    "a request option cannot substitute for the source provider publishing its privacy class",
+  );
+});
+
+test("maximum-utilization protection never starts a second writable Delegate", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-protected-delegate-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let replacementRuns = 0;
+  const failedProvider = {
+    config: { adapter: "mock", model: "m", contextWindow: 1000 },
+    capabilities: () => ({ modes: { delegate: { supported: true } } }),
+    assertMode: () => {},
+    effectiveSettings: () => undefined,
+    connectionLifecycle: () => undefined,
+    async *run() { throw new ProviderError("source", "limited", { retryable: true, details: { upstream: { safeToFallbackBeforeOutput: true } } }); },
+  };
+  const replacementProvider = { ...failedProvider, async *run() { replacementRuns += 1; yield { type: "done", message: { role: "assistant", content: "wrong" } }; } };
+  const sourceRoute = { provider: failedProvider, providerId: "source", accountId: "a", mode: "delegate", model: "m", smart: true };
+  const replacementRoute = { ...sourceRoute, provider: replacementProvider, accountId: "b", fallbackFromAccountId: "a" };
+  const registry = {
+    accountStore: new AccountStore({ path: join(root, "accounts.json") }),
+    providers: new Map([["source", failedProvider]]),
+    resolveRoute: () => sourceRoute,
+    fallbackRoutes: () => [replacementRoute],
+    takeoverRoutes: () => [],
+    recordFailure: async () => {},
+    recordSuccess: async () => {},
+    close: async () => {},
+  };
+  const maximum = { initialize: async () => {}, close: async () => {}, readModel: async () => ({ phase: "maximum-utilization", readiness: "active", counts: {}, statuses: {}, quota: {}, automatic: {}, manual: {} }) };
+  const config = createTestConfig({
+    automaticTakeover: { enabled: true, statePath: join(root, "takeover.json") },
+    maximumUtilization: { enabled: true },
+    defaults: { provider: "source", mode: "delegate", model: "m" },
+    providers: { source: { adapter: "mock", model: "m", capabilities: ["delegate"] } },
+  });
+  const service = new BridgeService(config, { logger: silentLogger(), registry, accountStore: registry.accountStore, maximumUtilizationController: maximum });
+  t.after(() => service.close());
+  await assert.rejects(service.executeResponse({ model: "delegate/source/m", input: "write", metadata: { bridge_workspace: root, bridge_automatic_takeover: true } }), /limited/);
+  assert.equal(replacementRuns, 0);
+});
+
 async function createLinkedWorktree(t, prefix) {
   const root = await mkdtemp(join(tmpdir(), prefix));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -361,9 +529,9 @@ test("opt-in account fallback is same-route, pre-output only, and ledger-linked 
   for (const blocked of [
     { scenario: "auth", pattern: /HTTP 401/, status: "failed" },
     { scenario: "server", pattern: /HTTP 503/, status: "failed" },
-    { scenario: "partial", pattern: /stream failed/, status: "partial" },
-    { scenario: "usage", pattern: /stream failed/, status: "partial" },
-    { scenario: "tool", pattern: /stream failed/, status: "partial" },
+    { scenario: "partial", pattern: /Upstream stream reported an error/, status: "partial" },
+    { scenario: "usage", pattern: /Upstream stream reported an error/, status: "partial" },
+    { scenario: "tool", pattern: /Upstream stream reported an error/, status: "partial" },
   ]) {
     scenario = blocked.scenario;
     calls.length = 0;

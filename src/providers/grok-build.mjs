@@ -11,6 +11,7 @@ import { RunLedger, workspacePathFingerprint } from "../core/run-ledger.mjs";
 import { enforceGitWorkspacePolicy, inspectGitWorkspace } from "../workspace/git-workspace.mjs";
 import { createWorkspaceSnapshot } from "../workspace/snapshot.mjs";
 import { ProviderAdapter } from "./base.mjs";
+import { buildChildEnvironment } from "./command.mjs";
 
 const BUILTIN_PROFILES = Object.freeze({
   mechanical: Object.freeze({ reasoningEffort: "low", maxTurns: 8, expectedTurns: 2, noPlan: true }),
@@ -709,12 +710,9 @@ function renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitB
   return `${boundary}\n\n${nestedAgentPolicy}\n\n${webPolicy}\n\n${memoryPolicy}${fleetNote}${snapshotNote}${gitNote}\n\nPROFILE\nname=${profile.name}\nreasoning_effort=${profile.reasoningEffort}\nmax_turns=${profile.maxTurns}\nexpected_model_turns=${profile.expectedTurns}${acceptance}\n\nAUTHORITATIVE THREAD PACKET\n${renderMessagesForAgent(request.messages, { ...renderOptions, purpose: "agent-prompt" })}`;
 }
 
-/** Build the Grok process environment with optional explicit inheritance reduction. */
+/** Build the Grok process environment with broad inheritance only by explicit opt-in. */
 function buildGrokEnvironment(config, bridgeEnvironment, baseEnvironment = process.env) {
-  const inherited = config.inheritEnv === false
-    ? Object.fromEntries((config.envAllowlist ?? []).flatMap((name) => baseEnvironment[name] === undefined ? [] : [[name, baseEnvironment[name]]]))
-    : baseEnvironment;
-  return Object.fromEntries(Object.entries({ ...inherited, ...(config.env ?? {}), ...bridgeEnvironment }).map(([key, value]) => [key, String(value)]));
+  return buildChildEnvironment(config, config.env ?? {}, bridgeEnvironment, baseEnvironment);
 }
 
 /** Return executable candidates in trust-preference order. */

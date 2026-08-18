@@ -203,6 +203,75 @@
             </div>
           </dl>
         </section>
+        <section class="panel continuity-panel" aria-labelledby="continuity-heading">
+          <div class="panel__head">
+            <div>
+              <h2 id="continuity-heading">Continuity</h2>
+              <p class="note" data-field="continuity-summary">Logical tasks and current generations.</p>
+            </div>
+          </div>
+          <details data-field="continuity-disclosure">
+            <summary>Task tree <span data-field="continuity-count">0</span></summary>
+            <div class="continuity-tree" data-field="continuity-tree"></div>
+            <p class="note" data-field="continuity-note">Native task state is not connected.</p>
+            <p class="note" data-field="continuity-status" role="status" aria-live="polite"></p>
+          </details>
+        </section>
+        <section class="panel" aria-labelledby="copy-review-heading">
+          <details>
+            <summary id="copy-review-heading">Copy review</summary>
+            <form data-field="copy-review-form" class="stack">
+              <label>Text
+                <textarea name="text" rows="6" maxlength="12000" required></textarea>
+              </label>
+              <label>Style
+                <select name="profile">
+                  <option value="human">Human</option>
+                  <option value="technical">Technical</option>
+                  <option value="concise">Concise</option>
+                </select>
+              </label>
+              <button type="submit">Review copy</button>
+              <p class="note">Suggestions never auto-apply. Local checks stay on this device.</p>
+              <p class="note" data-field="copy-review-status" role="status" aria-live="polite"></p>
+              <label>Suggestion
+                <textarea data-field="copy-review-suggestion" rows="6" readonly></textarea>
+              </label>
+              <ul data-field="copy-review-findings" class="stack"></ul>
+            </form>
+          </details>
+        </section>
+        <section class="panel" aria-labelledby="copy-check-heading">
+          <details>
+            <summary id="copy-check-heading">External copy check</summary>
+            <form data-field="copy-check-form" class="stack">
+              <p class="note" data-field="copy-check-policy">Permission mode is off. Credentials existing do not enable checks. No background, focus, typing, or timer runs.</p>
+              <label>Text
+                <textarea name="text" rows="6" maxlength="12000" required></textarea>
+              </label>
+              <fieldset class="stack">
+                <legend>Adapters</legend>
+                <label><input type="checkbox" name="adapter" value="pangram"> Pangram (manual handoff to https://www.pangram.com/)</label>
+                <label><input type="checkbox" name="adapter" value="sapling"> Sapling (POST https://api.sapling.ai/api/v1/aidetect, env SAPLING_API_KEY)</label>
+                <label><input type="checkbox" name="adapter" value="winston"> Winston (POST https://api.gowinston.ai/v1/ai-content-detection, env WINSTON_API_KEY; limited 2,000-credit trial, not permanently free)</label>
+              </fieldset>
+              <label><input type="checkbox" name="acknowledgeRetention"> I understand Sapling stores submitted text and uses it to improve its service.</label>
+              <label><input type="checkbox" name="confirmed"> Confirm this one user-started check (required when permission is ask-every-time).</label>
+              <div class="stack">
+                <button type="submit">Run selected checks</button>
+                <button type="button" data-action="pangram-handoff">Copy text and prepare Pangram</button>
+                <a data-action="pangram-open" target="_blank" rel="noopener noreferrer" hidden>Open Pangram</a>
+              </div>
+              <label>Pangram result to paste back
+                <input name="pangramResult" maxlength="240" autocomplete="off">
+              </label>
+              <button type="button" data-action="pangram-record">Record pasted Pangram result</button>
+              <p class="note">External detector results are advisory and cannot prove authorship. They are never averaged and never decide rewrite acceptance. Payload is selected plain text, capped at 12,000 characters. Threadspan has no partnership with these vendors. GPTZero and Copyleaks are not working free APIs here.</p>
+              <p class="note" data-field="copy-check-status" role="status" aria-live="polite"></p>
+              <ul data-field="copy-check-results" class="stack"></ul>
+            </form>
+          </details>
+        </section>
         <section class="panel" aria-labelledby="capacity-heading">
           <h2 id="capacity-heading">Capacity and history</h2>
           <div class="stack">
@@ -258,9 +327,11 @@
               <h3 class="kicker">Maximum utilization</h3>
               <p data-field="maximum-utilization-phase">Not configured</p>
               <p class="note" data-field="maximum-utilization-detail">Optional controller state is not published.</p>
+              <p class="note" data-field="automatic-takeover-detail">Automatic takeover disabled.</p>
               <div class="filter-row" data-field="maximum-utilization-controls">
                 <button type="button" data-action="refresh-native-quota">Refresh native</button>
                 <button type="button" data-action="disable-maximum-utilization">Disable</button>
+                <button type="button" data-action="disable-automatic-takeover">Stop takeover</button>
                 <label>Manual scope
                   <select name="manual-scope-kind">
                     <option value="provider">Provider</option>

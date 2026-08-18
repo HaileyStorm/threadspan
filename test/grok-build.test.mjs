@@ -53,6 +53,61 @@ test("Grok installation preflight validates version without consuming inference"
   assert.match(result.version, /^grok 1\.0\.4/);
 });
 
+test("Grok Build keeps native profile auth paths but excludes unnamed provider and daemon credentials", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-env-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = join(root, "grok-env.mjs");
+  await writeFile(script, `
+    if (process.argv.includes("--version")) process.stdout.write("grok 1.0.4");
+    else process.stdout.write(JSON.stringify({ output_text: JSON.stringify({
+      home: process.env.HOME ?? process.env.USERPROFILE,
+      named: process.env.THREADSPAN_GROK_NAMED,
+      configured: process.env.THREADSPAN_GROK_CONFIGURED,
+      providerKey: process.env.XAI_API_KEY,
+      daemonCredential: process.env.THREADSPAN_CONNECTOR_TOKEN,
+      unrelated: process.env.THREADSPAN_GROK_PRIVATE,
+    }) }));
+  `);
+  const names = ["HOME", "THREADSPAN_GROK_NAMED", "THREADSPAN_GROK_PRIVATE", "XAI_API_KEY", "THREADSPAN_CONNECTOR_TOKEN"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  Object.assign(process.env, {
+    HOME: "/threadspan-test-home",
+    THREADSPAN_GROK_NAMED: "named-value",
+    THREADSPAN_GROK_PRIVATE: "must-not-leak",
+    XAI_API_KEY: "provider-key-must-not-leak",
+    THREADSPAN_CONNECTOR_TOKEN: "daemon-credential-must-not-leak",
+  });
+  t.after(() => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    commandArgs: [script],
+    inheritEnv: undefined,
+    envAllowlist: ["THREADSPAN_GROK_NAMED"],
+    env: { THREADSPAN_GROK_CONFIGURED: "configured-value" },
+  }), { logger: silentLogger() });
+  const events = [];
+  try {
+    for await (const event of provider.run({
+      mode: "consult",
+      model: "grok-4.6",
+      messages: [{ role: "user", content: "hello" }],
+    })) events.push(event);
+  } finally {
+    await provider.close();
+  }
+
+  assert.deepEqual(JSON.parse(events.at(-1).message.content), {
+    home: "/threadspan-test-home",
+    named: "named-value",
+    configured: "configured-value",
+  });
+});
+
 test("Grok Windows preflight resolves a bare PATHEXT command and records the final PowerShell artifact", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "threadspan grok windows "));
   t.after(() => rm(root, { recursive: true, force: true }));

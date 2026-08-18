@@ -8,6 +8,8 @@ import {
   resolveCodexUserConfigPath,
   transformCodexFullAccessConfig,
 } from "../codex/execution-policy.mjs";
+import { COPY_NATURALIZER_VERSION } from "../core/copy-naturalizer.mjs";
+import { COPY_CHECK_DISCLAIMER, COPY_CHECK_NO_PARTNERSHIP, COPY_CHECK_VERSION } from "../core/copy-check.mjs";
 import { normalizeVoiceConfig } from "../core/voice-profiles.mjs";
 
 const JSON_INDENT = 2;
@@ -79,6 +81,8 @@ export const OPTIONAL_COMPONENT_IDS = Object.freeze([
   "tips",
 ]);
 export const EXPLICIT_ONLY_COMPONENT_IDS = Object.freeze([
+  "copy-naturalizer",
+  "copy-check",
   "agentrouter-free",
   "mistral-api-free",
   "groqcloud-free",
@@ -523,6 +527,84 @@ const COMPONENTS = Object.freeze({
     },
     [permission("Enable separately to show at most one heuristic HUD tip per browser session; model refinement and Ask require separate provider/privacy configuration and explicit user action")],
   ),
+  "copy-naturalizer": component(
+    "threadspan/components/copy-naturalizer.json",
+    {
+      version: COPY_NATURALIZER_VERSION,
+      enabled: false,
+      activation: "explicit-user-action",
+      profile: "human",
+      localHeuristics: {
+        available: true,
+        networkAccess: false,
+        automaticRuns: false,
+      },
+      configuredRewrite: {
+        enabled: false,
+        adapterSource: "caller-configured-only",
+        automaticSelection: false,
+        automaticEnablement: false,
+      },
+      reviewRequiredBeforeApply: true,
+      autoApply: false,
+      storesCredentialValues: false,
+    },
+    [permission("Install the disabled review-only copy helper descriptor; enabling it or configuring a rewrite adapter requires a separate user action")],
+  ),
+  "copy-check": component(
+    "threadspan/components/copy-check.json",
+    {
+      version: COPY_CHECK_VERSION,
+      enabled: true,
+      permissionMode: "ask-every-time",
+      activation: "explicit-user-action",
+      automaticRuns: false,
+      credentialsEnableFeature: false,
+      selectionAllDoesNotEnable: true,
+      storesCredentialValues: false,
+      advisoryOnly: true,
+      neverAveraged: true,
+      cannotProveAuthorship: true,
+      cannotFailRelease: true,
+      neverControlsRewrite: true,
+      persist: ["status", "score", "adapter", "timestamp", "displayText"],
+      neverPersist: ["sourceText", "keys", "rawProviderBodies", "sensitiveUrls"],
+      partnership: false,
+      partnershipNote: COPY_CHECK_NO_PARTNERSHIP,
+      disclaimer: COPY_CHECK_DISCLAIMER,
+      adapters: {
+        pangram: {
+          enabled: true,
+          kind: "manual-handoff",
+          officialUrl: "https://www.pangram.com/",
+          destination: "Official Pangram checker page only",
+          payload: "Selected text copied locally; Threadspan never submits or reads the page",
+          networkUntilClick: false,
+        },
+        sapling: {
+          enabled: false,
+          kind: "api",
+          destination: "https://api.sapling.ai/api/v1/aidetect",
+          apiKeyEnv: "SAPLING_API_KEY",
+          payload: "JSON { text } up to copyCheck.maxInputChars",
+          retention: "Sapling stores submitted text and uses it to improve its service",
+          requiresAcknowledgement: true,
+          trial: "Developer keys are rate-limited and not a permanent free API",
+        },
+        winston: {
+          enabled: false,
+          kind: "api",
+          destination: "https://api.gowinston.ai/v1/ai-content-detection",
+          apiKeyEnv: "WINSTON_API_KEY",
+          payload: "JSON { text }; Winston documents 300–150,000 characters",
+          trial: "Limited 2,000-credit developer trial with no card required. Availability can change; it is not permanently free.",
+        },
+        gptzero: { kind: "unsupported-later", advertisedAsWorkingFreeApi: false },
+        copyleaks: { kind: "unsupported-later", advertisedAsWorkingFreeApi: false, sandboxNumbersNeverReal: true },
+      },
+    },
+    [permission("Install external copy checks in Ask every time mode with Pangram manual handoff; API adapters remain disabled until their separate key and retention setup is complete")],
+  ),
 });
 
 /** Read an existing valid managed Voice selection without mutating or repairing it. */
@@ -755,7 +837,9 @@ function mergeManagedContent(previous, candidate) {
     if (!existing || existing.component !== candidate.component || existing.schemaVersion !== 1) {
       return { exclusion: "Existing component file has no matching current Threadspan schema/ownership marker and was preserved." };
     }
-    return { content: jsonDocument(mergePreservingExisting(existing, desired)) };
+    const merged = mergePreservingExisting(existing, desired);
+    if (candidate.component === "copy-naturalizer" && merged && typeof merged === "object") delete merged.detectors;
+    return { content: jsonDocument(merged) };
   } catch {
     return { exclusion: "Existing component file is not valid managed JSON and was preserved." };
   }

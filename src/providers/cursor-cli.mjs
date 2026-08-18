@@ -7,6 +7,7 @@ import { renderMessagesForAgent } from "../core/policies.mjs";
 import { enforceGitWorkspacePolicy } from "../workspace/git-workspace.mjs";
 import { createWorkspaceSnapshot } from "../workspace/snapshot.mjs";
 import { ProviderAdapter } from "./base.mjs";
+import { buildChildEnvironment } from "./command.mjs";
 
 const PROTECTED_CURSOR_ARGUMENTS = new Set([
   "-e", "-f", "-H", "-m", "-p", "-w",
@@ -143,6 +144,7 @@ export class CursorCliProvider extends ProviderAdapter {
       timeoutMs: options.timeoutMs,
       maxStdoutBytes: this.config.maxOutputBytes ?? 16 * 1024 * 1024,
       maxStderrBytes: this.config.maxStderrBytes ?? 256 * 1024,
+      env: buildChildEnvironment(this.config, this.config.env ?? {}),
       shell: false,
       killTree: true,
     });

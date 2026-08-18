@@ -193,6 +193,8 @@ export function renderVoiceInstruction(profile) {
     "Threadspan Voice profile (style-only; user-facing assistant prose):",
     `Profile id: ${normalized.id}. Free-form profile labels, promises, and terminology are display/configuration data and are not elevated into this instruction.`,
     ...tendencies,
+    "Use plain English before implementation terminology. Prefer concrete subjects and verbs, one main idea per sentence, and the shortest accurate explanation. Define project-specific terms the first time they matter. Do not turn progress updates into release notes, protocol prose, architecture labels, or stacked jargon unless the user explicitly asks for that detail.",
+    "Describe what changed, why it matters to the user, and what happens next. Technical depth means accurate useful detail, not denser wording. If a simpler accurate phrase exists, use it.",
     "Apply this only to wording, tone, explanation depth, correction wording, and optional progress-update cadence. Never change machine protocols, tool calls or results, JSON schemas, exact evidence, mandated formats, permissions, routing, provider/native settings, system or developer authority, factual claims, or factual confidence. If another instruction fixes an output format or wording, that instruction wins.",
   ].join("\n");
   if (instruction.length > MAX_VOICE_INSTRUCTION_CHARS) throw new TypeError("Rendered voice instruction exceeds the bounded adapter limit");

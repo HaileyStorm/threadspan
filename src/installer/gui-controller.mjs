@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyInstallerPlan, createInstallerPlan, previewInstallerPlan } from "./index.mjs";
 import { ALL_COMPONENT_IDS, COMPONENT_IDS, EXPLICIT_ONLY_COMPONENT_IDS, OPTIONAL_COMPONENT_IDS, readInstalledVoiceConfig } from "./components.mjs";
+import { COPY_CHECK_DISCLAIMER, COPY_CHECK_NO_PARTNERSHIP } from "../core/copy-check.mjs";
 import { DEFAULT_VOICE_PROFILE_ID, voicePresetCards } from "../core/voice-profiles.mjs";
 import { InstallerRecoveryStore } from "./recovery-store.mjs";
 import { notifyNativeOrigin } from "./origin-recovery.mjs";
@@ -431,6 +432,8 @@ function componentPresentation() {
     "project-bootstrap": ["Project bootstrap", "Optional policy, tests, tracking, and CI setup."],
     "maximum-utilization": ["Maximum utilization", "Optional near-limit Codex scheduling, gated by live quota."],
     tips: ["Tips", "Optional quiet hints; off by default."],
+    "copy-naturalizer": ["Copy helper", "Suggests clearer wording. You review every change."],
+    "copy-check": ["External copy check", "Optional advisory checks. Off until you enable a permission mode."],
     "codex-full-access": ["Codex full access", "Optional Full Access: no command approval pauses or sandbox."],
   };
   return ALL_COMPONENT_IDS.map((id) => {
@@ -441,6 +444,21 @@ function componentPresentation() {
       label: labels[id][0],
       description: labels[id][1],
       optional: id === "claude-code" || OPTIONAL_COMPONENT_IDS.includes(id) || EXPLICIT_ONLY_COMPONENT_IDS.includes(id),
+      ...(id === "copy-naturalizer" ? {
+        group: "writing-tools",
+        localHeuristicsTooltip: "Local checks flag filler, stock phrases, and hard-to-read sentences without leaving this device.",
+        configuredRewriteTooltip: "An optional rewrite uses only a provider you already configured and explicitly choose. Setup does not select or enable one.",
+        localDisclaimer: "Suggestions never auto-apply. Local checks stay on this device.",
+      } : {}),
+      ...(id === "copy-check" ? {
+        group: "writing-tools",
+        destinationTooltip: "Pangram: official checker page only. Sapling: POST https://api.sapling.ai/api/v1/aidetect. Winston: POST https://api.gowinston.ai/v1/ai-content-detection.",
+        payloadTooltip: "Payload is selected plain text, capped by copyCheck.maxInputChars (default 12,000). Winston skips texts under 300 characters.",
+        retentionTooltip: "Sapling stores submitted text and uses it to improve its service; an explicit acknowledgement is required. Pangram is a manual paste on their page.",
+        trialTooltip: "Winston documents a limited 2,000-credit developer trial with no card required; availability can change, and it is not permanently free. Sapling developer keys are rate-limited. Free-scan limits can drift.",
+        partnershipTooltip: COPY_CHECK_NO_PARTNERSHIP,
+        detectorDisclaimer: COPY_CHECK_DISCLAIMER,
+      } : {}),
       ...(availability ? { ...availability, readiness: resolved.readiness, availabilityLabel: resolved.label, hidden: resolved.hidden } : {}),
     };
   }).filter((component) => component.hidden !== true);

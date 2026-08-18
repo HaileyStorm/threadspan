@@ -35,6 +35,14 @@ test("deepMerge replaces arrays and merges plain objects", () => {
 test("configuration defaults to Technical partner and preserves custom Voice extensions", () => {
   const defaults = createTestConfig();
   assert.equal(defaults.voice.selectedProfile, "technical-partner");
+  assert.equal(defaults.continuity.enabled, true);
+  assert.equal(defaults.continuity.controlEnabled, true);
+  assert.equal(defaults.automaticTakeover.enabled, false);
+  assert.equal(defaults.automaticTakeover.preserveExplicitRoutes, true);
+  assert.equal(defaults.copyNaturalizer.enabled, false);
+  assert.equal(defaults.copyCheck.permissionMode, "off");
+  assert.equal(defaults.copyCheck.adapters.sapling.enabled, false);
+  assert.equal(defaults.copyCheck.adapters.pangram.enabled, false);
   const configured = validateConfig({
     ...defaults,
     voice: {
@@ -87,6 +95,12 @@ test("validateConfig rejects invalid concurrency and provider ids", () => {
     accounts: { ...valid.accounts, fallback: { enabled: true, maxCandidates: 16 } },
   });
   assert.equal(normalized.accounts.fallback.maxCandidates, 1, "legacy values cannot authorize more than one alternate");
+  assert.throws(() => validateConfig({ ...valid, continuity: { enabled: false, controlEnabled: true } }), /controlEnabled requires continuity.enabled/);
+  assert.throws(() => validateConfig({ ...valid, continuity: { unknown: true } }), /unsupported fields/);
+  assert.throws(() => validateConfig({ ...valid, automaticTakeover: { preserveExplicitRoutes: false } }), /preserveExplicitRoutes/);
+  assert.throws(() => validateConfig({ ...valid, automaticTakeover: { requireExactResetEvidence: false } }), /requireExactResetEvidence/);
+  assert.throws(() => validateConfig({ ...valid, automaticTakeover: { minimumIntelligenceRatio: 0.49 } }), /minimumIntelligenceRatio/);
+  assert.throws(() => validateConfig({ ...valid, copyNaturalizer: { useModel: true } }), /requires provider and model/);
 });
 
 test("validateConfig rejects invalid modes, origins, sessions, and command settings", () => {

@@ -32,8 +32,8 @@ Default:
 {
   "host": "127.0.0.1",
   "port": 8743,
-  "authTokenEnv": "CURSOR_BRIDGE_TOKEN",
-  "allowUnauthenticatedLoopback": true,
+  "authTokenEnv": "THREADSPAN_TOKEN",
+  "allowUnauthenticatedLoopback": false,
   "allowedOrigins": []
 }
 ```
@@ -65,14 +65,14 @@ Credential comparisons never log token values. Keep both files owner-readable on
 {
   "server": {
     "host": "127.0.0.1",
-    "authTokenEnv": "CURSOR_BRIDGE_TOKEN",
+    "authTokenEnv": "THREADSPAN_TOKEN",
     "allowUnauthenticatedLoopback": false,
     "allowedOrigins": []
   }
 }
 ```
 
-Use a long random token and launch Codex/clients with access to that environment variable.
+Set `THREADSPAN_TOKEN` to a long random token and launch Codex/clients with access to that environment variable.
 
 ### Do not expose directly to a LAN/internet
 
@@ -246,7 +246,7 @@ Mitigations:
 - arguments are passed as an array;
 - only four documented placeholders are expanded.
 
-For untrusted command adapters, run under a separate OS account/container and set `inheritEnv: false` with an explicit `envAllowlist`. Broad inheritance remains the backward-compatible default, but it is usually too permissive for provider CLIs on a credential-rich workstation. Abort/timeout uses managed descendant-tree termination; native verification is still required for each Windows/POSIX CLI.
+For untrusted command adapters, run under a separate OS account/container and keep the default `inheritEnv: false` with an explicit `envAllowlist`. Broad inheritance requires the visible `inheritEnv: true` opt-in and is usually too permissive for provider CLIs on a credential-rich workstation. Abort/timeout uses managed descendant-tree termination; native verification is still required for each Windows/POSIX CLI.
 
 ## Credentials
 
@@ -255,12 +255,12 @@ Prefer `apiKeyEnv` over `apiKey`.
 - Config expansion supports `${ENV_VAR}`, but unresolved variables become empty strings; `doctor` should be used to catch missing credentials.
 - No credentials are bundled.
 - Authorization headers and API keys are not logged.
-- Debug errors may include bounded provider response bodies; do not enable debug/body logging around secrets without reviewing provider behavior.
+- OpenAI-compatible upstream error bodies are used only transiently for narrow classification such as streaming unsupported. Default error messages, details, and retry logs retain only safe status/classification fields, never the upstream body.
 - Hermes stores its own Portal OAuth state outside this package.
 
 ## Explicit Codex full-access component
 
-`codex-full-access` is intentionally excluded from defaults and `selection: "all"`. Its unchecked GUI control warns that it removes command approval pauses and command sandboxing and preapproves app/MCP tools. It does not enable destructive/open-world capability or enable any tool, app, plugin, or server.
+`codex-full-access` is intentionally excluded from defaults and `selection: "all"`. Its GUI control starts unchecked, and selecting it is not sufficient to apply it: the reviewed full-access plan must be separately confirmed. Existing tools may read and write files, execute commands, and use the network without approvals, including through already configured app and MCP surfaces. The component does not install or enable new tools, apps, plugins, or servers; existing per-tool overrides can remain more restrictive.
 
 The component mutates only the selected host's user-level `$CODEX_HOME/config.toml`, never project `.codex/config.toml`. A dedicated line-preserving TOML transform changes only the named execution/approval keys, preserves comments/order/unrelated settings, leaves per-tool overrides untouched, reports those overrides as bounded residual conflicts, and fails closed on duplicate or ambiguous target tables/keys.
 
@@ -273,6 +273,14 @@ The early code-work self-heal profile is configuration, not acceptance authority
 Hermes' subscription proxy is intentionally a credential-attaching passthrough and accepts any bearer. Keep it bound to `127.0.0.1`. If started with `0.0.0.0`, protect it externally; otherwise any reachable client may spend the subscription quota.
 
 The bridge's bearer does not automatically secure the proxy if another process can reach port 8645 directly.
+
+## Public release and intake hygiene
+
+The release-bundle preflight scans each selected file before archive creation. It rejects private-key encodings, known high-confidence credential token formats, unintended non-synthetic email addresses, and SSN-shaped personal data. It deliberately does not apply generic entropy scoring or match arbitrary prose about credentials. Intentional public donation/contact data is allowlisted only as an exact value in its exact published files; reserved synthetic email domains remain available to offline tests.
+
+Normalized replay state does not retain computer-output bodies, browser metadata, screenshot metadata, attachment IDs, filenames, local references, or non-public media URLs. Computer output and unsafe attachments become opaque omission markers. A media reference may retain only a syntactically public HTTP(S) origin and path; userinfo, query strings, and fragments are removed or cause omission.
+
+Public issues and pull requests must omit signed URLs and their query strings, callback URLs, screenshots, images or generated media, audio, transcripts, and raw logs unless the material has been separately sanitized and reduced to the minimum evidence needed.
 
 ## Logging and retained state
 
@@ -324,6 +332,7 @@ An allowlisted origin can make bearerless browser calls only if the server's bro
 - [ ] Command providers avoid shell and run under constrained identity.
 - [ ] Hermes proxy remains loopback.
 - [ ] Reasoning/body logging disabled unless a reviewed diagnostic session explicitly requires it.
+- [ ] Public release preflight passes, and issue/PR evidence excludes signed or callback URLs, screenshots, media, audio, and transcripts.
 - [ ] Grok/managed workers use an explicit reviewed executable path/version/hash policy.
 - [ ] Every Delegate worker has a unique clean linked worktree and non-canonical branch.
 - [ ] Worker permissions, sandbox, tools, memory, web, subagents, turn cap, and timeout are explicit.

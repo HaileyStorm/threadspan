@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { CommandProvider } from "../src/providers/command.mjs";
+import { buildChildEnvironment, CommandProvider } from "../src/providers/command.mjs";
 import { silentLogger } from "./helpers.mjs";
 
 test("CommandProvider streams normalized JSONL events", async () => {
@@ -93,26 +93,65 @@ test("CommandProvider normalizes missing executables as provider failures", asyn
 });
 
 
-test("CommandProvider can replace broad environment inheritance with an allowlist", async () => {
-  process.env.CURSOR_BRIDGE_COMMAND_PRIVATE = "must-not-leak";
+test("CommandProvider defaults to named environment inheritance without provider or daemon credentials", async (t) => {
+  const names = ["HOME", "THREADSPAN_COMMAND_PRIVATE", "OPENAI_API_KEY", "THREADSPAN_CONNECTOR_TOKEN", "THREADSPAN_COMMAND_NAMED"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  Object.assign(process.env, {
+    HOME: "/threadspan-test-home",
+    THREADSPAN_COMMAND_PRIVATE: "must-not-leak",
+    OPENAI_API_KEY: "provider-key-must-not-leak",
+    THREADSPAN_CONNECTOR_TOKEN: "daemon-credential-must-not-leak",
+    THREADSPAN_COMMAND_NAMED: "named-value",
+  });
+  t.after(() => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
   const provider = new CommandProvider("cmd", {
     adapter: "command",
     capabilities: ["consult"],
     command: process.execPath,
-    args: ["-e", "process.stdout.write(process.env.CURSOR_BRIDGE_COMMAND_PRIVATE ?? 'absent')"],
-    inheritEnv: false,
-    envAllowlist: [],
+    args: ["-e", `process.stdout.write(JSON.stringify({
+      privateValue: process.env.THREADSPAN_COMMAND_PRIVATE,
+      providerKey: process.env.OPENAI_API_KEY,
+      daemonCredential: process.env.THREADSPAN_CONNECTOR_TOKEN,
+      named: process.env.THREADSPAN_COMMAND_NAMED,
+      configured: process.env.THREADSPAN_COMMAND_CONFIGURED,
+      home: process.env.HOME ?? process.env.USERPROFILE,
+    }))`],
+    envAllowlist: ["THREADSPAN_COMMAND_NAMED"],
+    env: { THREADSPAN_COMMAND_CONFIGURED: "configured-value" },
     outputFormat: "text",
   }, { logger: silentLogger() });
   const events = [];
-  try {
-    for await (const event of provider.run({
-      mode: "consult", model: "m", messages: [{ role: "user", content: "hello" }], workspace: process.cwd(),
-    })) events.push(event);
-  } finally {
-    delete process.env.CURSOR_BRIDGE_COMMAND_PRIVATE;
-  }
-  assert.equal(events.at(-1).message.content, "absent");
+  for await (const event of provider.run({
+    mode: "consult", model: "m", messages: [{ role: "user", content: "hello" }], workspace: process.cwd(),
+  })) events.push(event);
+  assert.deepEqual(JSON.parse(events.at(-1).message.content), {
+    named: "named-value",
+    configured: "configured-value",
+    home: "/threadspan-test-home",
+  });
+});
+
+test("child environment broad inheritance requires explicit inheritEnv true", () => {
+  const base = {
+    HOME: "/profile",
+    PATH: "/bin",
+    SystemRoot: "C:\\Windows",
+    OPENAI_API_KEY: "provider-key",
+    THREADSPAN_TOKEN: "daemon-token",
+    NAMED_ONLY: "named",
+  };
+  assert.deepEqual(buildChildEnvironment({ envAllowlist: ["NAMED_ONLY"] }, {}, {}, base), {
+    HOME: "/profile",
+    PATH: "/bin",
+    SystemRoot: "C:\\Windows",
+    NAMED_ONLY: "named",
+  });
+  assert.deepEqual(buildChildEnvironment({ inheritEnv: true }, {}, {}, base), base);
 });
 
 test("CommandProvider applies configured repetitive-output summarization only to its agent prompt", async () => {

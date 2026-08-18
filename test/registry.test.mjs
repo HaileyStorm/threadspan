@@ -40,6 +40,10 @@ test("registry resolves route-prefixed and explicit provider models", () => {
   const short = registry.resolveRoute({ model: "mock/other" });
   assert.equal(short.mode, "consult");
   assert.equal(short.model, "other");
+
+  const explicitPrefixed = registry.resolveRoute({ providerId: "mock", model: "mock/other" });
+  assert.equal(explicitPrefixed.providerId, "mock");
+  assert.equal(explicitPrefixed.model, "mock/other");
 });
 
 test("service provider descriptions and Threadspan route map preserve optional web metadata", async (t) => {

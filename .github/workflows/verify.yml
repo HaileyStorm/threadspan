@@ -2,23 +2,125 @@ name: verify
 
 on:
   push:
-  pull_request:
+  workflow_dispatch:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+# Fail-closed runner contract:
+# - Only trusted push/manual events may execute repository code.
+# - pull_request_target runs only this trusted base-branch workflow and reports
+#   that verification was skipped. It never checks out or executes PR content.
+# - A repository runner must be explicitly approved and registered with every
+#   label below before THREADSPAN_SELF_HOSTED_CI_ENABLED is set to "true".
+# - The runner must be an isolated Linux x64 host with bash, git, Node.js 22 or
+#   newer, npm, and outbound access to this repository and npm. No
+#   repository secrets are granted; the read-only job token is used only for a
+#   transient fetch prompt and is unset before repository code executes.
+
+concurrency:
+  group: verify-${{ github.sha }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        node: [22, 24]
-    runs-on: ${{ matrix.os }}
+  untrusted-pr:
+    name: PR verification skipped (untrusted code)
+    if: ${{ github.event_name == 'pull_request_target' }}
+    runs-on: [self-hosted, Linux, X64, threadspan-ci]
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
-      - run: npm install --ignore-scripts --omit=optional
-      - run: npm run verify
+      - name: Report intentionally skipped verification
+        shell: bash
+        run: |
+          echo "::warning::Verification intentionally skipped: pull-request code is not executed on Threadspan self-hosted runners."
+          printf '%s\n' '## PR verification skipped' '' 'No pull-request workflow or source code was checked out or executed on the self-hosted runner.' >> "$GITHUB_STEP_SUMMARY"
+
+  unavailable:
+    name: Verification unavailable (self-hosted CI disabled)
+    if: ${{ github.event_name != 'pull_request_target' && vars.THREADSPAN_SELF_HOSTED_CI_ENABLED != 'true' }}
+    runs-on: [self-hosted, Linux, X64, threadspan-ci]
+    timeout-minutes: 5
+    steps:
+      - name: Report unavailable verification
+        shell: bash
+        run: |
+          echo "::warning::Verification did not run because THREADSPAN_SELF_HOSTED_CI_ENABLED is not true."
+          printf '%s\n' '## Verification unavailable' '' 'Repository code was not checked out or executed because self-hosted CI is disabled.' >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    name: Trusted source verification (Node.js 22+)
+    if: ${{ github.event_name != 'pull_request_target' && vars.THREADSPAN_SELF_HOSTED_CI_ENABLED == 'true' }}
+    runs-on: [self-hosted, Linux, X64, threadspan-ci]
+    timeout-minutes: 20
+    steps:
+      - name: Verify runner capability contract
+        shell: bash
+        run: |
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ARCH" = X64
+          command -v bash
+          command -v git
+          command -v node
+          command -v npm
+          test "$(node -p 'Number(process.versions.node.split(".")[0]) >= 22')" = true
+
+      - name: Check out trusted revision without persistent credentials
+        id: checkout
+        shell: bash
+        env:
+          THREADSPAN_CI_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_EVENT_NAME" = push -o "$GITHUB_EVENT_NAME" = workflow_dispatch
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$GITHUB_SERVER_URL" =~ ^https://[^/]+$ ]]
+
+          checkout_dir="$(mktemp -d "$RUNNER_TEMP/threadspan.XXXXXXXX")"
+          printf 'path=%s\n' "$checkout_dir" >> "$GITHUB_OUTPUT"
+          git -C "$checkout_dir" init --quiet
+          git -C "$checkout_dir" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+
+          askpass="$checkout_dir/.threadspan-askpass"
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'case "$1" in' \
+            '  *Username*) printf "%s\n" "x-access-token" ;;' \
+            '  *Password*) printf "%s\n" "$THREADSPAN_CI_TOKEN" ;;' \
+            '  *) exit 1 ;;' \
+            'esac' > "$askpass"
+          chmod 700 "$askpass"
+          cleanup_auth() {
+            rm -f -- "$askpass"
+            unset THREADSPAN_CI_TOKEN
+          }
+          trap cleanup_auth EXIT
+          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git -C "$checkout_dir" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          cleanup_auth
+          trap - EXIT
+
+          test ! -e "$askpass"
+          test -z "$(git -C "$checkout_dir" config --local --get-regexp '(^credential\.|extraheader)' || true)"
+          git -C "$checkout_dir" checkout --detach --force FETCH_HEAD
+          test -z "$(git -C "$checkout_dir" status --porcelain)"
+
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: ${{ steps.checkout.outputs.path }}
+        run: npm ci --ignore-scripts --omit=optional
+
+      - name: Verify
+        working-directory: ${{ steps.checkout.outputs.path }}
+        run: npm run verify
+
+      - name: Remove temporary checkout
+        if: ${{ always() && steps.checkout.outputs.path != '' }}
+        shell: bash
+        env:
+          CHECKOUT_DIR: ${{ steps.checkout.outputs.path }}
+        run: |
+          case "$CHECKOUT_DIR" in
+            "$RUNNER_TEMP"/threadspan.*) ;;
+            *) echo "Refusing unexpected cleanup path" >&2; exit 1 ;;
+          esac
+          rm -rf -- "$CHECKOUT_DIR"

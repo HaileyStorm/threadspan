@@ -131,7 +131,7 @@ Status is **Preview / live-untested**. See [CLAUDE-CODE.md](CLAUDE-CODE.md) for 
 
 The explicit `agentrouter-claude` example uses the Claude Code adapter, `claude-opus-4-8`, and Consult/Delegate only. It never routes through `openai-chat` or Codex. The child receives only the explicitly named gateway credential and URL/model variables; absent keys fail before spawn and ambient Anthropic variables never leak into generic Claude.
 
-Linux and Windows returned `THREADSPAN_AGENTROUTER_OK` on 2026-08-18 with Claude Code 2.1.234, separate USD 1 capped host tokens, and no payment method. Treat this as dated route evidence. The installer uses `offerEndDate: null`, seven-day freshness, a required live probe, **Check availability** after staleness, and hidden-after-end behavior if a future end date is recorded without newer proof. See [AGENTROUTER.md](AGENTROUTER.md).
+Linux and Windows returned `THREADSPAN_AGENTROUTER_OK` on 2026-08-18 with Claude Code 2.1.234 in bounded no-spend probes. Treat this as dated route evidence. The installer uses `offerEndDate: null`, seven-day freshness, a required live probe, **Check availability** after staleness, and hidden-after-end behavior if a future end date is recorded without newer proof. See [AGENTROUTER.md](AGENTROUTER.md).
 
 ### Card-free and free-credit discovery candidates
 
@@ -178,14 +178,14 @@ Existing host configuration is not silently migrated. A host generated from the 
 
 `openai-codex` is enabled in the starter configuration so setup remains visible. With no account it describes `setupRequired` / unavailable and the +Account and state surfaces remain reachable; execution routes still fail closed and no default `CODEX_HOME` adapter is constructed.
 
-### Account fallback boundary
+### Account fallback and automatic takeover boundary
 
-Account fallback is opt-in at both configuration and request level. It supports only two certified pre-output failure classes:
+Standalone account fallback remains opt-in at both configuration and request level. When `automaticTakeover.enabled` is active for a smart route or an explicitly opted-in task, the same certified fallback is automatically the first recovery step. It supports only two certified pre-output failure classes:
 
 - native Codex's exact `You've hit your usage limit.` class, with no model output, tool activity, or other side effect; and
 - an OpenAI-compatible Chat Completions HTTP 429 in Consult or Integrated mode, before text, reasoning, tool calls, usage, or other side effects.
 
-Either class may try at most one validated isolated alternate for the same provider, model, and mode. There is no further account cascade and no cross-provider fallback. If the OpenAI-compatible adapter has already retried an unsupported streaming request as buffered, a failure from that buffered retry cannot trigger account fallback.
+Either class may try at most one validated isolated alternate for the same provider, model, and mode. There is no longer account cascade. Only after that alternate is exhausted may the separate automatic-takeover policy consider another provider. The replacement must support the same mode and meet configured context, privacy, and intelligence floors; explicit routes require request-local opt-in. If the OpenAI-compatible adapter has already retried an unsupported streaming request as buffered, a failure from that buffered retry cannot trigger either fallback path.
 
 For native Codex, an authoritative reset timestamp is persisted with `AccountStore.observeQuota(...)` when present. Authentication, transport, timeout, malformed output, partial output, tool activity, HTTP 408, HTTP 5xx, and every uncertified error are terminal for account routing. Invalid alternate isolation is marked unavailable and skipped; an invalid primary fails closed.
 
@@ -456,7 +456,7 @@ The adapter supports:
 - common reasoning fields (`reasoning_content`, `reasoning`, `thinking`);
 - streamed and buffered function calls;
 - usage normalization;
-- opt-in pre-output HTTP 429 account fallback to at most one validated same-provider alternate;
+- certified pre-output HTTP 429 account fallback to at most one validated same-provider alternate, followed only when enabled by a compatible cross-provider takeover;
 - optional `/models` discovery.
 
 Do not enable Delegate merely because an endpoint accepts Chat Completions. Delegate implies a provider-owned execution loop, not a raw model with function calling.
@@ -512,9 +512,9 @@ Output formats:
 
 The process is terminated on abort/timeout, output is bounded, stderr diagnostics are bounded, and descendant process trees are terminated with a graceful-then-forced sequence (`taskkill /T` on Windows, detached process-group signals on POSIX).
 
-By default the process inherits the bridge environment for backward compatibility. Set `inheritEnv: false` plus `envAllowlist` to forward only reviewed variables. This is strongly recommended for provider CLIs that do not need the bridge's full credential environment.
+By default the child receives only Threadspan's minimal cross-platform process environment plus explicitly configured values and names in `envAllowlist`. Broad bridge-process inheritance is available only through the visible unsafe opt-in `inheritEnv: true`.
 
-Set `inheritEnv: false` plus an explicit `envAllowlist` when broad process-environment inheritance is unnecessary. Avoid `shell: true` unless the configured command itself requires trusted shell syntax; structured argv with `shell: false` is the safer default.
+Keep `inheritEnv: false` and add only required names to `envAllowlist`. Use `inheritEnv: true` only after reviewing every credential visible to the daemon. Avoid `shell: true` unless the configured command itself requires trusted shell syntax; structured argv with `shell: false` is the safer default.
 
 ## Adding a custom adapter
 

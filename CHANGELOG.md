@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.1 - 2026-08-18
+
+- Added a compact native Continuity task tree with opaque handles, task naming, goal-free promotion, and source-matched successor/Goal reconciliation through the certified supervisor.
+- Added optional bridge-routed automatic takeover: one certified same-provider account first, then a live compatible provider for smart or explicitly opted-in routes; explicit accounts stay fixed by default.
+- Added same-daemon disconnect survival, stable failure identities, visible recovery state, exact-reset shutdown, bounded late-subagent recovery, and maximum-utilization protection against a second writable Delegate.
+- Added optional all-user Copy review with local readability checks, protected-span enforcement, Voice preservation, and separately configured provider rewriting that never auto-applies.
+- Added a separate, default-off External copy check policy with owner-only HTTP, HUD manual Pangram handoff, documented Sapling/Winston environment-key adapters, and a user-started release companion. Offline-tested only; not live-certified.
+- Prevented computer/screenshot metadata, signed media references, upstream error bodies, private key material, high-confidence secrets, and unintended personal data from entering routed transcripts, logs, or release bundles.
+- Added the owner-only Continuity/takeover/copy controls and a compact HUD presentation without exposing native task, Goal, account, receipt, or recovery identifiers.
+- Moved trusted CI to a repository-scoped self-hosted Linux runner and disabled GitHub-hosted and untrusted pull-request execution; release acceptance still requires a green run on the exact release commit.
+- Added a reproducible build report and chart based on local task/provider ledgers, with cached, uncached, output, and reasoning tokens separated.
+
 ## 0.4.0 - 2026-08-18
 
 - Renamed the broader bridge and orchestration project to Threadspan.

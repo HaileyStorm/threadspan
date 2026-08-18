@@ -5,7 +5,7 @@ Threadspan is one shared daemon per user account. Cursor, Grok Build, Codex, and
 `createDaemonServicePlan()` renders a reviewable, hashed lifecycle plan:
 
 - Linux: a `systemd --user` unit with restart-on-failure.
-- Windows: a hidden per-user PowerShell launcher in the user's Startup folder.
+- Windows: a hidden per-user Task Scheduler entry that launches the generated PowerShell wrapper independently of an SSH or Desktop process.
 
 Both plans bind the normal Threadspan configuration to the installed Node and CLI paths. They pass only named environment variables. Provider key values are not written into units, launchers, logs, or tracked configuration.
 
@@ -17,6 +17,6 @@ Managed provider jobs reap residual POSIX process groups after their parent exit
 
 The daemon removes both signal listeners on the first SIGINT or SIGTERM. Leaving the unused listener registered would keep Node alive after an otherwise clean shutdown.
 
-An installing agent should preview the exact files and commands, preserve any existing file as a rollback artifact, write atomically, activate the service, and verify `/health`, `/v1/models`, `/threadspan/state`, and restart durability. Do not claim one host from evidence gathered on the other.
+An installing agent should preview the exact files and commands, preserve any existing file as a rollback artifact, write atomically, activate the service, and verify `/health`, `/v1/models`, `/v1/continuity`, `/threadspan/state`, and restart durability. On Windows, stop/restart acceptance must prove that the scheduled task owns the replacement daemon rather than leaving an SSH-owned or detached stale process behind. Do not claim one host from evidence gathered on the other.
 
 The user can stop or remove Threadspan without uninstalling or signing out of any provider app.

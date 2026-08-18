@@ -39,6 +39,54 @@ const DEFAULT_CONFIG = Object.freeze({
     },
     ask: { enabled: false, maxTurnsPerSession: 3, maxOutputTokens: 192, maxLatencyMs: 8_000 },
   },
+  continuity: {
+    enabled: true,
+    controlEnabled: true,
+    statePath: null,
+    maxTasks: 200,
+    handleTtlMs: 10 * 60 * 1000,
+    previewTtlMs: 2 * 60 * 1000,
+  },
+  automaticTakeover: {
+    enabled: false,
+    crossProviderEnabled: true,
+    externalMonitoringEnabled: true,
+    pollIntervalMs: 15_000,
+    stallTimeoutMs: 90_000,
+    subagentSpacingMs: 1_400,
+    maxSubagentsPerTick: 2,
+    maxCrossProviderCandidates: 2,
+    minimumIntelligenceRatio: 0.9,
+    statePath: null,
+    requireExactResetEvidence: true,
+    preserveExplicitRoutes: true,
+  },
+  copyNaturalizer: {
+    enabled: false,
+    profile: "human",
+    maxInputChars: 12_000,
+    maxPasses: 3,
+    useModel: false,
+    provider: null,
+    model: null,
+    maxOutputTokens: 2_048,
+    timeoutMs: 180_000,
+  },
+  copyCheck: {
+    permissionMode: "off",
+    maxInputChars: 12_000,
+    timeoutMs: 15_000,
+    releaseScope: {
+      localReview: true,
+      externalChecks: false,
+      adapters: [],
+    },
+    adapters: {
+      pangram: { enabled: false },
+      sapling: { enabled: false, apiKeyEnv: "SAPLING_API_KEY", acknowledgedRetention: false },
+      winston: { enabled: false, apiKeyEnv: "WINSTON_API_KEY" },
+    },
+  },
   maximumUtilization: {
     enabled: false,
     automaticPollingEnabled: false,
@@ -312,6 +360,10 @@ export function validateConfig(config, configPath = "<memory>", options = {}) {
   if (config.accounts === undefined) config = { ...config, accounts: { path: null, profileSources: {}, fallback: { enabled: false, maxCandidates: 1 } } };
   config = { ...config, voice: normalizeVoiceConfig(config.voice ?? {}) };
   config = { ...config, tips: deepMerge(DEFAULT_CONFIG.tips, config.tips ?? {}) };
+  config = { ...config, continuity: deepMerge(DEFAULT_CONFIG.continuity, config.continuity ?? {}) };
+  config = { ...config, automaticTakeover: deepMerge(DEFAULT_CONFIG.automaticTakeover, config.automaticTakeover ?? {}) };
+  config = { ...config, copyNaturalizer: deepMerge(DEFAULT_CONFIG.copyNaturalizer, config.copyNaturalizer ?? {}) };
+  config = { ...config, copyCheck: deepMerge(DEFAULT_CONFIG.copyCheck, config.copyCheck ?? {}) };
   config = { ...config, maximumUtilization: deepMerge(DEFAULT_CONFIG.maximumUtilization, config.maximumUtilization ?? {}) };
   if (config.compatibilityWatch === undefined) config = { ...config, compatibilityWatch: { enabled: false, readOnly: true, applyEnabled: false, pollingEnabled: false, pollIntervalMs: 900000 } };
   config = { ...config, branching: deepMerge(DEFAULT_CONFIG.branching, config.branching ?? {}) };
@@ -395,6 +447,10 @@ export function validateConfig(config, configPath = "<memory>", options = {}) {
   // normalized to one alternate so no provider adapter can create a longer account cascade.
   config = { ...config, accounts: { ...config.accounts, fallback: { ...config.accounts.fallback, maxCandidates: 1 } } };
   validateTips(config.tips);
+  validateContinuity(config.continuity);
+  validateAutomaticTakeover(config.automaticTakeover);
+  validateCopyNaturalizer(config.copyNaturalizer);
+  validateCopyCheck(config.copyCheck);
   validateMaximumUtilization(config.maximumUtilization);
   if (!isPlainObject(config.compatibilityWatch)) throw new ConfigError("compatibilityWatch must be an object");
   for (const key of ["enabled", "readOnly", "applyEnabled", "pollingEnabled"]) {
@@ -570,6 +626,117 @@ function validateTips(value) {
   assertInteger(value.ask.maxTurnsPerSession, "tips.ask.maxTurnsPerSession", { minimum: 1, maximum: 4 });
   assertInteger(value.ask.maxOutputTokens, "tips.ask.maxOutputTokens", { minimum: 32, maximum: 256 });
   assertInteger(value.ask.maxLatencyMs, "tips.ask.maxLatencyMs", { minimum: 1_000, maximum: 15_000 });
+}
+
+/** Validate the owner-local native Continuity task and control surface. */
+function validateContinuity(value) {
+  if (!isPlainObject(value)) throw new ConfigError("continuity must be an object");
+  const allowed = new Set(["enabled", "controlEnabled", "statePath", "maxTasks", "handleTtlMs", "previewTtlMs"]);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) throw new ConfigError(`continuity contains unsupported fields: ${unknown.join(", ")}`);
+  for (const key of ["enabled", "controlEnabled"]) if (typeof value[key] !== "boolean") throw new ConfigError(`continuity.${key} must be boolean`);
+  assertOptionalString(value.statePath, "continuity.statePath");
+  assertInteger(value.maxTasks, "continuity.maxTasks", { minimum: 1, maximum: 1000 });
+  assertInteger(value.handleTtlMs, "continuity.handleTtlMs", { minimum: 60_000, maximum: 60 * 60 * 1000 });
+  assertInteger(value.previewTtlMs, "continuity.previewTtlMs", { minimum: 10_000, maximum: 10 * 60 * 1000 });
+  if (!value.enabled && value.controlEnabled) throw new ConfigError("continuity.controlEnabled requires continuity.enabled");
+}
+
+/** Validate externally supervised account-first and provider-fallback policy. */
+function validateAutomaticTakeover(value) {
+  if (!isPlainObject(value)) throw new ConfigError("automaticTakeover must be an object");
+  const allowed = new Set(["enabled", "crossProviderEnabled", "externalMonitoringEnabled", "pollIntervalMs", "stallTimeoutMs", "subagentSpacingMs", "maxSubagentsPerTick", "maxCrossProviderCandidates", "minimumIntelligenceRatio", "statePath", "requireExactResetEvidence", "preserveExplicitRoutes"]);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) throw new ConfigError(`automaticTakeover contains unsupported fields: ${unknown.join(", ")}`);
+  for (const key of ["enabled", "crossProviderEnabled", "externalMonitoringEnabled", "requireExactResetEvidence", "preserveExplicitRoutes"]) {
+    if (typeof value[key] !== "boolean") throw new ConfigError(`automaticTakeover.${key} must be boolean`);
+  }
+  assertInteger(value.pollIntervalMs, "automaticTakeover.pollIntervalMs", { minimum: 1_000, maximum: 3_600_000 });
+  assertInteger(value.stallTimeoutMs, "automaticTakeover.stallTimeoutMs", { minimum: 10_000, maximum: 24 * 60 * 60 * 1000 });
+  assertInteger(value.subagentSpacingMs, "automaticTakeover.subagentSpacingMs", { minimum: 250, maximum: 60_000 });
+  assertInteger(value.maxSubagentsPerTick, "automaticTakeover.maxSubagentsPerTick", { minimum: 1, maximum: 32 });
+  assertInteger(value.maxCrossProviderCandidates, "automaticTakeover.maxCrossProviderCandidates", { minimum: 1, maximum: 8 });
+  if (typeof value.minimumIntelligenceRatio !== "number" || !Number.isFinite(value.minimumIntelligenceRatio) || value.minimumIntelligenceRatio < 0.5 || value.minimumIntelligenceRatio > 1) throw new ConfigError("automaticTakeover.minimumIntelligenceRatio must be between 0.5 and 1");
+  assertOptionalString(value.statePath, "automaticTakeover.statePath");
+  if (value.requireExactResetEvidence !== true) throw new ConfigError("automaticTakeover.requireExactResetEvidence must remain true");
+  if (value.preserveExplicitRoutes !== true) throw new ConfigError("automaticTakeover.preserveExplicitRoutes must remain true");
+}
+
+function validateCopyNaturalizer(value) {
+  if (!isPlainObject(value)) throw new ConfigError("copyNaturalizer must be an object");
+  const allowed = new Set(["enabled", "profile", "maxInputChars", "maxPasses", "useModel", "provider", "model", "maxOutputTokens", "timeoutMs"]);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) throw new ConfigError(`copyNaturalizer contains unsupported fields: ${unknown.join(", ")}`);
+  for (const key of ["enabled", "useModel"]) if (typeof value[key] !== "boolean") throw new ConfigError(`copyNaturalizer.${key} must be boolean`);
+  if (!["human", "technical", "concise"].includes(value.profile)) throw new ConfigError("copyNaturalizer.profile must be human, technical, or concise");
+  assertInteger(value.maxInputChars, "copyNaturalizer.maxInputChars", { minimum: 1, maximum: 50_000 });
+  assertInteger(value.maxPasses, "copyNaturalizer.maxPasses", { minimum: 1, maximum: 5 });
+  assertInteger(value.maxOutputTokens, "copyNaturalizer.maxOutputTokens", { minimum: 64, maximum: 8_192 });
+  assertInteger(value.timeoutMs, "copyNaturalizer.timeoutMs", { minimum: 1_000, maximum: 600_000 });
+  for (const key of ["provider", "model"]) if (value[key] !== null) assertOptionalString(value[key], `copyNaturalizer.${key}`);
+  if (value.useModel && (!value.provider || !value.model)) throw new ConfigError("copyNaturalizer.useModel requires provider and model");
+  if (value.useModel && value.timeoutMs < 30_000) throw new ConfigError("copyNaturalizer model rewriting requires timeoutMs of at least 30000");
+}
+
+/** Validate the separate external copy-check policy. Credentials never enable it. */
+function validateCopyCheck(value) {
+  if (!isPlainObject(value)) throw new ConfigError("copyCheck must be an object");
+  const allowed = new Set(["permissionMode", "maxInputChars", "timeoutMs", "releaseScope", "adapters"]);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) throw new ConfigError(`copyCheck contains unsupported fields: ${unknown.join(", ")}`);
+  if (!["off", "ask-every-time", "allow-manual-or-release"].includes(value.permissionMode)) {
+    throw new ConfigError("copyCheck.permissionMode must be off, ask-every-time, or allow-manual-or-release");
+  }
+  assertInteger(value.maxInputChars, "copyCheck.maxInputChars", { minimum: 1, maximum: 50_000 });
+  assertInteger(value.timeoutMs, "copyCheck.timeoutMs", { minimum: 250, maximum: 120_000 });
+  if (!isPlainObject(value.releaseScope)) throw new ConfigError("copyCheck.releaseScope must be an object");
+  const releaseAllowed = new Set(["localReview", "externalChecks", "adapters"]);
+  const releaseUnknown = Object.keys(value.releaseScope).filter((key) => !releaseAllowed.has(key));
+  if (releaseUnknown.length > 0) throw new ConfigError(`copyCheck.releaseScope contains unsupported fields: ${releaseUnknown.join(", ")}`);
+  for (const key of ["localReview", "externalChecks"]) {
+    if (typeof value.releaseScope[key] !== "boolean") throw new ConfigError(`copyCheck.releaseScope.${key} must be boolean`);
+  }
+  assertStringArray(value.releaseScope.adapters, "copyCheck.releaseScope.adapters", { unique: true });
+  const knownAdapters = new Set(["pangram", "sapling", "winston", "gptzero", "copyleaks"]);
+  for (const adapter of value.releaseScope.adapters) {
+    if (!knownAdapters.has(adapter)) throw new ConfigError(`copyCheck.releaseScope.adapters contains unknown adapter '${adapter}'`);
+  }
+  if (!isPlainObject(value.adapters)) throw new ConfigError("copyCheck.adapters must be an object");
+  const adapterUnknown = Object.keys(value.adapters).filter((key) => !["pangram", "sapling", "winston"].includes(key));
+  if (adapterUnknown.length > 0) throw new ConfigError(`copyCheck.adapters contains unsupported fields: ${adapterUnknown.join(", ")}`);
+  validateCopyCheckPangram(value.adapters.pangram);
+  validateCopyCheckSapling(value.adapters.sapling);
+  validateCopyCheckWinston(value.adapters.winston);
+}
+
+function validateCopyCheckPangram(value) {
+  if (!isPlainObject(value)) throw new ConfigError("copyCheck.adapters.pangram must be an object");
+  const unknown = Object.keys(value).filter((key) => key !== "enabled");
+  if (unknown.length > 0) throw new ConfigError(`copyCheck.adapters.pangram contains unsupported fields: ${unknown.join(", ")}`);
+  if (typeof value.enabled !== "boolean") throw new ConfigError("copyCheck.adapters.pangram.enabled must be boolean");
+}
+
+function validateCopyCheckSapling(value) {
+  if (!isPlainObject(value)) throw new ConfigError("copyCheck.adapters.sapling must be an object");
+  const unknown = Object.keys(value).filter((key) => !["enabled", "apiKeyEnv", "acknowledgedRetention"].includes(key));
+  if (unknown.length > 0) throw new ConfigError(`copyCheck.adapters.sapling contains unsupported fields: ${unknown.join(", ")}`);
+  if (typeof value.enabled !== "boolean") throw new ConfigError("copyCheck.adapters.sapling.enabled must be boolean");
+  if (typeof value.acknowledgedRetention !== "boolean") throw new ConfigError("copyCheck.adapters.sapling.acknowledgedRetention must be boolean");
+  assertOptionalString(value.apiKeyEnv, "copyCheck.adapters.sapling.apiKeyEnv");
+  if (value.apiKeyEnv && !/^[A-Z][A-Z0-9_]{0,63}$/u.test(value.apiKeyEnv)) {
+    throw new ConfigError("copyCheck.adapters.sapling.apiKeyEnv must be an environment variable name");
+  }
+}
+
+function validateCopyCheckWinston(value) {
+  if (!isPlainObject(value)) throw new ConfigError("copyCheck.adapters.winston must be an object");
+  const unknown = Object.keys(value).filter((key) => !["enabled", "apiKeyEnv"].includes(key));
+  if (unknown.length > 0) throw new ConfigError(`copyCheck.adapters.winston contains unsupported fields: ${unknown.join(", ")}`);
+  if (typeof value.enabled !== "boolean") throw new ConfigError("copyCheck.adapters.winston.enabled must be boolean");
+  assertOptionalString(value.apiKeyEnv, "copyCheck.adapters.winston.apiKeyEnv");
+  if (value.apiKeyEnv && !/^[A-Z][A-Z0-9_]{0,63}$/u.test(value.apiKeyEnv)) {
+    throw new ConfigError("copyCheck.adapters.winston.apiKeyEnv must be an environment variable name");
+  }
 }
 
 /** Validate the inert maximum-utilization controller composition contract. */
@@ -1145,6 +1312,10 @@ export function createExampleConfig() {
     sessions: { ttlMs: 86400000, maxEntries: 500 },
     usageLedger: { enabled: true },
     accounts: { path: null, profileSources: {}, fallback: { enabled: false, maxCandidates: 1 } },
+    continuity: structuredClone(DEFAULT_CONFIG.continuity),
+    automaticTakeover: structuredClone(DEFAULT_CONFIG.automaticTakeover),
+    copyNaturalizer: structuredClone(DEFAULT_CONFIG.copyNaturalizer),
+    copyCheck: structuredClone(DEFAULT_CONFIG.copyCheck),
     maximumUtilization: {
       enabled: false,
       automaticPollingEnabled: false,

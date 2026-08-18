@@ -25,6 +25,45 @@ test("snapshot copies regular files, excludes heavy directories, and skips symli
   assert.ok(snapshot.skipped.some((entry) => entry.reason === "symlink"));
 });
 
+test("snapshot always excludes untracked secrets and local auth state while retaining source", async (t) => {
+  const source = await mkdtemp(join(tmpdir(), "bridge-source-secrets-"));
+  t.after(async () => {
+    const { rm } = await import("node:fs/promises");
+    await rm(source, { recursive: true, force: true });
+  });
+
+  const ordinaryPath = "src/index.mjs";
+  const secretPaths = [
+    ".env",
+    ".env.production",
+    ".npmrc",
+    "Credentials.JSON",
+    "private.key",
+    "certificate.PEM",
+    ".codex/auth.json",
+    ".aws/credentials",
+    ".ssh/id_ed25519",
+    ".threadspan/state.json",
+    "browser/User Data/Local State",
+  ];
+  for (const relativePath of [ordinaryPath, ...secretPaths]) {
+    const path = join(source, ...relativePath.split("/"));
+    await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, relativePath === ordinaryPath ? "export const safe = true;\n" : "must-not-copy\n");
+  }
+
+  const snapshot = await createWorkspaceSnapshot(source, { exclude: [] });
+  t.after(() => snapshot.dispose());
+  assert.equal(await readFile(join(snapshot.path, ordinaryPath), "utf8"), "export const safe = true;\n");
+  for (const relativePath of secretPaths) {
+    await assert.rejects(() => lstat(join(snapshot.path, ...relativePath.split("/"))), undefined, relativePath);
+  }
+  assert.equal(snapshot.filesCopied, 1);
+  assert.equal(secretPaths.every((path) => snapshot.skipped.some((entry) => (
+    entry.reason === "excluded" && (entry.path === path || path.startsWith(`${entry.path}/`))
+  ))), true);
+});
+
 test("snapshot enforces byte limit and cleans failed destination", async (t) => {
   const source = await mkdtemp(join(tmpdir(), "bridge-source-limit-"));
   t.after(async () => {
@@ -84,4 +123,3 @@ test("symlink chains that resolve outside the workspace are rejected", async (t)
   await assert.rejects(() => lstat(join(snapshot.path, "chain.txt")));
   assert.equal(snapshot.skipped.filter((entry) => entry.reason === "external-symlink").length, 2);
 });
-

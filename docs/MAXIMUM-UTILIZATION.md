@@ -38,6 +38,12 @@ Manual full-push is a separate owner action scoped by a visible provider, app, o
 
 Current Threadspan composition requests documented capabilities supplied by the host adapter. It does not emulate unavailable task messaging, monitor control, task launch, Fast launch, rollover, or output-phase control. A deployment without authoritative native quota remains observational; a deployment without a matching host capability leaves the corresponding action pending or unsupported.
 
+## Automatic takeover interaction
+
+Automatic takeover is not a maximum-utilization action and cannot consume its protected-task messaging path. A confirmed provider/account limit is journaled by the daemon-owned takeover monitor. It tries one certified same-provider account first; a cross-provider successor is eligible only when the takeover setting and task/smart-route authority allow it and the candidate preserves the required mode, workspace, privacy, context, and configured intelligence floor.
+
+The successor lane never steers, wakes, interrupts, promotes, rotates, or cancels a protected incumbent. Subagents still running remain untouched; failed or not-running children are recovered only after the coordinator and in bounded staggered batches. Exact native reset evidence exits automatic mode, restores ordinary maximum-utilization behavior, and cancels stale queued recovery. Timestamp forecasts alone cannot do so.
+
 There is no arbitrary automatic-event intake. Main-token, loopback-only controls are:
 
 - `POST /v1/maximum-utilization/refresh-native`

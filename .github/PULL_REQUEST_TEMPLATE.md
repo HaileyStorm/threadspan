@@ -11,7 +11,7 @@ Explain the compatibility problem and the smallest fix.
 
 ## Safety
 
-- [ ] No credentials, account details, private prompts/source, or raw private logs.
+- [ ] No credentials, account details, private prompts/source, raw private logs, signed/callback URLs, screenshots, media, audio, or transcripts.
 - [ ] No undocumented Desktop patching or authentication scraping.
 - [ ] No untrusted code is expected to run on a self-hosted runner.
 - [ ] Rollback and removal conditions are documented.

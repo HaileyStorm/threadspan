@@ -24,6 +24,12 @@ Provider/app components are grouped only from explicit bootstrap-discovered read
 
 Selecting an Add providers entry performs no external install or authentication. It adds the existing component ID to the ordinary plan request, so that component's existing app/CLI installation, sign-in, permission, preview, and live-untested prerequisites appear in the digest-bound Review step. External installers and authentication still require their separate explicit approval. Recovery remains limited to component IDs and bounded installer state and never gains credentials from this grouping.
 
+## Writing tools
+
+The collapsed **Writing tools** disclosure contains the optional Copy helper and the separate External copy check. Both checkboxes start unchecked for every user. Copy helper explains that local heuristics flag wording issues on the device and that an optional rewrite can use only an already configured provider the user explicitly chooses. Setup never enables a provider, stores credentials, runs a rewrite, or applies a suggestion, and it shows no story, build, detector, or cost metrics.
+
+External copy check is excluded from `selection: "all"`. Selecting it installs **Ask every time** with the manual Pangram handoff available; API adapters remain disabled until the user separately configures and enables them. The card names destination, payload size, Sapling retention, Winston's limited expiring trial, and that Threadspan has no partnership. Apply still requires the reviewed digest and keeps the standard exact backup and rollback manifest. Threadspan never submits detector text in the background, and detector scores remain advisory rather than proof of authorship.
+
 ## Stable release check comes first
 
 The first setup state checks only the official `HaileyStorm/threadspan` GitHub releases and selects the highest strict `major.minor.patch` stable tag. Drafts, prereleases, release channels, and lookalike repository or asset URLs are rejected. Release discovery, checksum-manifest download, signature download, and archive download each have their own bounded timeout and inherit installer-request cancellation. **Check again** repeats the same bounded check. If GitHub, the network, or a phase timeout makes the check unavailable, setup shows the failure and offers Retry or Continue current; the installed version remains usable.

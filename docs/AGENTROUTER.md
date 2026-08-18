@@ -17,7 +17,7 @@ At launch, Threadspan requires the named environment variable and creates a chil
 
 ## Availability and evidence
 
-On 2026-08-18, Linux and Windows with Claude Code 2.1.234 each returned `THREADSPAN_AGENTROUTER_OK` through `https://agentrouter.org` using `claude-opus-4-8`. Each host used a distinct USD 1 hard-capped token and had no payment method. This is route-specific live evidence, not a permanent offer or a guarantee for another account, token, model, host, or date.
+On 2026-08-18, Linux and Windows with Claude Code 2.1.234 each returned `THREADSPAN_AGENTROUTER_OK` through `https://agentrouter.org` using `claude-opus-4-8` in a bounded no-spend probe. This is route-specific live evidence, not a permanent offer or a guarantee for another account, token, model, host, or date.
 
 The public installer component is `agentrouter-free`. It is explicit-only, excluded from defaults and `selection: "all"`, and stays under **Add providers** without explicit ready evidence. `offerEndDate` is `null`, `visibilityFreshnessDays` is `7`, and `requiresLiveProbe` is `true`. After freshness expires, present **Check availability**. If a future end date is recorded, hide the route after that date unless a newer live probe proves availability. Disable the route whenever the offer, token, model, endpoint, or live probe is stale or unavailable.
 
@@ -27,4 +27,4 @@ The current [AgentRouter portal guide](https://co.agentrouter.org/portal/guide) 
 
 Threadspan is not partnered with, sponsored by, or endorsed by AgentRouter or any provider listed in its discovery candidates. It only surfaces public documentation and user-discovered evidence. AgentRouter receives the prompts and selected code context sent through Claude Code; review that third-party destination before enabling the route.
 
-Use a separate hard-capped token per host. Threadspan does not create accounts or tokens, open a browser, install Claude Code, add a payment method, change billing, enable the route, or upgrade a plan. Each action requires explicit user permission and a reviewed plan. Install only the official Claude Code build after that approval, then run a fresh bounded probe before enablement. No permanent free access is promised.
+Use a separately revocable, hard-capped credential for each independently managed host. Threadspan does not create accounts or tokens, open a browser, install Claude Code, add a payment method, change billing, enable the route, or upgrade a plan. Each action requires explicit user permission and a reviewed plan. Install only the official Claude Code build after that approval, then run a fresh bounded probe before enablement. No permanent free access is promised.

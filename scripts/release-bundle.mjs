@@ -1,6 +1,6 @@
 import { createHash, createPrivateKey, createPublicKey, sign as signBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,6 +71,26 @@ const FORBIDDEN_NAMES = new Set([
 ]);
 const SECRET_EXTENSIONS = [".pem", ".key", ".p12", ".pfx", ".keystore", ".kdbx", ".crt", ".cer"];
 const COMPILED_EXTENSIONS = [".exe", ".msi", ".msix", ".dll", ".so", ".dylib", ".dmg", ".pkg", ".deb", ".rpm", ".appimage"];
+const PUBLIC_DONATION_EMAIL = ["HaileyCollet", "gmail.com"].join("@").toLowerCase();
+const INTENTIONAL_PUBLIC_EMAILS = new Map([
+  ["README.md", new Set([PUBLIC_DONATION_EMAIL])],
+  ["docs/DONATIONS.md", new Set([PUBLIC_DONATION_EMAIL])],
+  ["test/donations.test.mjs", new Set([PUBLIC_DONATION_EMAIL])],
+  ["ui/install.html", new Set([PUBLIC_DONATION_EMAIL])],
+]);
+const SYNTHETIC_EMAIL_SUFFIXES = [".example", ".invalid", ".test"];
+const HIGH_CONFIDENCE_SECRET_PATTERNS = [
+  /(?:^|[^A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?=$|[^A-Z0-9])/u,
+  /\bgh[pousr]_[A-Za-z0-9]{32,}\b/u,
+  /\bgithub_pat_[A-Za-z0-9_]{60,}\b/u,
+  /\bnpm_[A-Za-z0-9]{36}\b/u,
+  /\bsk-[A-Za-z0-9_-]{32,}\b/u,
+  /\bsk_live_[A-Za-z0-9]{20,}\b/u,
+  /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/u,
+  /\bAIza[A-Za-z0-9_-]{35}\b/u,
+];
+const EMAIL_PATTERN = /(?<![A-Z0-9._%+-])([A-Z0-9._%+-]+)@([A-Z0-9.-]+\.[A-Z]{2,})(?![A-Z0-9._%+-])/giu;
+const US_SSN_PATTERN = /\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b/u;
 
 /** Return the exact stable-release asset names consumed by the installer updater. */
 export function canonicalReleaseNames(version) {
@@ -124,6 +144,7 @@ export async function buildReleaseBundle(options = {}) {
   for (const required of REQUIRED_RELEASE_FILES) {
     if (!selectedPaths.includes(required)) throw new Error(`npm package manifest is missing required release file '${required}'`);
   }
+  const sourceCommit = await readReleaseProvenance(root, selectedPaths);
 
   const files = [];
   const sourceByteLimit = Math.min(MAX_SOURCE_BYTES, options.maxSourceBytes ?? MAX_SOURCE_BYTES);
@@ -143,8 +164,11 @@ export async function buildReleaseBundle(options = {}) {
     if (relativePath !== RELEASE_PUBLIC_KEY_RELATIVE_PATH && containsPrivateKeyMaterial(bytes)) {
       throw new Error("Release package contains prohibited private key material");
     }
+    assertNoSensitiveReleaseData(relativePath, bytes);
     files.push({ path: relativePath, bytes });
   }
+  const verifiedSourceCommit = await readReleaseProvenance(root, selectedPaths);
+  if (verifiedSourceCommit !== sourceCommit) throw new Error("Release source commit changed while bundling");
 
   const identity = validateReleaseIdentity(files);
   const version = identity.version;
@@ -175,16 +199,91 @@ export async function buildReleaseBundle(options = {}) {
   const archivePath = join(outputDirectory, names.archiveName);
   const manifestPath = join(outputDirectory, names.manifestName);
   const signaturePath = signature ? join(outputDirectory, names.signatureName) : undefined;
-
-  return Object.freeze({
+  const metadata = Object.freeze({
     ...names,
     version,
+    sourceCommit,
+    archiveSha256,
+    fileCount: files.length,
+    signed: signature !== undefined,
+  });
+
+  return Object.freeze({
+    ...metadata,
     archivePath,
     manifestPath,
     signaturePath,
-    archiveSha256,
-    fileCount: files.length,
+    metadata,
   });
+}
+
+/** Require one exact clean Git commit and return its path-free object identifier. */
+async function readReleaseProvenance(root, releasePaths) {
+  const environment = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+  let executable;
+  try {
+    executable = await resolveExecutablePath("git", { cwd: root, environment });
+  } catch {
+    throw new Error("Release source must be an exact clean Git commit");
+  }
+  if (typeof executable !== "string" || !executable) {
+    throw new Error("Release source must be an exact clean Git commit");
+  }
+
+  const topLevel = await runGit(executable, ["rev-parse", "--show-toplevel"], root, environment);
+  if (topLevel.exitCode !== 0) throw new Error("Release source must be an exact clean Git commit");
+  let canonicalRoot;
+  let canonicalTopLevel;
+  try {
+    [canonicalRoot, canonicalTopLevel] = await Promise.all([
+      realpath(root),
+      realpath(topLevel.stdout.trim()),
+    ]);
+  } catch {
+    throw new Error("Release source must be an exact clean Git commit");
+  }
+  if (canonicalRoot !== canonicalTopLevel) throw new Error("Release source must be the Git worktree root");
+
+  const [commitResult, statusResult] = await Promise.all([
+    runGit(executable, ["rev-parse", "--verify", "HEAD^{commit}"], root, environment),
+    runGit(executable, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], root, environment),
+  ]);
+  const sourceCommit = commitResult.stdout.trim().toLowerCase();
+  if (commitResult.exitCode !== 0 || !/^[0-9a-f]{40,64}$/u.test(sourceCommit)) {
+    throw new Error("Release source must have an exact Git commit");
+  }
+  if (statusResult.exitCode !== 0) throw new Error("Unable to verify release source Git state");
+
+  const untracked = new Set();
+  for (const record of statusResult.stdout.split("\0")) {
+    if (!record) continue;
+    if (!record.startsWith("?? ")) throw new Error("Release source has tracked changes; commit them before bundling");
+    untracked.add(record.slice(3));
+  }
+  if (releasePaths.some((path) => untracked.has(path))) {
+    throw new Error("Release source has release-eligible untracked files; commit them before bundling");
+  }
+  return sourceCommit;
+}
+
+/** Run one bounded, shell-free Git inspection without exposing repository-local output. */
+async function runGit(executable, args, root, environment) {
+  try {
+    return await runCapturedProcess({
+      command: executable,
+      args,
+      cwd: root,
+      shell: false,
+      windowsHide: true,
+      maxStdoutBytes: 16 * 1024 * 1024,
+      maxStderrBytes: 64 * 1024,
+      timeoutMs: 30_000,
+      killTree: true,
+      env: environment,
+    });
+  } catch {
+    throw new Error("Unable to verify release source Git state");
+  }
 }
 
 async function signManifest(manifestBytes, privateKeyPath, root, shippedPublicKey) {
@@ -383,6 +482,35 @@ function isForbiddenKeyMaterialPath(relativePath) {
     || name === "id_rsa"
     || name === "id_ed25519"
     || name.startsWith("id_");
+}
+
+/** Reject high-confidence credential tokens and unintended personal identifiers before archiving. */
+function assertNoSensitiveReleaseData(relativePath, bytes) {
+  const ascii = bytes.toString("latin1");
+  if (HIGH_CONFIDENCE_SECRET_PATTERNS.some((pattern) => pattern.test(ascii))) {
+    throw new Error("Release package contains prohibited secret material");
+  }
+
+  const text = decodeTextFile(bytes);
+  if (text === undefined) return;
+  if (US_SSN_PATTERN.test(text)) throw new Error("Release package contains unintended personal data");
+
+  const allowedEmails = INTENTIONAL_PUBLIC_EMAILS.get(relativePath);
+  for (const match of text.matchAll(EMAIL_PATTERN)) {
+    const email = match[0].toLowerCase();
+    const domain = match[2].toLowerCase();
+    if (email === "git@github.com") continue;
+    if (SYNTHETIC_EMAIL_SUFFIXES.some((suffix) => domain.endsWith(suffix))) continue;
+    if (allowedEmails?.has(email)) continue;
+    throw new Error("Release package contains unintended personal data");
+  }
+}
+
+/** Decode only unambiguous UTF-8 text; binary files still receive known-token and key scans. */
+function decodeTextFile(bytes) {
+  if (bytes.includes(0)) return undefined;
+  const text = bytes.toString("utf8");
+  return Buffer.from(text, "utf8").equals(bytes) ? text : undefined;
 }
 
 /** Read npm's package manifest through the same shell-free managed command path used by releases. */
@@ -598,7 +726,7 @@ function parseArguments(argv) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const result = await buildReleaseBundle(parseArguments(process.argv.slice(2)));
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(result.metadata, null, 2)}\n`);
   } catch (error) {
     process.stderr.write(`release bundle failed: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

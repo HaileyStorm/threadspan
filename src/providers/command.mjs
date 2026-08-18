@@ -4,6 +4,13 @@ import { renderMessagesForAgent } from "../core/policies.mjs";
 import { spawnManagedChild, terminateProcessTree } from "../core/managed-process.mjs";
 import { ProviderAdapter } from "./base.mjs";
 
+const DEFAULT_CHILD_ENVIRONMENT_ALLOWLIST = Object.freeze([
+  "HOME", "USER", "LOGNAME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+  "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+  "PATH", "PATHEXT", "SystemRoot", "SYSTEMROOT", "ComSpec", "COMSPEC",
+  "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
+]);
+
 /**
  * Provider adapter for CLI agents and future subscription-backed command integrations.
  *
@@ -62,7 +69,7 @@ export class CommandProvider extends ProviderAdapter {
       shell: false,
       windowsHide: true,
       killTree: (this.config.killTree ?? this.config.killProcessTree) !== false,
-      env: buildCommandEnvironment(this.config, configuredEnvironment, {
+      env: buildChildEnvironment(this.config, configuredEnvironment, {
         CURSOR_BRIDGE_MODE: request.mode,
         CURSOR_BRIDGE_MODEL: request.model,
         CURSOR_BRIDGE_THREAD_ID: request.threadId ?? "",
@@ -272,17 +279,26 @@ function extractCommandText(payload) {
 }
 
 /**
- * Build the child environment, optionally replacing broad process inheritance with an allowlist.
+ * Build a provider child environment from a conservative platform baseline plus named additions.
+ * Broad bridge-process inheritance is available only through explicit `inheritEnv: true`.
  * @param {Record<string, any>} config Provider configuration.
  * @param {Record<string, string>} configured Explicit provider environment.
  * @param {Record<string, string>} bridgeEnvironment Bridge request metadata.
+ * @param {NodeJS.ProcessEnv} [baseEnvironment] Environment from which named values are selected.
  * @returns {NodeJS.ProcessEnv}
  */
-function buildCommandEnvironment(config, configured, bridgeEnvironment) {
-  const inherited = config.inheritEnv === false
-    ? Object.fromEntries((config.envAllowlist ?? []).flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]]]))
-    : process.env;
-  return { ...inherited, ...configured, ...bridgeEnvironment };
+export function buildChildEnvironment(config, configured = {}, bridgeEnvironment = {}, baseEnvironment = process.env) {
+  const inherited = config.inheritEnv === true
+    ? baseEnvironment
+    : selectEnvironment(baseEnvironment, [...DEFAULT_CHILD_ENVIRONMENT_ALLOWLIST, ...(config.envAllowlist ?? [])]);
+  return Object.fromEntries(
+    Object.entries({ ...inherited, ...configured, ...bridgeEnvironment }).map(([key, value]) => [key, String(value)]),
+  );
+}
+
+/** Select defined environment values without forwarding unnamed bridge credentials. */
+function selectEnvironment(environment, names) {
+  return Object.fromEntries([...new Set(names)].flatMap((name) => environment[name] === undefined ? [] : [[name, environment[name]]]));
 }
 
 /**

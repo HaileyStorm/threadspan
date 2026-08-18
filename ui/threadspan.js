@@ -31,6 +31,7 @@
   let pickerPreferencesLoaded = false;
   let showAllPickerRoutes = false;
   let draggedPickerRouteId = "";
+  let activeCopyCheckPolicy = { permissionMode: "off", maxInputChars: 12000 };
 
   function readTipPreferences() {
     try {
@@ -273,6 +274,17 @@
     if (value.includes("\\") || value.includes("..")) return null;
     if (!value.startsWith("./") && !value.startsWith("/")) return null;
     return value;
+  }
+
+  function safeExternalHttpsUrl(value) {
+    if (typeof value !== "string" || !value) return null;
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+      return parsed.href;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -655,6 +667,7 @@
     modeBar.replaceChildren(kicker("Mode"), document.createTextNode(` ${titleMode(route.mode)}`));
     modeDetail.textContent = titleMode(route.mode);
     root.querySelector("[data-field='mode-note']").textContent = next.modeNote;
+    renderCopyCheckPolicy(next.copyCheck);
 
     const availability = route.verified ? "verified" : "unverified";
     const availBar = root.querySelector("[data-field='availability']");
@@ -714,10 +727,116 @@
     renderHistory(next.history);
     renderRouteMap(next.routeMap);
     renderAccounts(next.accounts);
+    renderContinuity(next.continuity);
     renderMaximumUtilization(next.maximumUtilization);
+    renderAutomaticTakeover(next.automaticTakeover);
     renderCompatibility(next.compatibility);
     syncFilterControls(next.filters);
     renderPicker();
+  }
+
+  function renderContinuity(continuity) {
+    const tree = root.querySelector("[data-field='continuity-tree']");
+    const summary = root.querySelector("[data-field='continuity-summary']");
+    const count = root.querySelector("[data-field='continuity-count']");
+    const note = root.querySelector("[data-field='continuity-note']");
+    const status = root.querySelector("[data-field='continuity-status']");
+    if (!tree || !summary || !count || !note || !status) return;
+    tree.replaceChildren();
+    status.textContent = "";
+    const tasks = continuity?.tasks ?? [];
+    count.textContent = String(tasks.length);
+    if (!continuity?.enabled) {
+      summary.textContent = "Not connected";
+      note.textContent = continuity?.reason || "Native Continuity state is unavailable.";
+      return;
+    }
+    const selected = tasks.find((task) => task.selected) ?? tasks[0];
+    summary.textContent = selected ? `${selected.title} · generation ${selected.current.generation}` : "No logical tasks found";
+    note.textContent = continuity.note || "Origin and prior generations stay nested under the selected current task.";
+    for (const task of tasks) {
+      const item = document.createElement("details");
+      item.className = "continuity-task";
+      item.open = task.selected;
+      const head = document.createElement("summary");
+      const title = document.createElement("strong");
+      title.textContent = task.title;
+      const meta = document.createElement("span");
+      meta.className = "note";
+      meta.textContent = `${task.project} · ${task.current.status} · Goal ${task.current.goalStatus}`;
+      head.append(title, meta);
+      const generations = document.createElement("ol");
+      generations.className = "continuity-generations";
+      for (const generation of task.generations) {
+        const row = document.createElement("li");
+        row.dataset.role = generation.role;
+        const label = document.createElement("span");
+        label.textContent = generation.label;
+        const badge = document.createElement("small");
+        badge.textContent = `${generation.role} · ${generation.status}`;
+        row.append(label, badge);
+        generations.appendChild(row);
+      }
+      const actions = document.createElement("div");
+      actions.className = "continuity-actions";
+      if (continuity.capabilities?.rename) {
+        const rename = document.createElement("button");
+        rename.type = "button";
+        rename.textContent = "Rename";
+        rename.addEventListener("click", async () => {
+          const name = prompt("Task name", task.title);
+          if (name == null || !name.trim() || name.trim() === task.title) return;
+          await continuityAction("/v1/continuity/rename", { handle: task.handle, name: name.trim() }, status);
+        });
+        actions.appendChild(rename);
+      }
+      if (continuity.capabilities?.rollover) {
+        const action = document.createElement("button");
+        action.type = "button";
+        action.disabled = task.action === "Pending";
+        action.textContent = task.action;
+        action.addEventListener("click", async () => {
+          try {
+            const preview = await continuityRequest("/v1/continuity/rollover/preview", { handle: task.handle });
+            const effects = Array.isArray(preview.effects) ? preview.effects.join("\n• ") : "Use the native Continuity supervisor.";
+            if (!confirm(`${task.action} “${task.title}”?\n\n• ${effects}`)) return;
+            const result = await continuityRequest("/v1/continuity/rollover", { handle: task.handle, digest: preview.digest });
+            status.textContent = `${task.action} requested. The native supervisor owns the handoff.`;
+            action.disabled = true;
+            action.textContent = "Pending";
+            document.dispatchEvent(new CustomEvent("threadspan:continuity-requested", { detail: { operationId: result.operationId } }));
+          } catch (error) {
+            status.textContent = error instanceof Error ? error.message : String(error);
+          }
+        });
+        actions.appendChild(action);
+      }
+      item.append(head, generations, actions);
+      tree.appendChild(item);
+    }
+  }
+
+  async function continuityAction(path, body, status) {
+    try {
+      const result = await continuityRequest(path, body);
+      status.textContent = result.title ? `Renamed to ${result.title}.` : "Continuity action accepted.";
+      setTimeout(() => location.reload(), 350);
+    } catch (error) {
+      status.textContent = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function continuityRequest(path, body) {
+    if (!localToken) throw new Error("Owner token is required for Continuity controls.");
+    const response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { authorization: `Bearer ${localToken}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(value?.error?.message || `Continuity request failed (${response.status}).`);
+    return value;
   }
 
   /**
@@ -1002,6 +1121,15 @@
     if (leave) leave.hidden = maximum.manual.active !== true;
   }
 
+  function renderAutomaticTakeover(takeover) {
+    const detail = root.querySelector("[data-field='automatic-takeover-detail']");
+    const stop = root.querySelector("[data-action='disable-automatic-takeover']");
+    if (!detail) return;
+    const counts = takeover?.counts ?? {};
+    detail.textContent = `Takeover ${takeover?.phase ?? "disabled"} · ${counts.active ?? 0} active · ${counts.queued ?? 0} queued · ${counts.blocked ?? 0} blocked · ${counts.unsupported ?? 0} unsupported.`;
+    if (stop) stop.hidden = !["automatic", "blocked", "unsupported"].includes(takeover?.phase) && (counts.active ?? 0) === 0 && (counts.queued ?? 0) === 0;
+  }
+
   function forecastSummary(forecast) {
     if (forecast.status === "zero-burn") return `${forecast.burn.rateLabel}; no exhaustion at observed burn`;
     if (forecast.exhaustion) return `${forecast.burn.rateLabel}; projected exhaustion ${forecast.exhaustion.label} (${forecast.exhaustion.relation.replaceAll("-", " ")})`;
@@ -1065,6 +1193,8 @@
   bindAppearance();
   bindAccountControls();
   bindMaximumUtilizationControls();
+  bindCopyReviewControls();
+  bindCopyCheckControls();
   bindTipControls();
   bindGlossarySearch();
 
@@ -1146,6 +1276,7 @@
   function bindMaximumUtilizationControls() {
     root.querySelector("[data-action='refresh-native-quota']")?.addEventListener("click", () => { void mutateMaximumUtilization("/v1/maximum-utilization/refresh-native"); });
     root.querySelector("[data-action='disable-maximum-utilization']")?.addEventListener("click", () => { void mutateMaximumUtilization("/v1/maximum-utilization/disable"); });
+    root.querySelector("[data-action='disable-automatic-takeover']")?.addEventListener("click", () => { void mutateMaximumUtilization("/v1/automatic-takeover/disable"); });
     root.querySelector("[data-action='leave-manual-full-push']")?.addEventListener("click", () => { void mutateMaximumUtilization("/v1/maximum-utilization/manual/leave"); });
     root.querySelector("[data-action='enter-manual-full-push']")?.addEventListener("click", () => {
       const kind = root.querySelector("[name='manual-scope-kind']")?.value;
@@ -1165,6 +1296,152 @@
       const state = await fetch(requested, { credentials: "same-origin", headers: { authorization: `Bearer ${localToken}` } });
       if (state.ok) show(api.adaptThreadspanState(await state.json()));
     }
+  }
+
+  function renderCopyCheckPolicy(policy) {
+    const note = root.querySelector("[data-field='copy-check-policy']");
+    if (!note) return;
+    const mode = policy?.permissionMode || "off";
+    const maxInputChars = policy?.maxInputChars || 12000;
+    const pangramUrl = safeExternalHttpsUrl(policy?.adapters?.pangram?.officialUrl);
+    activeCopyCheckPolicy = { permissionMode: mode, maxInputChars, pangramUrl };
+    const text = root.querySelector("[data-field='copy-check-form'] textarea[name='text']");
+    const pangramLink = root.querySelector("[data-action='pangram-open']");
+    if (text) text.maxLength = maxInputChars;
+    if (pangramLink) {
+      if (pangramUrl) pangramLink.setAttribute("href", pangramUrl);
+      else pangramLink.removeAttribute("href");
+      pangramLink.hidden = true;
+    }
+    note.textContent = `Permission mode: ${mode}. Credentials existing do not enable checks. Payload cap ${maxInputChars} characters. ${policy?.partnershipNote || "Threadspan has no partnership with these vendors."} ${policy?.disclaimer || "External detector results are advisory and cannot prove authorship."}`;
+  }
+
+  function bindCopyCheckControls() {
+    const form = root.querySelector("[data-field='copy-check-form']");
+    if (!form) return;
+    const status = root.querySelector("[data-field='copy-check-status']");
+    const results = root.querySelector("[data-field='copy-check-results']");
+    const pangramLink = root.querySelector("[data-action='pangram-open']");
+    const selectedAdapters = () => [...form.querySelectorAll("input[name='adapter']:checked")].map((input) => input.value);
+    const showResults = (payload) => {
+      if (results) results.replaceChildren();
+      for (const item of payload?.results ?? payload?.external?.results ?? []) {
+        const row = document.createElement("li");
+        row.textContent = `${item.adapter ?? "adapter"} · ${item.status ?? "unknown"} · ${item.score ?? "no score"} · ${item.checkedAt ?? ""} · ${item.displayText ?? ""}`;
+        results?.appendChild(row);
+      }
+      if (status) status.textContent = payload?.releaseFailed === false
+        ? "Release review finished. External failure cannot fail a release."
+        : `${payload?.results?.length ?? 0} advisory result(s). Never averaged, never proof of authorship.`;
+    };
+    const postCopyCheck = async (path, body) => {
+      if (!localToken) { if (status) status.textContent = "External copy check requires the owner-private daemon token."; return; }
+      if (status) status.textContent = "Checking…";
+      const response = await fetch(path, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { authorization: `Bearer ${localToken}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const value = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(value?.error?.message || `Copy check failed (${response.status}).`);
+      showResults(value);
+      return value;
+    };
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const data = new FormData(form);
+        await postCopyCheck("/v1/copy/check", {
+          trigger: "manual",
+          action: "check",
+          text: data.get("text"),
+          adapters: selectedAdapters(),
+          acknowledgeRetention: data.get("acknowledgeRetention") === "on",
+          confirmed: data.get("confirmed") === "on",
+        });
+      } catch (error) {
+        if (status) status.textContent = error instanceof Error ? error.message : String(error);
+      }
+    });
+    root.querySelector("[data-action='pangram-handoff']")?.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const text = form.elements.text?.value ?? "";
+      const confirmed = form.elements.confirmed?.checked === true;
+      if (activeCopyCheckPolicy.permissionMode === "off") {
+        if (status) status.textContent = "External copy check is off.";
+        return;
+      }
+      if (activeCopyCheckPolicy.permissionMode === "ask-every-time" && !confirmed) {
+        if (status) status.textContent = "Confirm this check first.";
+        return;
+      }
+      if (!activeCopyCheckPolicy.pangramUrl) {
+        if (status) status.textContent = "Pangram's reviewed HTTPS link is unavailable.";
+        return;
+      }
+      if (pangramLink) pangramLink.hidden = true;
+      try {
+        const payload = await postCopyCheck("/v1/copy/check", { trigger: "manual", action: "pangram-handoff", text, confirmed });
+        const handoff = payload?.results?.find((item) => item.adapter === "pangram" && item.status === "handoff");
+        if (!handoff) return;
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+        if (pangramLink) {
+          pangramLink.hidden = false;
+          pangramLink.focus();
+        }
+        if (status) status.textContent = "Text copied. Open Pangram, paste it there, then paste the result back here.";
+      } catch (error) {
+        if (status) status.textContent = error instanceof Error ? error.message : String(error);
+      }
+    });
+    root.querySelector("[data-action='pangram-record']")?.addEventListener("click", async (event) => {
+      event.preventDefault();
+      try {
+        await postCopyCheck("/v1/copy/check", {
+          trigger: "manual",
+          action: "pangram-record",
+          pangramResult: form.elements.pangramResult?.value ?? "",
+          confirmed: form.elements.confirmed?.checked === true,
+        });
+      } catch (error) {
+        if (status) status.textContent = error instanceof Error ? error.message : String(error);
+      }
+    });
+  }
+
+  function bindCopyReviewControls() {
+    const form = root.querySelector("[data-field='copy-review-form']");
+    if (!form) return;
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const status = root.querySelector("[data-field='copy-review-status']");
+      const suggestion = root.querySelector("[data-field='copy-review-suggestion']");
+      const findings = root.querySelector("[data-field='copy-review-findings']");
+      if (!localToken) { if (status) status.textContent = "Copy review requires the owner-private daemon token."; return; }
+      if (status) status.textContent = "Reviewing…";
+      if (findings) findings.replaceChildren();
+      try {
+        const data = new FormData(form);
+        const response = await fetch("/v1/copy/review", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { authorization: `Bearer ${localToken}`, "content-type": "application/json" },
+          body: JSON.stringify({ text: data.get("text"), profile: data.get("profile") }),
+        });
+        const value = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(value?.error?.message || `Copy review failed (${response.status}).`);
+        if (suggestion) suggestion.value = value.suggestion ?? value.original ?? "";
+        for (const finding of value.findings ?? []) {
+          const item = document.createElement("li");
+          item.textContent = finding.message ?? finding.code ?? "Review finding";
+          findings?.appendChild(item);
+        }
+        if (status) status.textContent = value.reviewRequired ? "Protected text changed; suggestion rejected for review." : `${value.status ?? "Reviewed"} · ${value.stopReason ?? "complete"}`;
+      } catch (error) {
+        if (status) status.textContent = error instanceof Error ? error.message : String(error);
+      }
+    });
   }
 
   function bindAppearance() {

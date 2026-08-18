@@ -943,3 +943,16 @@ a {
     color-scheme: dark;
   }
 }
+
+/* First-class Continuity stays compact until the user expands a logical task. */
+.continuity-panel details > summary{cursor:pointer;display:flex;gap:.55rem;align-items:center;font-weight:700}
+.continuity-tree{display:grid;gap:.6rem;margin-top:.75rem}
+.continuity-task{border:1px solid var(--line);border-radius:.6rem;padding:.55rem .65rem;background:color-mix(in srgb,var(--paper) 94%,var(--teal))}
+.continuity-task>summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.7rem;align-items:center}
+.continuity-task>summary .note{text-align:right}
+.continuity-generations{list-style:none;margin:.65rem 0;padding:0 0 0 .8rem;border-left:2px solid var(--line);display:grid;gap:.38rem}
+.continuity-generations li{display:flex;justify-content:space-between;gap:.75rem;padding:.28rem .4rem;border-radius:.35rem}
+.continuity-generations li[data-role="current"]{background:color-mix(in srgb,var(--teal) 14%,transparent);font-weight:700}
+.continuity-generations li[data-role="origin"]{color:var(--copper)}
+.continuity-actions{display:flex;gap:.45rem;justify-content:flex-end;flex-wrap:wrap}
+.panel textarea{width:100%;resize:vertical;font:inherit;line-height:1.45;border:1px solid var(--line);border-radius:.5rem;padding:.65rem;background:var(--paper);color:var(--ink)}

@@ -54,6 +54,8 @@ test("Voice validation is bounded and the instruction states every authority exc
   assert.ok(instruction.length <= MAX_VOICE_INSTRUCTION_CHARS);
   assert.match(instruction, /user-facing assistant prose/);
   assert.match(instruction, /progress-update cadence/);
+  assert.match(instruction, /plain English/);
+  assert.match(instruction, /Technical depth means accurate useful detail, not denser wording/);
   assert.match(instruction, /Never change machine protocols, tool calls or results, JSON schemas, exact evidence, mandated formats, permissions, routing, provider\/native settings, system or developer authority, factual claims, or factual confidence/);
   assert.throws(() => normalizeVoiceProfile({ ...VOICE_PRESETS["calm-guide"], parameters: { ...VOICE_PRESETS["calm-guide"].parameters, directness: 6 } }), /integer from 1 to 5/);
   assert.throws(() => normalizeVoiceConfig({ selectedProfile: "missing", profiles: [] }), /unknown profile/);

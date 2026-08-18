@@ -8,6 +8,8 @@ Threadspan connects Codex, Grok, Cursor, Nous, OpenRouter, Claude Code gateways,
 
 The point is practical: use the models and subscriptions you already have, see which ones are actually available, and keep work recoverable when one provider reaches a limit.
 
+![Threadspan HUD, route picker, and provider hierarchy](docs/media/threadspan-demo.gif)
+
 ## Install with one prompt
 
 > Install Threadspan from https://github.com/HaileyStorm/threadspan. Start its setup window, show me the component choices and estimated usage, ask early for any sign-ins or permissions you need, preserve rollback, and live-test only the providers I select.
@@ -34,7 +36,10 @@ The setup window is source-run in an app-style Vivaldi/Chrome/Edge window, not a
 - Explicit-only AgentRouter/Claude Code support plus check-first Mistral API, GroqCloud, Cloudflare Workers AI, and Gemini API discovery candidates.
 - A companion HUD with health, utilization, usage, ranking, and a collapsed route map.
 - Optional heuristic-first Tips: disabled by default, dismissible, cooldown-bound, and limited to one compact tip per browser session; cheap-model refinement and session-only Ask are separately gated and user-initiated.
-- Continuity descriptors, context profiles, rollover metadata, and native-host recovery.
+- Optional Copy review for every installation: local readability checks, protected-span enforcement, and an explicitly configured provider rewrite that never auto-applies.
+- Optional External copy check, off by default: user-started Pangram handoff plus documented Sapling/Winston API adapters. Results are advisory and never decide rewrite acceptance.
+- A collapsed Continuity task tree with origin/current/prior generations, native naming, guarded promotion/rollover controls, and Goal lifecycle delegated to the certified native supervisor.
+- Optional automatic takeover: certified same-provider account fallback first, then a compatible provider only when the task or smart route enables it and both routes publish the same explicit privacy class.
 - Compatibility Watch: recover, learn, harden across research, browser, document, media, operations, provider setup, and coding tasks through reuse-first capability discovery, bounded direct/meta/meta-meta improvement, reviewed rollback, and sanitized issue/PR intake.
 - An optional, disabled-by-default maximum-utilization controller with native-quota gating and a durable requested-action outbox.
 - Optional Beads and project-bootstrap modules that preserve existing policy, preview every write, and never auto-initialize or migrate a tracker.
@@ -42,6 +47,19 @@ The setup window is source-run in an app-style Vivaldi/Chrome/Edge window, not a
 - Linux and Windows lifecycle plans.
 
 Threadspan does not copy provider credentials into source, plans, logs, screenshots, or releases. It is not partnered with, sponsored by, or endorsed by any listed provider; public documentation and user-discovered routes are surfaced without promising permanent free access.
+
+<details>
+<summary>See the route picker and provider hierarchy</summary>
+
+The picker stays compact by default, while search, filters, favorites, hiding, and manual ordering remain one click away.
+
+![Threadspan route picker with search, filters, favorites, and ordering](docs/media/threadspan-route-picker.png)
+
+The deeper route map shows ranked providers, supported modes, specialties, recent use, and failure counts without putting that machinery in the main view.
+
+![Threadspan provider hierarchy and maximum-utilization controls](docs/media/threadspan-route-map.png)
+
+</details>
 
 ## Support Threadspan
 
@@ -85,7 +103,7 @@ Grok Bot has no documented arbitrary HUD injection API. Its supported path is an
 | AgentRouter via Claude Code | Conditional | No | Conditional | Explicit-only, hard-capped host token, dated two-host evidence; recheck after 7 days. |
 | Mistral / Groq / Cloudflare / Gemini candidates | Check first | Check first | No | Disabled generic setup candidates; current free/cardless/model eligibility must be rechecked. |
 
-Unsupported combinations fail closed. Threadspan does not silently turn Consult into Delegate or send work to a different third party.
+Unsupported combinations fail closed. Threadspan does not turn Consult into Delegate. Cross-provider takeover is visible, requires the optional policy plus task/smart-route authority, and preserves the original mode, workspace, privacy, context, and configured intelligence floor.
 
 ## Setup flow
 
@@ -137,6 +155,10 @@ Threadspan includes five presentation-only Voice profiles: Technical partner (th
 
 Voice affects only user-facing assistant prose and optional progress cadence. It never changes protocols, tools/results, schemas, evidence, required formats, permissions, provider/native settings, or factual confidence, and it is attached only for safe raw Consult through adapters that explicitly support a transient prose-policy hook. Request-local intent briefs can formalize explicitly supplied objectives and constraints without becoming memory or provider/session metadata. See [Voice and request-local intent](docs/VOICE.md).
 
+The optional [Copy review](docs/COPY-REVIEW.md) tool is available to every installation when selected. It stays collapsed in the HUD, runs heuristics locally, can use a separately configured provider for suggestions, preserves protected text and Voice constraints, and never applies a rewrite automatically.
+
+The separate [External copy check](docs/COPY-CHECK.md) policy is off by default and is never enabled by installer `selection: "all"` or by credentials merely existing. Only a user-started manual check or user-started release may run it. Results are advisory and cannot prove authorship.
+
 ## Context profiles
 
 | Profile | Model | Context | Auto-compact |
@@ -162,6 +184,8 @@ Maximum-utilization mode is a current optional controller/policy and is disabled
 
 The daemon persists reducer state and requested actions before dispatch. Host adapters execute only the capabilities they document. Unsupported task notices, protection, monitor, manifest, Fast, inbox, output-phase, and rollover effects remain pending or unsupported and are never claimed executed. The HUD is count-only and identifier-free. See [Maximum utilization](docs/MAXIMUM-UTILIZATION.md).
 
+Automatic takeover is a separate replacement lane. It first tries a certified healthy account for the same provider. If that fails and cross-provider takeover is enabled, it may start one compatible successor without steering, waking, or canceling a maximum-utilization-protected incumbent. A daemon-owned monitor verifies liveness and deduplicates recovery; running subagents are left alone, while failed or not-running children are recovered later in bounded staggered batches. A fresh exact reset observation exits automatic mode and cancels stale queued recovery without killing work already running on a replacement.
+
 ## Glossary and optional Tips
 
 The searchable [Threadspan glossary](docs/GLOSSARY.md) defines modes, providers/core hosts, Continuity, Beads, Compatibility Watch/self-heal, branching, account routing, maximum utilization, context profiles, and the local-model roadmap. It also includes practical "Try" ideas for Consult, Integrated, and Delegate.
@@ -174,7 +198,7 @@ Threadspan does not implement local-model routing today. Major future support is
 
 ## Coming next
 
-Roadmap only, not current functionality: safer PC and provider-app maintenance built on Compatibility Watch; a collapsed logical-task tree that shows the selected active Continuity generation under its origin and adds controls only when the native host can prove them; richer reverse-host parity; local-model backends; more provider adapters; and a separate memory system. Maintenance will remain plan-first, allowlisted, rollback-backed, active-work-aware, and free of surprise restarts or upgrades.
+Roadmap only, not current functionality: safer PC and provider-app maintenance built on Compatibility Watch; richer reverse-host parity; local-model backends; more provider adapters; and a separate memory system. Maintenance will remain plan-first, allowlisted, rollback-backed, active-work-aware, and free of surprise restarts or upgrades.
 
 ## Development
 

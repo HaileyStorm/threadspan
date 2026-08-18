@@ -32,7 +32,13 @@ test("one-pass planning includes every component and reveals no credential value
 
   assert.deepEqual(plan.selectedComponents, [...COMPONENT_IDS, ...OPTIONAL_COMPONENT_IDS]);
   assert.equal(plan.selectedComponents.includes("codex-full-access"), false);
+  assert.equal(plan.selectedComponents.includes("copy-naturalizer"), false);
+  assert.equal(EXPLICIT_ONLY_COMPONENT_IDS.includes("copy-naturalizer"), true);
+  assert.equal(plan.selectedComponents.includes("copy-check"), false);
+  assert.equal(EXPLICIT_ONLY_COMPONENT_IDS.includes("copy-check"), true);
   assert.deepEqual(EXPLICIT_ONLY_COMPONENT_IDS, [
+    "copy-naturalizer",
+    "copy-check",
     "agentrouter-free",
     "mistral-api-free",
     "groqcloud-free",
@@ -307,6 +313,87 @@ test("Tips is an optional heuristic-first component and remains disabled by defa
   assert.equal(configuration.ask.memory, false);
   assert.deepEqual(configuration.excludes, ["prompts", "identifiers", "credentials"]);
   assert.match(plan.prerequisites[0].message, /model refinement and Ask require separate provider\/privacy configuration and explicit user action/i);
+});
+
+test("Copy Naturalizer is explicit opt-in, disabled, credential-free, digest-bound, and reversible", async (t) => {
+  const root = await temporaryRoot(t);
+  const target = join(root, "threadspan", "components", "copy-naturalizer.json");
+  await mkdir(dirname(target), { recursive: true });
+  const previous = `${JSON.stringify({ schemaVersion: 1, component: "copy-naturalizer", enabled: true, futureManagedField: { retained: true } }, null, 2)}\n`;
+  await writeFile(target, previous);
+
+  const plan = createInstallerPlan({
+    installRoot: root,
+    selection: ["copy-naturalizer"],
+    environment: { COPY_PROVIDER_API_KEY: "never-render-copy-secret" },
+    planId: "copy-naturalizer",
+  });
+  assert.deepEqual(plan.selectedComponents, ["copy-naturalizer"]);
+  assert.equal(plan.operations[0].relativePath, "threadspan/components/copy-naturalizer.json");
+  assert.equal(plan.operations[0].change.scope, "component:copy-naturalizer");
+  assert.equal(plan.operations[0].change.reversible, true);
+  assert.equal(plan.operations[0].change.rollback, "preimage-backup-and-manifest");
+  assert.equal(plan.prerequisites.some((item) => item.kind === "authentication"), false);
+  const configuration = JSON.parse(plan.operations[0].content);
+  assert.equal(configuration.enabled, false);
+  assert.equal(configuration.activation, "explicit-user-action");
+  assert.equal(configuration.localHeuristics.available, true);
+  assert.equal(configuration.localHeuristics.networkAccess, false);
+  assert.equal(configuration.configuredRewrite.enabled, false);
+  assert.equal(configuration.configuredRewrite.automaticSelection, false);
+  assert.equal(configuration.configuredRewrite.automaticEnablement, false);
+  assert.equal("detectors" in configuration, false);
+  assert.equal(configuration.reviewRequiredBeforeApply, true);
+  assert.equal(configuration.autoApply, false);
+  assert.equal(configuration.storesCredentialValues, false);
+  assert.doesNotMatch(JSON.stringify(configuration), /"(?:credentials?|apiKeyEnv|provider|model|metrics|telemetry|analytics)"\s*:/i);
+  assert.doesNotMatch(JSON.stringify(plan), /never-render-copy-secret/);
+
+  const preview = previewInstallerPlan(plan);
+  assert.match(preview.text, /threadspan\/components\/copy-naturalizer\.json/);
+  assert.match(preview.text, /Rollback manifest: \.threadspan-installer\/rollbacks\/copy-naturalizer\.json/);
+  await assert.rejects(applyInstallerPlan(plan, { approvedDigest: "not-previewed" }), /requires the digest/);
+  assert.equal(await readFile(target, "utf8"), previous);
+
+  const applied = await applyInstallerPlan(plan, { approvedDigest: preview.digest });
+  const manifest = JSON.parse(await readFile(applied.manifestPath, "utf8"));
+  const installed = JSON.parse(await readFile(target, "utf8"));
+  assert.equal(installed.enabled, false);
+  assert.deepEqual(installed.futureManagedField, { retained: true });
+  assert.equal(manifest.planDigest, plan.digest);
+  assert.equal(manifest.entries[0].target, "threadspan/components/copy-naturalizer.json");
+  assert.equal(await readFile(join(root, manifest.entries[0].backup), "utf8"), previous);
+});
+
+test("External copy-check is explicit opt-in, ask-every-time, credential-free, and separate from Copy Naturalizer", async (t) => {
+  const root = await temporaryRoot(t);
+  const plan = createInstallerPlan({
+    installRoot: root,
+    selection: ["copy-check"],
+    environment: { SAPLING_API_KEY: "never-render-sapling-secret", WINSTON_API_KEY: "never-render-winston-secret" },
+    planId: "copy-check",
+  });
+  assert.deepEqual(plan.selectedComponents, ["copy-check"]);
+  assert.equal(plan.operations[0].relativePath, "threadspan/components/copy-check.json");
+  const configuration = JSON.parse(plan.operations[0].content);
+  assert.equal(configuration.enabled, true);
+  assert.equal(configuration.permissionMode, "ask-every-time");
+  assert.equal(configuration.automaticRuns, false);
+  assert.equal(configuration.credentialsEnableFeature, false);
+  assert.equal(configuration.adapters.pangram.kind, "manual-handoff");
+  assert.equal(configuration.adapters.pangram.enabled, true);
+  assert.equal(configuration.adapters.sapling.enabled, false);
+  assert.equal(configuration.adapters.winston.enabled, false);
+  assert.equal(configuration.adapters.sapling.requiresAcknowledgement, true);
+  assert.match(configuration.adapters.winston.trial, /not permanently free/i);
+  assert.equal(configuration.adapters.gptzero.advertisedAsWorkingFreeApi, false);
+  assert.equal(configuration.adapters.copyleaks.sandboxNumbersNeverReal, true);
+  assert.equal(configuration.partnership, false);
+  assert.doesNotMatch(JSON.stringify(plan), /never-render-sapling-secret|never-render-winston-secret/);
+  const preview = previewInstallerPlan(plan);
+  const applied = await applyInstallerPlan(plan, { approvedDigest: preview.digest });
+  assert.equal(applied.digest, plan.digest);
+  assert.ok(applied.manifestPath);
 });
 
 test("Voice selection writes exact managed configuration with forward fields and rollback", async (t) => {

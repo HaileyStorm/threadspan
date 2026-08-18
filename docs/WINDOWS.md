@@ -1,6 +1,6 @@
 # Windows setup
 
-Windows is a first-class target, but the delivered code was verified offline in a Linux implementation environment. Use this guide with the live smoke checklist.
+Windows is a first-class target. Version 0.4.1 passed focused native tests and live provider, Continuity, and restart acceptance on Windows; use this guide with the live smoke checklist because account, CLI, and app behavior can still drift.
 
 ## Install
 
@@ -62,7 +62,7 @@ The generated MCP entry records absolute paths to the current Node executable, C
 ## Windows-specific cautions
 
 - PowerShell environment variables apply to the process tree launched from that shell.
-- Windows file ACLs do not map exactly to POSIX mode `0600`; review config ACLs manually on shared systems.
+- Windows file ACLs do not map exactly to POSIX mode `0600`. Preserve the required sandbox identity while ensuring the owner, Administrators, and SYSTEM retain inheritable access to `.codex`; verify the resulting ACL before resuming Codex rather than replacing the tree blindly.
 - Managed command/Grok processes use a graceful then forced `taskkill /PID <pid> /T` sequence. This is stronger than direct `child.kill()`, but native canaries must still prove descendant cleanup for the installed CLI; a Windows Job Object helper remains roadmap work.
 - Antivirus/Defender may inspect temporary Consult snapshots and spawned SDK/CLI processes.
 - Test paths containing spaces and non-ASCII characters.
@@ -105,9 +105,9 @@ node .\src\cli.mjs delegate `
 
 The provider can enforce a linked worktree, clean start, and denied `main`/`master`/`trunk` branch. It does not create or integrate the worktree. Check the CLI account's Build entitlement and Settings → Usage before automatic batches; the local ledger cannot reconstruct the weighted weekly percentage.
 
-## Optional scheduled startup
+## Recommended per-user scheduled startup
 
-The package does not install a Windows service automatically. For a personal workstation, Task Scheduler can launch:
+The source package does not install a machine-wide Windows service. For a personal workstation, the reviewed installer plan creates a per-user scheduled task that launches:
 
 ```text
 Program: <absolute path to node.exe>
@@ -115,4 +115,4 @@ Arguments: <absolute path to src\cli.mjs> serve --config <absolute path to confi
 Start in: <package directory>
 ```
 
-Make sure the task receives required environment variables through a secure mechanism. Do not put provider keys directly in the task arguments.
+Make sure the task receives required environment variables through a secure mechanism. Do not put provider keys directly in the task arguments. Confirm the task survives the installing shell or SSH session ending, and reject a restart that leaves the previous detached `serve` process on the listener.

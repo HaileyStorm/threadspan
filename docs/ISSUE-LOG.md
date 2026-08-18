@@ -13,6 +13,10 @@
 | `POST` Consult to `agentrouter-claude` without an explicit workspace failed with `config_error: Consult snapshot exceeds maxBytes (536870912)` because `BridgeService` synthesized the Threadspan process cwd before provider dispatch. | **Direct:** bridge routing no longer infers cwd for Consult or Integrated; explicit `bridge_workspace`/`cwd` is preserved, `bridge_no_default_workspace=true` remains accepted but is redundant, and Delegate now fails before dispatch without an explicit workspace. The Claude-side provenance guard remains defense in depth. **Meta:** service/convenience and HTTP Responses regressions prove no-source defaults, both explicit aliases, compatibility-marker behavior, and pre-provider Delegate rejection. | **Meta-meta:** Compatibility Watch should audit every request-normalization default for authority and provenance before it reaches an adapter; convenience must not silently expand filesystem visibility or resource use. Recheck the live AgentRouter POST after daemon restart. |
 | Browser tab discovery exposed raw callback URLs that can contain authentication material. | Project only sanitized title/origin/path fields before browser-tab output; never retain query strings or fragments in logs, screenshots, or reports. | Existing callback tabs may remain in the user's browser until they close them; Threadspan does not inspect or copy browser auth state. |
 | A private or not-yet-released GitHub repository returned HTTP 404 and setup called it a GitHub outage. | Classify 404/no stable tag as “No public release yet”; keep Retry and Continue current. | A green current-release check requires an actual public stable release. |
+| An explicit provider plus the model name `openrouter/free` was normalized as if it were a full route prefix. | Strip route segments independently only when the incoming model actually contains those segments; preserve exact upstream model names when provider/mode were supplied separately. | Covered by the HTTP and CLI route-normalization regression. |
+| A broad Grok implementation prompt spent its turn budget researching and planning instead of returning a bounded patch. | Preserved the thread and evidence, then resumed with a narrow completion-only packet and independently reviewed the resulting diff. | Compatibility Watch must detect repeated exploration without terminal artifacts and narrow the same session before spending another full budget. |
+| The HUD initialized External copy-check state after the first synthetic/live render, causing a temporal-dead-zone exception that stopped Continuity and route-map rendering. | Moved the policy state before the first render, added an order regression, and exercised the repaired synthetic HUD in-browser. | Keep screenshot/browser acceptance for release UI; static asset presence alone did not catch this class of failure. |
+| The daemon published Pangram's reviewed HTTPS URL but the HUD state adapter discarded it, leaving the manual handoff permanently unavailable. | Preserve only a credential-free, query-free HTTPS `officialUrl` through the adapter and reject unsafe URL forms. | Browser acceptance must prove the server-authorized handoff, clipboard step, and inert link reveal together. |
 
 ## Linux
 
@@ -22,6 +26,7 @@
 | Cursor SDK sandbox startup failed under AppArmor. | Disabled only the SDK local sandbox for the reviewed adapter; Delegate still requires a linked worktree. | Recheck after upstream sandbox changes. |
 | Grok `dontAsk` denied Delegate writes. | Use documented bypass mode only for Delegate in a linked worktree. | Independent acceptance remains mandatory. |
 | Two pre-fix Grok descendant zombies remain under the user manager. | New jobs are reaped; avoided disrupting unrelated services. | Clear at logout/reboot. |
+| The systemd user service did not carry an explicit `CODEX_HOME`, so native Continuity discovery depended on launcher state. | Added a reviewed service drop-in with the resolved Linux Codex home and restarted the user service. | Regenerate the drop-in if the account's Codex home moves. |
 | A Linux host overlay selected stale Grok model `grok-4.6-build`. | Live CLI validation selected `grok-4.6`; the overlay was corrected. | Recheck the live catalog after CLI or entitlement changes. |
 | Cursor Agent `2026.08.11-e8db854` rejected Threadspan's disposable Consult snapshot with `Workspace Trust Required`. | Direct self-heal: Cursor CLI argv now adds the least-authority `--trust` flag dynamically for Consult only; the disposable snapshot and plan mode remain unchanged, and Delegate does not gain `--yolo`, force, or implicit trust. | Meta self-heal: keep a bounded compatibility probe that verifies Consult trust on a disposable workspace without source mutation. Meta-meta self-heal: watch the Cursor CLI version/fingerprint and rerun that probe after a version change before certifying the new build. |
 
@@ -42,6 +47,11 @@
 | Stopping the scheduled task left its detached Node daemon alive, so source/config changes appeared ineffective. | Identify and replace only the exact Threadspan `serve` process tree, then verify the new listener before acceptance. | Lifecycle repair should make this revision-bound restart behavior automatic. |
 | Native Windows Codex `workspace-write` allowed reads but denied every worker write. | Used the owner's existing `danger-full-access` Codex default for this account-bound linked-worktree Delegate and retained independent diff/file acceptance. | Portable setup must inherit native settings and ask before any required divergence; do not make this a hidden global default. |
 | The first Windows Delegate smoke trusted process success and could continue after a missing file. | Replaced it with a terminating script that independently verifies exact file bytes and Git status. | Worker prose is never acceptance evidence. |
+| Inherited `.codex` permissions denied the owner while leaving only the sandbox identity effective. | Preserved a byte-for-byte backup and restored inheritable owner, Administrators, and SYSTEM access without removing the sandbox entry. | Recheck ACL inheritance after app or account migration; never copy this host's ACL blob to another machine. |
+| A focused takeover test raced the production disconnect timer. | Bound the test to the deterministic injected timing surface and kept production disconnect recovery unchanged. | Keep timing tests isolated from wall-clock scheduling. |
+| A daemon launched under SSH disappeared when the SSH job ended. | Replaced it with a per-user scheduled task and proved the listener survived the initiating session. | Recheck task ownership after installer updates. |
+| A startup-script regex/quoting change failed before activation. | Restored the exact backup, moved nontrivial deployment logic into a transferred `.ps1`, and re-applied only after local parse checks. | Keep rollback-first deployment and avoid nested shell quoting for script bodies. |
+| Remote `Get-CimInstance` inspection hung and rich-object projection produced noisy output. | Replaced it with bounded scalar process inspection and exact PID/command-line projection. | Prefer process-specific native queries over broad WMI inventory. |
 
 ## Design corrections
 
@@ -68,14 +78,14 @@
 - **Fix:** Retry with an explicit self-contained packet and no history fork. This avoids both the incompatible launch shape and accidental inheritance of unrelated private context.
 - **Recheck:** Keep delegated packets bounded and confirm each launched role reports the expected role and scope.
 
-### Canonical Beads routing
+### Canonical tracker routing
 
-- **Observed:** `bd show harness-71a` from the Threadspan source checkout failed because that repo intentionally has no local Beads database.
-- **Fix:** Do not initialize a competing tracker. Route lifecycle updates through the canonical Coordination repository tracker, where `harness-71a` exists.
-- **Recheck:** Installer/release documentation must distinguish source checkout from operator coordination state; the public distribution must not include the private tracker.
+- **Observed:** A lifecycle lookup from the Threadspan source checkout failed because the public repository intentionally has no private operator tracker.
+- **Fix:** Do not initialize a competing tracker. Route operator lifecycle updates through the existing private coordination tracker.
+- **Recheck:** Installer/release documentation must distinguish source checkout from operator coordination state; the public distribution must not include the private tracker or its identifiers.
 
 ### Browser-assisted donation setup
 
-- **Observed:** Buy Me a Coffee account creation reached the required profile-image step, but Chrome automation denied file upload because the controlling browser extension lacks file-URL access. Vast.ai OAuth completed after navigating the parent tab directly to Billing; the new account showed a zero balance and no payment method.
-- **Preserved:** Provider-native OAuth, no copied cookies or tokens, no payment setup, no API keys, and no automatic credit transfer.
-- **Fix:** Leave the Buy Me a Coffee tab at the explicit user upload/payout step instead of weakening browser permissions. Treat provider-native account pages as the authority and verify successful OAuth at an authenticated destination rather than from popup closure alone.
+- **Observed:** A donation-service profile-image step required an explicit browser file upload, while a separate provider OAuth flow completed only after navigating the parent tab to its authenticated account page.
+- **Preserved:** Provider-native OAuth, no copied cookies or tokens, no automatic payment setup, no API keys, and no automatic credit transfer.
+- **Fix:** Leave explicit upload/payout steps to the user instead of weakening browser permissions. Treat provider-native account pages as the authority and verify successful OAuth at an authenticated destination rather than from popup closure alone.

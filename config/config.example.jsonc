@@ -36,6 +36,83 @@
       "maxCandidates": 1
     }
   },
+  // Owner-local native task tree and guarded promotion/rollover controls.
+  // The certified Continuity supervisor, not the HUD, owns Goal transfer,
+  // predecessor fencing, successor acceptance, and recovery.
+  "continuity": {
+    "enabled": true,
+    "controlEnabled": true,
+    "statePath": null,
+    "maxTasks": 200,
+    "handleTtlMs": 600000,
+    "previewTtlMs": 120000
+  },
+  // Optional. When enabled, externally supervised work tries one certified
+  // same-provider account first, then a policy-approved compatible provider.
+  // Explicit routes remain fixed unless that task opts in to takeover.
+  "automaticTakeover": {
+    "enabled": false,
+    "crossProviderEnabled": true,
+    "externalMonitoringEnabled": true,
+    "pollIntervalMs": 15000,
+    "stallTimeoutMs": 90000,
+    "subagentSpacingMs": 1400,
+    "maxSubagentsPerTick": 2,
+    "maxCrossProviderCandidates": 2,
+    "minimumIntelligenceRatio": 0.9,
+    "statePath": null,
+    "requireExactResetEvidence": true,
+    "preserveExplicitRoutes": true
+  },
+  // Optional review-only copy tool. Local heuristics require no provider.
+  // Model rewriting is a separate explicit setting and never auto-applies.
+  "copyNaturalizer": {
+    "enabled": false,
+    "profile": "human",
+    "maxInputChars": 12000,
+    "maxPasses": 3,
+    "useModel": false,
+    "provider": null,
+    "model": null,
+    "maxOutputTokens": 2048,
+    "timeoutMs": 180000
+  },
+  // Separate external copy-check policy. Default off. selection=all and
+  // credentials existing never enable it. Only a user-started manual check
+  // or user-started release may run adapters. Results are advisory, never
+  // averaged, never proof of authorship, and never decide rewrite acceptance.
+  // Threadspan has no partnership with these vendors.
+  "copyCheck": {
+    "permissionMode": "off",
+    "maxInputChars": 12000,
+    "timeoutMs": 15000,
+    "releaseScope": {
+      "localReview": true,
+      "externalChecks": false,
+      "adapters": []
+    },
+    "adapters": {
+      // Manual handoff only: copy selected text, open https://www.pangram.com/,
+      // then paste a short result back. No submit, scrape, or page automation.
+      "pangram": { "enabled": false },
+      // POST https://api.sapling.ai/api/v1/aidetect with JSON { text } and the
+      // environment-only SAPLING_API_KEY. Sapling stores submitted text and
+      // uses it to improve its service; acknowledgedRetention must be true.
+      // Developer keys are rate-limited and not a permanent free API.
+      "sapling": {
+        "enabled": false,
+        "apiKeyEnv": "SAPLING_API_KEY",
+        "acknowledgedRetention": false
+      },
+      // POST https://api.gowinston.ai/v1/ai-content-detection with JSON { text }
+      // and Bearer WINSTON_API_KEY. Winston documents a limited, expiring
+      // limited 2,000-credit developer trial with no card required. Availability can change.
+      "winston": {
+        "enabled": false,
+        "apiKeyEnv": "WINSTON_API_KEY"
+      }
+    }
+  },
   // Optional and fail-closed. Enabling still requires authoritative native Codex
   // quota receipts and capability-specific host adapters; unsupported effects
   // remain pending or unsupported rather than being reported as executed.
@@ -148,6 +225,7 @@
         "snapshotMaxBytes": 536870912,
         "snapshotMaxFiles": 100000,
         "copyInternalSymlinks": false,
+        // Additional project-specific exclusions; built-in secret exclusions are mandatory.
         "exclude": [".git", "node_modules", ".venv", "venv", "dist", "build", ".next", "target", "coverage", ".cache"]
       },
       "delegate": {
@@ -173,6 +251,7 @@
         "snapshotMaxBytes": 536870912,
         "snapshotMaxFiles": 100000,
         "copyInternalSymlinks": false,
+        // Additional project-specific exclusions; built-in secret exclusions are mandatory.
         "exclude": [
           ".git",
           "node_modules",
@@ -274,6 +353,7 @@
         "snapshotMaxBytes": 536870912,
         "snapshotMaxFiles": 100000,
         "copyInternalSymlinks": false,
+        // Additional project-specific exclusions; built-in secret exclusions are mandatory.
         "exclude": [
           ".git",
           "node_modules",

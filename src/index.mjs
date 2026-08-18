@@ -5,6 +5,24 @@ export { ResponsesAssembler } from "./bridge/responses.mjs";
 export { buildMergedModelCatalog, toCodexModelInfo } from "./codex/catalog.mjs";
 export { renderCodexProfileDocuments, installCodexProfileDocuments, uninstallCodexProfileDocuments } from "./codex/config.mjs";
 export { discoverNativeCodexCatalog, appServerModelToCatalog } from "./codex/app-server.mjs";
+export { CodexContinuityController } from "./codex/continuity-controller.mjs";
+export { AutomaticTakeoverController, DEFAULT_AUTOMATIC_TAKEOVER_POLICY } from "./core/automatic-takeover-controller.mjs";
+export { naturalizeCopy, analyzeCopyReadability, inspectProtectedCopySpans, COPY_NATURALIZATION_PROFILES, COPY_DETECTOR_DISCLAIMER } from "./core/copy-naturalizer.mjs";
+export {
+  COPY_CHECK_ADAPTERS,
+  COPY_CHECK_DISCLAIMER,
+  COPY_CHECK_NO_PARTNERSHIP,
+  COPY_CHECK_PERMISSION_MODES,
+  COPY_CHECK_VERSION,
+  DEFAULT_COPY_CHECK_OPTIONS,
+  checkCopy,
+  describeCopyCheck,
+  recordPangramResult,
+  resolveCopyCheckPolicy,
+  sanitizeCopyCheckRecord,
+  startPangramHandoff,
+} from "./core/copy-check.mjs";
+export { reviewReleaseCopy } from "./core/release-copy-review.mjs";
 export { loadConfig, resolveConfigPath, createExampleConfig, writeInitialConfig } from "./core/config.mjs";
 export { KeyedSerialQueue } from "./core/keyed-serial-queue.mjs";
 export {

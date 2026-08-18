@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync, verify } from "node:crypto";
 import { gunzipSync } from "node:zlib";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +21,7 @@ import { inspectReleaseArchive, loadReleasePublicKey } from "../src/installer/up
 const execFileAsync = promisify(execFile);
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REQUIRED_GUI = ["ui/install.html", "ui/install.css", "ui/install.js", "ui/mark.svg"];
+const gitFixtureRoots = new Set();
 
 test("release bundle is canonical, deterministic, excluded, and installer-extractable", async (t) => {
   const root = await createFixture(t);
@@ -45,6 +46,18 @@ test("release bundle is canonical, deterministic, excluded, and installer-extrac
   assert.equal(first.manifestName, "SHA256SUMS");
   assert.equal(first.signatureName, "SHA256SUMS.sig");
   assert.equal(first.signaturePath, undefined);
+  const sourceCommit = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+  assert.equal(first.sourceCommit, sourceCommit);
+  assert.deepEqual(first.metadata, {
+    ...canonicalReleaseNames("1.2.3"),
+    version: "1.2.3",
+    sourceCommit,
+    archiveSha256: first.archiveSha256,
+    fileCount: first.fileCount,
+    signed: false,
+  });
+  assert.equal(JSON.stringify(first.metadata).includes(root), false);
+  assert.equal(JSON.stringify(first.metadata).includes(firstParent), false);
 
   const [firstArchive, secondArchive, firstManifest, secondManifest] = await Promise.all([
     readFile(first.archivePath),
@@ -151,6 +164,18 @@ test("release producer signs SHA256SUMS only with an explicit external Ed25519 k
   assert.equal(signature.length, 64);
   assert.equal(verify(null, manifest, publicKey, signature), true);
   assert.equal(JSON.stringify(result).includes(keyPath), false, "private key path is not returned or logged in release metadata");
+  assert.equal(result.metadata.signed, true);
+  assert.equal(JSON.stringify(result.metadata).includes(root), false);
+  assert.equal(JSON.stringify(result.metadata).includes(outputParent), false);
+  const repeated = await buildReleaseBundle({
+    root,
+    outputDirectory: join(outputParent, "release-repeat"),
+    signingPrivateKeyPath: keyPath,
+  });
+  assert.deepEqual(await readFile(repeated.archivePath), await readFile(result.archivePath));
+  assert.deepEqual(await readFile(repeated.manifestPath), manifest);
+  assert.deepEqual(await readFile(repeated.signaturePath), signature);
+  assert.equal(repeated.sourceCommit, result.sourceCommit);
 
   await assert.rejects(buildReleaseBundle({
     root,
@@ -237,6 +262,125 @@ test("release output and expanded source bounds fail closed", async (t) => {
     root: forbiddenKeyRoot,
     outputDirectory: join(boundedParent, "unexpected-key-path"),
   }), /package manifest contains forbidden key material 'src\/unexpected\.pem'/);
+});
+
+test("release provenance requires a clean commit while allowing release-ineligible untracked state", async (t) => {
+  await t.test("unstaged tracked change", async (st) => {
+    const root = await createFixture(st);
+    const outputParent = await mkdtemp(join(tmpdir(), "threadspan-release-dirty-tracked-"));
+    st.after(() => rm(outputParent, { recursive: true, force: true }));
+    await writeFile(join(root, "src", "index.mjs"), "export const dirty = true;\n");
+    await assert.rejects(
+      buildReleaseBundle({ root, outputDirectory: join(outputParent, "release") }),
+      /tracked changes; commit them before bundling/,
+    );
+  });
+
+  await t.test("staged tracked change", async (st) => {
+    const root = await createFixture(st);
+    const outputParent = await mkdtemp(join(tmpdir(), "threadspan-release-dirty-staged-"));
+    st.after(() => rm(outputParent, { recursive: true, force: true }));
+    await writeFile(join(root, "src", "index.mjs"), "export const staged = true;\n");
+    await execFileAsync("git", ["add", "src/index.mjs"], { cwd: root });
+    await assert.rejects(
+      buildReleaseBundle({ root, outputDirectory: join(outputParent, "release") }),
+      /tracked changes; commit them before bundling/,
+    );
+  });
+
+  await t.test("release-eligible untracked file", async (st) => {
+    const root = await createFixture(st);
+    const outputParent = await mkdtemp(join(tmpdir(), "threadspan-release-untracked-eligible-"));
+    st.after(() => rm(outputParent, { recursive: true, force: true }));
+    await writeFile(join(root, "src", "untracked.mjs"), "export {};\n");
+    await assert.rejects(
+      buildReleaseBundle({ root, outputDirectory: join(outputParent, "release") }),
+      /release-eligible untracked files; commit them before bundling/,
+    );
+  });
+
+  await t.test("release-ineligible untracked file", async (st) => {
+    const root = await createFixture(st);
+    const outputParent = await mkdtemp(join(tmpdir(), "threadspan-release-untracked-ineligible-"));
+    st.after(() => rm(outputParent, { recursive: true, force: true }));
+    await writeFile(join(root, ".working.local"), "host-local reservation\n");
+    const result = await buildReleaseBundle({ root, outputDirectory: join(outputParent, "release") });
+    assert.equal((await lstat(result.archivePath)).isFile(), true);
+  });
+});
+
+test("release preflight rejects personal email or password material in URL userinfo", async (t) => {
+  const root = await createFixture(t);
+  const outputParent = await mkdtemp(join(tmpdir(), "threadspan-release-url-userinfo-"));
+  t.after(() => rm(outputParent, { recursive: true, force: true }));
+  await writeFixtureFile(root, "src/url-userinfo.txt", "https://person" + "@gmail.com:password@provider.example/path\n");
+  await assert.rejects(buildReleaseBundle({ root, outputDirectory: join(outputParent, "release") }), /unintended personal data/);
+});
+
+test("release preflight rejects high-confidence secrets and unintended PII without scanning arbitrary prose", async (t) => {
+  const publicDonationEmail = ["HaileyCollet", "gmail.com"].join("@");
+  const cases = [
+    {
+      name: "known credential token",
+      content: ["ghp", "_", "A".repeat(36)].join(""),
+      expected: /prohibited secret material/,
+    },
+    {
+      name: "unintended email",
+      content: ["release.owner", "private.example.com"].join("@"),
+      expected: /unintended personal data/,
+    },
+    {
+      name: "unintended SSN",
+      content: ["123", "45", "6789"].join("-"),
+      expected: /unintended personal data/,
+    },
+    {
+      name: "public email outside exact allowlist",
+      content: publicDonationEmail,
+      expected: /unintended personal data/,
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async (st) => {
+      const root = await createFixture(st);
+      const relativePath = "src/ordinary-note.txt";
+      await writeFixtureFile(root, relativePath, `${entry.content}\n`);
+      const outputParent = await mkdtemp(join(tmpdir(), "threadspan-release-sensitive-scan-"));
+      st.after(() => rm(outputParent, { recursive: true, force: true }));
+      await assert.rejects(
+        buildReleaseBundle({ root, outputDirectory: join(outputParent, "release") }),
+        (error) => {
+          assert.match(error.message, entry.expected);
+          assert.equal(error.message.includes(entry.content), false);
+          assert.equal(error.message.includes(relativePath), false);
+          return true;
+        },
+      );
+    });
+  }
+
+  const acceptedRoot = await createFixture(t);
+  await writeFixtureFile(acceptedRoot, "README.md", [
+    "https://github.com/HaileyStorm/threadspan",
+    `Optional public donation contact: ${publicDonationEmail}`,
+    "Documentation may discuss API keys, passwords, signed URLs, and private data without containing them.",
+    "Synthetic contact: maintainer@example.test",
+    "",
+  ].join("\n"));
+  await writeFixtureFile(acceptedRoot, "src/security-guidance.txt", [
+    "Never publish an API key or access token.",
+    "Use a synthetic placeholder rather than arbitrary high-entropy prose scanning.",
+    "",
+  ].join("\n"));
+  const acceptedOutputParent = await mkdtemp(join(tmpdir(), "threadspan-release-sensitive-accepted-"));
+  t.after(() => rm(acceptedOutputParent, { recursive: true, force: true }));
+  const accepted = await buildReleaseBundle({
+    root: acceptedRoot,
+    outputDirectory: join(acceptedOutputParent, "release"),
+  });
+  assert.equal((await lstat(accepted.archivePath)).isFile(), true);
 });
 
 test("npm pack awaits bare executable resolution before command normalization", { skip: process.platform === "win32" }, async (t) => {
@@ -343,8 +487,9 @@ test("package metadata exposes the local release producer", async () => {
 test("current package source markers are not mistaken for private key material", async (t) => {
   const outputParent = await mkdtemp(join(tmpdir(), "threadspan-current-tree-release-"));
   t.after(() => rm(outputParent, { recursive: true, force: true }));
+  const root = await copyCurrentPackageFixture(t);
   const result = await buildReleaseBundle({
-    root: projectRoot,
+    root,
     outputDirectory: join(outputParent, "release"),
   });
   assert.equal(result.signaturePath, undefined);
@@ -353,7 +498,10 @@ test("current package source markers are not mistaken for private key material",
 
 async function createFixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "threadspan-release-fixture-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => {
+    gitFixtureRoots.delete(root);
+    await rm(root, { recursive: true, force: true });
+  });
   const packageJson = {
     name: "threadspan",
     version: "1.2.3",
@@ -382,8 +530,9 @@ async function createFixture(t, options = {}) {
     "src/browser/User Data/Default/Cookies",
     "src/tool.exe",
     "src/node_modules/dependency/index.js",
-    ".git/config",
   ]) await writeFixtureFile(root, path, "must not release\n");
+  await initializeGitFixture(root);
+  gitFixtureRoots.add(root);
   return root;
 }
 
@@ -391,6 +540,41 @@ async function writeFixtureFile(root, relativePath, content) {
   const path = join(root, ...relativePath.split("/"));
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content);
+  if (gitFixtureRoots.has(root)) await commitFixture(root);
+}
+
+async function copyCurrentPackageFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-current-package-fixture-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const packagePaths = await readNpmPacklist(projectRoot);
+  for (const relativePath of packagePaths) {
+    const source = join(projectRoot, ...relativePath.split("/"));
+    const destination = join(root, ...relativePath.split("/"));
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(source, destination);
+  }
+  await initializeGitFixture(root);
+  return root;
+}
+
+async function initializeGitFixture(root) {
+  await execFileAsync("git", ["init", "--quiet"], { cwd: root });
+  await commitFixture(root);
+}
+
+async function commitFixture(root) {
+  const environment = {
+    ...process.env,
+    GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
+    GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
+  };
+  await execFileAsync("git", ["add", "-A"], { cwd: root, env: environment });
+  await execFileAsync("git", [
+    "-c", "user.name=Threadspan Test",
+    "-c", "user.email=threadspan@example.test",
+    "-c", "commit.gpgsign=false",
+    "commit", "--quiet", "--allow-empty", "-m", "fixture",
+  ], { cwd: root, env: environment });
 }
 
 function readTarHeaders(archive) {

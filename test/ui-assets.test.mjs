@@ -157,7 +157,7 @@ test("mark.svg is an editable vector routing gate without raster assets", async 
 
 test("adapter normalizes synthetic JSON and fails closed on bad state", async () => {
   const source = await read("ui/adapt-state.js");
-  const sandbox = { globalThis: {} };
+  const sandbox = { globalThis: {}, URL };
   sandbox.globalThis = sandbox;
   vm.runInNewContext(source, vm.createContext(sandbox));
   const api = sandbox.ThreadspanState;
@@ -179,6 +179,26 @@ test("adapter normalizes synthetic JSON and fails closed on bad state", async ()
   assert.equal(ready.forecast.status, "rate-only");
   assert.equal(ready.forecast.limitKnown, false);
   assert.match(ready.forecast.burn.rateLabel, /turns\/hour/);
+
+  const copyCheckReady = api.adaptThreadspanState({
+    status: "ready",
+    route: { id: "consult/mock/m", mode: "consult", provider: "mock", model: "m" },
+    copyCheck: {
+      permissionMode: "ask-every-time",
+      enabled: true,
+      adapters: { pangram: { configured: true, runnable: true, officialUrl: "https://www.pangram.com/" } },
+    },
+  });
+  assert.equal(copyCheckReady.copyCheck.adapters.pangram.officialUrl, "https://www.pangram.com/");
+  const unsafePangramUrl = new URL("https://www.pangram.com/");
+  unsafePangramUrl.username = "user";
+  unsafePangramUrl.password = "secret";
+  const unsafeCopyCheck = api.adaptThreadspanState({
+    status: "ready",
+    route: { id: "consult/mock/m", mode: "consult", provider: "mock", model: "m" },
+    copyCheck: { adapters: { pangram: { officialUrl: unsafePangramUrl.href } } },
+  });
+  assert.equal(unsafeCopyCheck.copyCheck.adapters.pangram.officialUrl, "");
 
   const sanitized = api.adaptThreadspanState({
     status: "ready",
@@ -236,6 +256,15 @@ test("renderer keeps authoritative quota and local recent-burn projection visibl
   assert.match(source, /Recent burn:/);
   assert.match(source, /forecastEvidence/);
   assert.match(source, /projected exhaustion/);
+});
+
+test("HUD state is initialized before the first render can use it", async () => {
+  const source = await read("ui/threadspan.js");
+  const declaration = source.indexOf('let activeCopyCheckPolicy = { permissionMode: "off"');
+  const firstUse = source.indexOf("renderCopyCheckPolicy(next.copyCheck)");
+  assert.ok(declaration >= 0);
+  assert.ok(firstUse >= 0);
+  assert.ok(declaration < firstUse, "copy-check policy must exist before the first synthetic or live render");
 });
 
 test("optional HUD tips are heuristic-first, compact, foreground-only, and budget bounded", async () => {

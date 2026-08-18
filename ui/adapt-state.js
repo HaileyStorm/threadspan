@@ -41,6 +41,29 @@
       id: "thread_7f3a",
       title: "Characterize parser failures",
     },
+    continuity: {
+      enabled: true,
+      controlEnabled: true,
+      provider: "codex",
+      evidence: "native-app-server",
+      note: "The logical task stays visible while older generations remain nested.",
+      capabilities: { rename: true, rollover: true, nativeChatListGrouping: false },
+      tasks: [{
+        handle: "demo-continuity-handle-01",
+        title: "Characterize parser failures",
+        project: "Threadspan",
+        selected: true,
+        enrolled: true,
+        action: "Rollover",
+        pendingRecovery: false,
+        current: { generation: 3, status: "idle", goalStatus: "active" },
+        generations: [
+          { index: 1, role: "origin", label: "Origin task", status: "archived", archived: true },
+          { index: 2, role: "previous", label: "Generation 2", status: "archived", archived: true },
+          { index: 3, role: "current", label: "Current generation", status: "idle", archived: false },
+        ],
+      }],
+    },
     route: {
       id: "delegate/grok-build/grok-4.6",
       mode: "delegate",
@@ -175,6 +198,7 @@
       automatic: { enabled: false, active: false, scope: null },
       manual: { active: false, scope: null, manifestCount: 0 },
     },
+    automaticTakeover: { phase: "idle", counts: { targets: 1, monitors: 1, queued: 0, active: 1, unsupported: 0, blocked: 0 }, monitors: [{ handle: "monitor_demo000000000000000001", phase: "replacement-active" }] },
   };
 
   /**
@@ -326,6 +350,7 @@
       context: adaptContext(raw.context),
       fallbacks,
       checkpoint: adaptCheckpoint(raw.checkpoint),
+      continuity: adaptContinuity(raw.continuity),
       utilization: adaptUtilization(raw.utilization),
       history: adaptHistory(raw.history),
       reroute: adaptReroute(raw.reroute),
@@ -338,6 +363,8 @@
       pickerRoutes: adaptPickerRoutes(raw.pickerRoutes ?? raw.routes, route, fallbacks, routeMap),
       compatibility: adaptCompatibility(raw.compatibility),
       maximumUtilization: adaptMaximumUtilization(raw.maximumUtilization),
+      automaticTakeover: adaptAutomaticTakeover(raw.automaticTakeover),
+      copyCheck: adaptCopyCheck(raw.copyCheck),
     };
   }
 
@@ -511,6 +538,53 @@
     };
   }
 
+  /** Keep native task and Goal identifiers server-side; accept only opaque handles and bounded labels. */
+  function adaptContinuity(raw) {
+    if (!isObject(raw) || raw.enabled !== true) return { enabled: false, controlEnabled: false, tasks: [], reason: boundedText(raw?.reason, 160) || "disabled" };
+    const tasks = Array.isArray(raw.tasks) ? raw.tasks.slice(0, 200).map((task) => {
+      if (!isObject(task) || !/^[A-Za-z0-9-]{16,80}$/.test(text(task.handle))) return null;
+      const generations = Array.isArray(task.generations) ? task.generations.slice(0, 128).map((generation) => {
+        if (!isObject(generation)) return null;
+        const role = ["origin", "current", "previous", "prepared"].includes(text(generation.role)) ? text(generation.role) : "previous";
+        return {
+          index: Math.max(1, Math.trunc(finiteNumber(generation.index, 1))),
+          role,
+          label: boundedText(generation.label, 120) || `Generation ${generation.index ?? ""}`.trim(),
+          status: boundedText(generation.status, 40) || "unknown",
+          archived: generation.archived === true,
+        };
+      }).filter(Boolean) : [];
+      return {
+        handle: text(task.handle),
+        title: boundedText(task.title, 120) || "Untitled task",
+        project: boundedText(task.project, 120) || "Unknown project",
+        selected: task.selected === true,
+        enrolled: task.enrolled === true,
+        action: ["Promote", "Rollover", "Pending"].includes(text(task.action)) ? text(task.action) : "Promote",
+        pendingRecovery: task.pendingRecovery === true,
+        current: {
+          generation: Math.max(1, Math.trunc(finiteNumber(task.current?.generation, generations.length || 1))),
+          status: boundedText(task.current?.status, 40) || "unknown",
+          goalStatus: boundedText(task.current?.goalStatus, 40) || "none",
+        },
+        generations,
+      };
+    }).filter(Boolean) : [];
+    return {
+      enabled: true,
+      controlEnabled: raw.controlEnabled === true,
+      provider: boundedText(raw.provider, 40) || "unknown",
+      evidence: boundedText(raw.evidence, 80) || "unknown",
+      note: boundedText(raw.note, 240),
+      capabilities: {
+        rename: raw.capabilities?.rename === true,
+        rollover: raw.capabilities?.rollover === true,
+        nativeChatListGrouping: raw.capabilities?.nativeChatListGrouping === true,
+      },
+      tasks,
+    };
+  }
+
   /**
    * @param {unknown} raw
    */
@@ -586,6 +660,7 @@
       context: null,
       fallbacks: [],
       checkpoint: null,
+      continuity: { enabled: false, controlEnabled: false, tasks: [], reason: "disabled" },
       utilization: [],
       history: [],
       reroute: null,
@@ -595,6 +670,7 @@
       pickerRoutes: [],
       compatibility: { status: "disabled", changed: false, products: [], changes: [] },
       maximumUtilization: null,
+      automaticTakeover: { phase: "disabled", counts: { targets: 0, monitors: 0, queued: 0, active: 0, unsupported: 0, blocked: 0 }, monitors: [] },
     };
   }
 
@@ -648,6 +724,40 @@
     };
   }
 
+  function adaptCopyCheck(raw) {
+    const policy = isObject(raw) ? raw : {};
+    const modes = ["off", "ask-every-time", "allow-manual-or-release"];
+    const adapters = isObject(policy.adapters) ? policy.adapters : {};
+    return {
+      permissionMode: modes.includes(text(policy.permissionMode)) ? text(policy.permissionMode) : "off",
+      enabled: policy.enabled === true,
+      maxInputChars: nonNegativeNumber(policy.maxInputChars) ?? 12000,
+      disclaimer: boundedText(policy.disclaimer, 400),
+      partnership: policy.partnership === true,
+      partnershipNote: boundedText(policy.partnershipNote, 400),
+      lastResults: Array.isArray(policy.lastResults)
+        ? policy.lastResults.filter(isObject).slice(0, 8).map((item) => ({
+          adapter: boundedText(item.adapter, 32),
+          status: boundedText(item.status, 32),
+          score: typeof item.score === "number" && Number.isFinite(item.score) ? item.score : null,
+          checkedAt: timestamp(item.checkedAt),
+          displayText: boundedText(item.displayText, 240),
+        }))
+        : [],
+      adapters: Object.fromEntries(["pangram", "sapling", "winston", "gptzero", "copyleaks"].map((id) => {
+        const item = isObject(adapters[id]) ? adapters[id] : {};
+        return [id, {
+          id,
+          configured: item.configured === true,
+          runnable: item.runnable === true,
+          destination: boundedText(item.destination, 200),
+          officialUrl: safeProviderUrl(item.officialUrl),
+          advertisedAsWorkingFreeApi: item.advertisedAsWorkingFreeApi === true,
+        }];
+      })),
+    };
+  }
+
   function adaptMaximumUtilization(raw) {
     if (!isObject(raw)) return null;
     const phases = ["disabled", "idle", "maximum-utilization", "exhausted"];
@@ -696,6 +806,17 @@
           : null,
         manifestCount: nonNegativeNumber(manual.manifestCount) ?? 0,
       },
+    };
+  }
+
+  function adaptAutomaticTakeover(raw) {
+    const phases = new Set(["disabled", "idle", "automatic", "blocked", "unsupported"]);
+    if (!isObject(raw)) return { phase: "disabled", counts: { targets: 0, monitors: 0, queued: 0, active: 0, unsupported: 0, blocked: 0 }, monitors: [] };
+    const counts = isObject(raw.counts) ? raw.counts : {};
+    return {
+      phase: phases.has(text(raw.phase)) ? text(raw.phase) : "unsupported",
+      counts: Object.fromEntries(["targets", "monitors", "queued", "active", "unsupported", "blocked"].map((key) => [key, nonNegativeNumber(counts[key]) ?? 0])),
+      monitors: Array.isArray(raw.monitors) ? raw.monitors.slice(0, 64).map((monitor) => isObject(monitor) && /^monitor_[a-f0-9]{24}$/.test(text(monitor.handle)) ? { handle: text(monitor.handle), phase: boundedText(monitor.phase, 48) } : null).filter(Boolean) : [],
     };
   }
 
@@ -1039,6 +1160,8 @@
     PICKER_PREFERENCE_SCHEMA_VERSION,
     SYNTHETIC_STATE,
     adaptPickerRoutes,
+    adaptContinuity,
+    adaptAutomaticTakeover,
     adaptThreadspanState,
     applyFilters,
     applyPickerPreferences,

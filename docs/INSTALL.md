@@ -14,13 +14,25 @@ Host-specific MCP/plugin writes are generated from neutral descriptors and merge
 
 Every candidate has `paidUpgradeAllowed: false`, no assumed end date, seven-day visibility freshness, an official URL, and an environment-variable name without a value. AgentRouter additionally requires a separate hard-capped token per host and a fresh live probe. Cloudflare remains a setup candidate using the generic OpenAI-compatible surface; no custom adapter is installed. Threadspan is not partnered with, sponsored by, or endorsed by any listed provider and does not promise permanent free access.
 
+## Optional Copy helper
+
+`copy-naturalizer` is available to every user as an explicit opt-in component. It stays collapsed and unchecked in the setup window, and `selection: "all"` does not select it. Selecting it adds only a disabled, digest-bound local descriptor; apply still requires review of the exact digest and retains the usual preimage backup and rollback manifest.
+
+Local heuristics can flag filler, stock phrases, and hard-to-read sentences. A rewrite is optional and can use only a provider the user has already configured and explicitly chosen. Setup does not select or enable a provider, collect or store credentials, run the helper, apply a suggestion, or show story, build, detector, or cost metrics.
+
+## Optional External copy check
+
+`copy-check` is a separate explicit-only component. Defaults and `selection: "all"` do not select it. Selecting it adds only a disabled descriptor with permission mode `off`. Environment keys existing do not enable adapters.
+
+The setup card names destinations (Pangram official page; Sapling `https://api.sapling.ai/api/v1/aidetect`; Winston `https://api.gowinston.ai/v1/ai-content-detection`), the default 12,000-character payload cap, Sapling's stored-text/improvement retention warning, Winston's limited 2,000-credit developer trial, and that Threadspan has no vendor partnership. GPTZero and Copyleaks are not advertised as working free APIs.
+
 ## Optional Codex full access
 
-`codex-full-access` is an explicit-only component. It is never selected by installer defaults or by `selection: "all"`; in the setup window its checkbox starts unchecked with a full-access warning. Selecting it updates only the selected host's user-level `$CODEX_HOME/config.toml` (normally `~/.codex/config.toml`). It does not touch a project's `.codex/config.toml`.
+`codex-full-access` is an explicit-only component. It is never selected by installer defaults or by `selection: "all"`; in the setup window its checkbox starts unchecked with a full-access warning. Selecting it is not sufficient to apply it: the reviewed full-access plan must be separately confirmed. Apply updates only the selected host's user-level `$CODEX_HOME/config.toml` (normally `~/.codex/config.toml`). It does not touch a project's `.codex/config.toml`.
 
 The reviewed plan contains the target path, transform identifier, hashes, modes, setting names, effects, and bounded per-tool conflict descriptors—never raw TOML, tokens, headers, or credential values. Apply resolves the current user config path again, rejects a symlinked config or parent, requires the exact reviewed preimage, recomputes the transform and next hash, backs up the exact prior bytes under the installer backup root, and writes atomically. A matching config is a visible no-op.
 
-The component sets `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`, and user-reviewed/preapproved app and MCP defaults. This removes command approval pauses and command sandboxing and preapproves app/MCP tools. It does **not** enable destructive/open-world capability, tools, apps, plugins, or servers. Existing per-tool overrides remain untouched and are reported as residual conflicts. See the [official Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+The component sets `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`, and user-reviewed/preapproved app and MCP defaults. Existing tools may read and write files, execute commands, and use the network without approvals, including through already configured app and MCP surfaces. The component does not install or enable new tools, apps, plugins, or servers. Existing per-tool overrides remain untouched and are reported as residual conflicts. See the [official Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
 The Compatibility Watch configuration also includes a bounded early code-work self-heal profile. Deterministic code/test/build failures, CLI drift, quoting or command-length failures, locks, subagent interruptions, and cross-platform divergence trigger direct repair first, focused regression evidence, one recognizer/helper/process update, and one meta-meta detection/coordination check. Depth stops at 2; agent output is evidence rather than completion authority, project policy is not silently overridden, and reusable defects may only become sanitized reviewed issue/PR proposals.
 

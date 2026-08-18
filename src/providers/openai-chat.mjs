@@ -38,7 +38,7 @@ export class OpenAiChatProvider extends ProviderAdapter {
     if (this.config.discoverModels !== true) return this.config.model ? super.listModels() : [{ id: "auto" }];
     const baseUrl = normalizeBaseUrl(this.config.baseUrl);
     const headers = this.#headers();
-    const response = await fetch(`${baseUrl}/models`, { headers });
+    const response = await fetch(`${baseUrl}/models`, { headers, redirect: "manual" });
     if (!response.ok) throw await this.#httpError(response, "model discovery failed");
     const body = await response.json();
     return Array.isArray(body.data) ? body.data.map((item) => ({ id: item.id, ...item })) : [];
@@ -110,6 +110,7 @@ export class OpenAiChatProvider extends ProviderAdapter {
       method: "POST",
       headers: this.#headers(),
       body: JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } }),
+      redirect: "manual",
       signal,
     });
     if (!response.ok) throw await this.#httpError(response, "chat completion failed");
@@ -127,7 +128,11 @@ export class OpenAiChatProvider extends ProviderAdapter {
       if (data === "[DONE]") break;
       let chunk;
       try { chunk = JSON.parse(data); } catch { continue; }
-      if (chunk.error) throw new ProviderError(this.id, chunk.error.message ?? "Upstream stream error", { details: chunk.error });
+      if (chunk.error) {
+        throw new ProviderError(this.id, "Upstream stream reported an error", {
+          details: { classification: "stream_error" },
+        });
+      }
       providerMetadata = mergeProviderMetadata(providerMetadata, extractProviderMetadata(chunk));
       if (chunk.usage) {
         usage = normalizeUsage(chunk.usage);
@@ -193,11 +198,16 @@ export class OpenAiChatProvider extends ProviderAdapter {
       method: "POST",
       headers: this.#headers(),
       body: JSON.stringify({ ...body, stream: false, stream_options: undefined }),
+      redirect: "manual",
       signal,
     });
     if (!response.ok) throw await this.#httpError(response, "chat completion failed");
     const payload = await response.json();
-    if (payload.error) throw new ProviderError(this.id, payload.error.message ?? "Upstream error", { details: payload.error });
+    if (payload.error) {
+      throw new ProviderError(this.id, "Upstream response reported an error", {
+        details: { classification: "response_error" },
+      });
+    }
     const choice = payload.choices?.[0] ?? {};
     const message = choice.message ?? {};
     const reasoningContent = message.reasoning_content ?? message.reasoning ?? message.thinking;
@@ -251,17 +261,16 @@ export class OpenAiChatProvider extends ProviderAdapter {
 
   async #httpError(response, prefix) {
     const text = await response.text().catch(() => "");
-    let body = text;
-    try { body = text ? JSON.parse(text) : undefined; } catch {}
     const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-    return new ProviderError(this.id, `${prefix}: HTTP ${response.status}${text ? ` — ${truncate(text, 800)}` : ""}`, {
+    const streamingUnsupported = isStreamingUnsupported(response.status, text);
+    return new ProviderError(this.id, `${prefix}: HTTP ${response.status}`, {
       status: response.status === 401 || response.status === 403 ? 502 : response.status,
       retryable,
       details: {
         httpStatus: response.status,
+        classification: classifyHttpError(response.status, streamingUnsupported),
         safeToFallbackBeforeOutput: response.status === 429,
-        safeToRetryWithoutStreaming: isStreamingUnsupported(response.status, text),
-        ...(body === undefined ? {} : { body }),
+        safeToRetryWithoutStreaming: streamingUnsupported,
       },
     });
   }
@@ -270,7 +279,30 @@ export class OpenAiChatProvider extends ProviderAdapter {
 function normalizeBaseUrl(value) {
   const url = String(value ?? "").replace(/\/+$/, "");
   if (!url) throw new ProviderError("unknown", "Provider baseUrl is not configured");
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new ProviderError("unknown", "Provider baseUrl is not a valid absolute URL");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new ProviderError("unknown", "Provider baseUrl must use HTTP or HTTPS");
+  }
+  if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
+    throw new ProviderError("unknown", "Plaintext HTTP is allowed only for loopback provider endpoints");
+  }
   return url.endsWith("/v1") || /\/beta$/.test(url) ? url : `${url}/v1`;
+}
+
+/** Recognize only names and addresses whose URL identity is reserved for loopback. */
+function isLoopbackHostname(hostname) {
+  const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
+  if (normalized === "[::1]") return true;
+  const octets = normalized.split(".");
+  return octets.length === 4
+    && octets[0] === "127"
+    && octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255);
 }
 
 function normalizeToolChoice(choice) {
@@ -333,13 +365,19 @@ function renderNonStringContent(content) {
   return content.map((part) => part?.text ?? "").join("");
 }
 
-function truncate(text, max) {
-  return text.length <= max ? text : `${text.slice(0, max)}…`;
-}
-
 function isStreamingUnsupported(status, text) {
   if (![400, 404, 405, 415, 422].includes(status)) return false;
   return /(?:stream(?:ing)?).{0,80}(?:not supported|unsupported|unavailable|disabled)|(?:not supported|unsupported|unavailable|disabled).{0,80}(?:stream(?:ing)?)/is.test(text);
+}
+
+/** Retain only the stable class needed for routing decisions, never an upstream body. */
+function classifyHttpError(status, streamingUnsupported) {
+  if (streamingUnsupported) return "streaming_unsupported";
+  if (status === 401 || status === 403) return "authentication";
+  if (status === 408) return "timeout";
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "upstream_server";
+  return "request_rejected";
 }
 
 /** Parse data fields from an SSE byte stream. */

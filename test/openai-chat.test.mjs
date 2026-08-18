@@ -46,13 +46,63 @@ test("OpenAiChatProvider streams text, reasoning, tool calls, and usage", async 
   assert.equal(upstream.requests[0].body.parallel_tool_calls, false);
 });
 
+test("OpenAiChatProvider rejects plaintext HTTP for non-loopback endpoints", async () => {
+  const provider = new OpenAiChatProvider("openai", {
+    adapter: "openai-chat",
+    baseUrl: "http://api.example.invalid",
+    apiKey: "must-not-be-sent",
+    capabilities: ["consult"],
+    streaming: false,
+  }, { logger: silentLogger() });
+
+  await assert.rejects(async () => {
+    for await (const _event of provider.run({
+      mode: "consult",
+      model: "m",
+      messages: [{ role: "user", content: "must-not-be-sent" }],
+    })) { /* consume */ }
+  }, /Plaintext HTTP is allowed only for loopback provider endpoints/);
+});
+
+test("OpenAiChatProvider does not follow cross-origin redirects with prompts or auth", async (t) => {
+  const redirected = await startUpstream(t, async (_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ choices: [{ message: { content: "leaked" } }] }));
+  });
+  const origin = await startUpstream(t, async (_request, response) => {
+    response.writeHead(307, { location: `${redirected.url}/redirect-target` });
+    response.end();
+  });
+  const provider = new OpenAiChatProvider("openai", {
+    adapter: "openai-chat",
+    baseUrl: origin.url,
+    apiKey: "redirect-secret",
+    capabilities: ["consult"],
+    streaming: false,
+  }, { logger: silentLogger() });
+
+  await assert.rejects(async () => {
+    for await (const _event of provider.run({
+      mode: "consult",
+      model: "m",
+      messages: [{ role: "user", content: "redirect-prompt" }],
+    })) { /* consume */ }
+  }, (error) => error.details?.upstream?.httpStatus === 307);
+
+  assert.equal(origin.requests.length, 1);
+  assert.equal(origin.requests[0].headers.authorization, "Bearer redirect-secret");
+  assert.equal(origin.requests[0].body.messages[0].content, "redirect-prompt");
+  assert.equal(redirected.requests.length, 0);
+});
+
 test("OpenAiChatProvider retries buffered only for an explicit streaming-unsupported response", async (t) => {
   let count = 0;
+  const logRecords = [];
   const upstream = await startUpstream(t, async (_request, response, captured) => {
     count += 1;
     if (captured.body.stream) {
       response.writeHead(400, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: { message: "streaming is unsupported" } }));
+      response.end(JSON.stringify({ error: { message: "streaming is unsupported", secret: "signed-upstream-body" } }));
       return;
     }
     response.writeHead(200, { "content-type": "application/json" });
@@ -60,12 +110,16 @@ test("OpenAiChatProvider retries buffered only for an explicit streaming-unsuppo
   });
   const provider = new OpenAiChatProvider("openai", {
     adapter: "openai-chat", baseUrl: upstream.url, apiKey: "x", capabilities: ["consult"],
-  }, { logger: silentLogger() });
+  }, { logger: {
+    child() { return this; },
+    warn(message, fields) { logRecords.push({ message, fields }); },
+  } });
   const events = [];
   for await (const event of provider.run({ mode: "consult", model: "m", messages: [{ role: "user", content: "hi" }] })) events.push(event);
   assert.equal(count, 2);
   assert.ok(events.some((event) => event.type === "warning"));
   assert.equal(events.at(-1).message.content, "buffered");
+  assert.equal(JSON.stringify(logRecords).includes("signed-upstream-body"), false);
 });
 
 test("a buffered downgrade failure cannot trigger a second account attempt", async (t) => {
@@ -115,6 +169,84 @@ test("OpenAiChatProvider certifies only HTTP 429 for safe account fallback", asy
       return true;
     });
     assert.equal(upstream.requests.length, requestsBefore + 1, `HTTP ${expected.status} must not retry the account`);
+  }
+});
+
+test("OpenAiChatProvider never retains upstream error bodies in errors or details", async (t) => {
+  const secret = "private-upstream-error-body";
+  const upstream = await startUpstream(t, async (_request, response) => {
+    response.writeHead(503, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      error: {
+        message: `provider failed with ${secret}`,
+        request: { prompt: secret },
+      },
+    }));
+  });
+  const provider = new OpenAiChatProvider("openai", {
+    adapter: "openai-chat",
+    baseUrl: upstream.url,
+    apiKey: "x",
+    capabilities: ["consult"],
+    streaming: false,
+  }, { logger: silentLogger() });
+
+  await assert.rejects(async () => {
+    for await (const _event of provider.run({
+      mode: "consult",
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+    })) { /* consume */ }
+  }, (error) => {
+    assert.equal(error.message, "chat completion failed: HTTP 503");
+    assert.equal(error.details?.upstream?.httpStatus, 503);
+    assert.equal(error.details?.upstream?.classification, "upstream_server");
+    assert.equal(error.details?.upstream?.safeToFallbackBeforeOutput, false);
+    assert.equal(error.details?.upstream?.safeToRetryWithoutStreaming, false);
+    assert.equal(JSON.stringify({ message: error.message, details: error.details }).includes(secret), false);
+    assert.equal(Object.hasOwn(error.details.upstream, "body"), false);
+    return true;
+  });
+});
+
+test("OpenAiChatProvider sanitizes successful-status payload and stream errors", async (t) => {
+  const secret = "private-payload-error";
+  let streaming = false;
+  const upstream = await startUpstream(t, async (_request, response) => {
+    if (streaming) {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(`data: ${JSON.stringify({ error: { message: secret, transcript: secret } })}\n\n`);
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: { message: secret, screenshot: secret } }));
+  });
+
+  for (const expected of [
+    { stream: false, message: "Upstream response reported an error", classification: "response_error" },
+    { stream: true, message: "Upstream stream reported an error", classification: "stream_error" },
+  ]) {
+    streaming = expected.stream;
+    const provider = new OpenAiChatProvider("openai", {
+      adapter: "openai-chat",
+      baseUrl: upstream.url,
+      apiKey: "x",
+      capabilities: ["consult"],
+      streaming: expected.stream,
+      retryWithoutStreaming: false,
+    }, { logger: silentLogger() });
+    await assert.rejects(async () => {
+      for await (const _event of provider.run({
+        mode: "consult",
+        model: "m",
+        messages: [{ role: "user", content: "hi" }],
+      })) { /* consume */ }
+    }, (error) => {
+      assert.equal(error.message, expected.message);
+      assert.deepEqual(error.details?.upstream, { classification: expected.classification });
+      assert.equal(JSON.stringify({ message: error.message, details: error.details }).includes(secret), false);
+      return true;
+    });
   }
 });
 

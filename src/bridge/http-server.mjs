@@ -158,6 +158,61 @@ export function createHttpServer(service, config, options = {}) {
         }
         return;
       }
+      if (url.pathname === "/v1/continuity" || url.pathname.startsWith("/v1/continuity/")) {
+        enforceAccountMutationAuthentication(request, authentication);
+        if (request.method === "GET" && url.pathname === "/v1/continuity") {
+          writeJson(response, 200, await service.continuityState());
+          return;
+        }
+        if (request.method !== "POST") {
+          response.setHeader("allow", "GET, POST");
+          writeJson(response, 405, errorEnvelope("method_not_allowed", "Continuity controls require GET or POST"));
+          return;
+        }
+        const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+        if (url.pathname === "/v1/continuity/rename") writeJson(response, 200, await service.renameContinuityTask(body));
+        else if (url.pathname === "/v1/continuity/rollover/preview") writeJson(response, 200, await service.previewContinuityRollover(body));
+        else if (url.pathname === "/v1/continuity/rollover") writeJson(response, 202, await service.requestContinuityRollover(body));
+        else writeJson(response, 404, errorEnvelope("not_found", `No Continuity control for ${url.pathname}`));
+        return;
+      }
+      if (url.pathname === "/v1/automatic-takeover/disable") {
+        enforceAccountMutationAuthentication(request, authentication);
+        if (request.method !== "POST") {
+          response.setHeader("allow", "POST");
+          writeJson(response, 405, errorEnvelope("method_not_allowed", "Automatic takeover controls require POST"));
+          return;
+        }
+        await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+        writeJson(response, 200, await service.disableAutomaticTakeover());
+        return;
+      }
+      if (url.pathname === "/v1/copy/review") {
+        enforceAccountMutationAuthentication(request, authentication);
+        if (request.method !== "POST") {
+          response.setHeader("allow", "POST");
+          writeJson(response, 405, errorEnvelope("method_not_allowed", "Copy review requires POST"));
+          return;
+        }
+        const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+        writeJson(response, 200, await service.reviewCopy(body));
+        return;
+      }
+      if (url.pathname === "/v1/copy/check" || url.pathname === "/v1/copy/release-review") {
+        enforceAccountMutationAuthentication(request, authentication);
+        if (request.method !== "POST") {
+          response.setHeader("allow", "POST");
+          writeJson(response, 405, errorEnvelope("method_not_allowed", url.pathname === "/v1/copy/release-review" ? "Release copy review requires POST" : "External copy check requires POST"));
+          return;
+        }
+        const body = await readJsonBody(request, config.server?.maxBodyBytes ?? 8 * 1024 * 1024, requestController.signal);
+        if (url.pathname === "/v1/copy/release-review") {
+          writeJson(response, 200, await service.reviewReleaseCopy({ ...body, userStarted: true }));
+        } else {
+          writeJson(response, 200, await service.checkCopy(body));
+        }
+        return;
+      }
       if (isAccountMutation(request.method, url.pathname)) {
         enforceAccountMutationAuthentication(request, authentication);
         if (request.method === "POST" && url.pathname === "/v1/accounts") {

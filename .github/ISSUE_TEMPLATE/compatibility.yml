@@ -5,7 +5,7 @@ labels: ["compatibility"]
 body:
   - type: markdown
     attributes:
-      value: "Do not include API keys, cookies, account details, private prompts, private source, or raw credential-bearing logs."
+      value: "Do not include API keys, cookies, account details, private prompts/source, raw credential-bearing logs, signed URLs or query strings, callback URLs, screenshots, images/media, audio, or transcripts."
   - type: input
     id: platform
     attributes: { label: Platform, placeholder: "Windows 11 24H2 or Ubuntu 24.04" }
@@ -34,7 +34,7 @@ body:
     attributes:
       label: Safety check
       options:
-        - label: "I removed credentials, account details, private prompts/source, and unrelated logs."
+        - label: "I removed credentials, account details, private prompts/source, unrelated logs, signed/callback URLs, screenshots, media, audio, and transcripts."
           required: true
         - label: "I understand this report does not authorize code execution, merge, rollout, or sunset."
           required: true

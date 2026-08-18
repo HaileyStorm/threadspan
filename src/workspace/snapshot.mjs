@@ -18,6 +18,56 @@ const DEFAULT_EXCLUDES = Object.freeze([
   "__pycache__",
 ]);
 
+// These exclusions are always applied before caller-supplied exclusions. They intentionally
+// cover common secret-bearing files and machine-local authentication/configuration state.
+const MANDATORY_SECRET_EXCLUDES = Object.freeze([
+  ".env",
+  ".env.*",
+  ".npmrc",
+  ".netrc",
+  ".pypirc",
+  "credentials",
+  "credentials.*",
+  "secret",
+  "secret.*",
+  "secrets",
+  "secrets.*",
+  "id_*",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
+  "*.keystore",
+  "*.kdbx",
+  "*.crt",
+  "*.cer",
+  "config.local.*",
+  "auth.json",
+  "auth-token",
+  "cookies",
+  "cookies-journal",
+  "login data",
+  "web data",
+  "local state",
+  ".ssh",
+  ".aws",
+  ".azure",
+  ".kube",
+  ".docker",
+  ".npm",
+  ".codex",
+  ".claude",
+  ".cursor",
+  ".gemini",
+  ".grok",
+  ".threadspan",
+  ".cursor-bridge",
+  "appdata",
+  "user data",
+  "browser-profile",
+  "browser-profiles",
+]);
+
 /**
  * A disposable copy of a workspace used to make Consult side effects harmless to the source tree.
  */
@@ -133,7 +183,7 @@ async function copyDirectory(currentSource, currentTarget, sourceRoot, options) 
   for await (const entry of directory) {
     const sourceEntry = join(currentSource, entry.name);
     const relativePath = normalizeRelative(relative(sourceRoot, sourceEntry));
-    if (matchesAnyExclude(relativePath, entry.name, options.excludes)) {
+    if (matchesMandatorySecretExclude(relativePath, entry.name) || matchesAnyExclude(relativePath, entry.name, options.excludes)) {
       options.skipped.push({ path: relativePath, reason: "excluded" });
       continue;
     }
@@ -232,6 +282,10 @@ export function matchesAnyExclude(relativePath, baseName, patterns) {
     }
     return globToRegExp(pattern).test(relativePath);
   });
+}
+
+function matchesMandatorySecretExclude(relativePath, baseName) {
+  return matchesAnyExclude(relativePath.toLowerCase(), baseName.toLowerCase(), MANDATORY_SECRET_EXCLUDES);
 }
 
 /**

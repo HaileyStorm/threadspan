@@ -1,10 +1,16 @@
 # Implementation package delivery report
 
-**Package:** `threadspan` 0.4.0
+**Package:** `threadspan` 0.4.1 development
 
 **Snapshot:** 2026-08-18
 
-**State:** source-verified and live-accepted on the configured Linux and Windows hosts; Desktop visual acceptance and untested provider/account combinations remain pending.
+**State:** 0.4.0 is source-verified, signed, public, and live-accepted on the configured Linux and Windows hosts. The 0.4.1 Continuity/takeover/copy-review/privacy delta is source-verified; the listed provider routes, native Continuity state, and daemon restart behavior are live-accepted on both configured hosts. Signed publication is the remaining release gate.
+
+## Current 0.4.1 delta
+
+- Owner-only Continuity tree, native naming, and guarded promotion/rollover requests; native Goal transfer remains owned by the certified supervisor.
+- Optional bridge-routed account-first takeover with same-daemon disconnect survival, visible recovery state, exact-reset shutdown, and fail-closed host-launcher boundaries.
+- Transcript, media-reference, upstream-error, and release-preflight privacy hardening.
 
 ## Delivered in 0.4.0
 
@@ -18,9 +24,9 @@
 
 ## Verification evidence
 
-On Linux, the complete 0.4.0 source gate reports **434 tests, 434 passed, 0 failed, and 0 skipped**. Coverage includes routing/account isolation, provider protocol transforms, MCP/HTTP authorization, process and worktree boundaries, installer/recovery behavior, release-bundle safety, and documentation/config parity. A clean-installed native Windows package previously passed **339 tests**, with nine explicit platform/privilege skips. Account-specific live checks on both configured hosts accepted Cursor Consult, Grok Consult/MCP startup, Nous Consult/Integrated/Delegate, OpenRouter free routing, service startup, and native Codex quota reads.
+On Linux, the complete 0.4.1 release-candidate source gate reports **505 tests, 505 passed, 0 failed, and 0 skipped**. Coverage includes routing/account isolation, provider protocol transforms, MCP/HTTP authorization, Continuity/takeover controls, copy review, external copy checks, process and worktree boundaries, installer/recovery behavior, release-bundle safety, and documentation/config parity. The deployed native Windows 0.4.1 source passed **43 focused tests** selected for the changed cross-platform surfaces. Revision-bound live checks then accepted Cursor Consult, Grok Build, Nous Consult/Integrated/Delegate, OpenRouter routing, Continuity state, and durable daemon restart on both configured hosts. The Windows rollout preserved the already-running Codex process.
 
-The current signed artifact predates this documentation closure and will be regenerated after the docs are finalized; it is not the final 0.4.0 distribution artifact.
+The current signed artifact is 0.4.0. Both-host acceptance for 0.4.1 is closed; the signed 0.4.1 artifact is the next publication step.
 
 AgentRouter's dated two-host success does not establish a permanent free offer. Generic Claude remains Preview, and the four additional provider entries are setup candidates pending fresh account/card/model/region checks. Threadspan is not partnered with, sponsored by, or endorsed by any listed provider. Signup, credentials, installs, billing, probes, and route enablement remain explicit reviewed user actions.
 

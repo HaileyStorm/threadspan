@@ -70,6 +70,8 @@ Provider configuration may optionally define `officialUrl`, `accountUrl`, and `u
 
 Qualified fallbacks are **capability-checked alternatives**, not automatic failover. The visible reroute event is an explicit operator/policy action.
 
+The collapsed **Copy review** panel stays local. The separate **External copy check** panel is owner-token POST only, off by default, and starts Pangram, Sapling, or Winston only from an explicit button. Pangram copies selected text and opens `https://www.pangram.com/`; it never submits or scrapes the page. Results are advisory and cannot prove authorship.
+
 ## Synthetic state and the adapter
 
 `ui/adapt-state.js` exposes:
@@ -114,3 +116,8 @@ Quota copy in the demo is a **manual consumer-week meter**. Local token counts c
 | `ui/mark.svg` | Editable routing-gate mark (`#route-input`, `#route-selector`, `#route-primary`, `#route-fallback`) |
 
 Offline checks live in `test/ui-assets.test.mjs` (file presence, semantics, adapter behavior). They do not launch a browser and are not visual or live-host acceptance.
+## Continuity task tree
+
+The companion HUD keeps Continuity collapsed by default. Expanding it shows one logical task with its origin, current generation, prior generations, and any prepared successor. Only the selected task opens automatically. Native thread IDs, Goal IDs, account IDs, receipts, paths, and recovery keys stay server-side behind short-lived opaque handles.
+
+Rename uses the native host naming API. Promote/Rollover first shows a digest-bound preview, then posts one fixed control request to the exact task. The certified Continuity supervisor owns predecessor stop, capsule acceptance, single-successor lease, native Goal pause/rebind/resume/clear operations, fresh-process read-back, rollback, and archival. Unsupported hosts show unavailable controls instead of decorative buttons.

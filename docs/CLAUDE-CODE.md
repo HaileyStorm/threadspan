@@ -75,7 +75,7 @@ Do not put API keys, credential fields, raw environment overlays, hooks, plugins
 
 `agentrouter-claude` is a separate disabled example using `gateway: { baseUrl, apiKeyEnv, model, provider }`. The gateway URL must be HTTPS without embedded credentials, the environment source must be a valid name, and the gateway model must equal the provider model. A missing key fails before launch. Only this explicit route maps its named token into the child-only Anthropic gateway variables; generic Claude never receives ambient `ANTHROPIC_*` values.
 
-Linux and Windows Claude Code 2.1.234 returned `THREADSPAN_AGENTROUTER_OK` through `https://agentrouter.org` with `claude-opus-4-8` on 2026-08-18. That recent evidence is specific to separate USD 1 hard-capped, no-payment-method host tokens. It expires from installer visibility after seven days without a fresh probe and is not a permanent-free guarantee. Integrated, generic OpenAI Chat, and Codex gateway fallback remain unsupported. See [AgentRouter through Claude Code](AGENTROUTER.md).
+Linux and Windows Claude Code 2.1.234 returned `THREADSPAN_AGENTROUTER_OK` through `https://agentrouter.org` with `claude-opus-4-8` in bounded no-spend probes on 2026-08-18. That dated route evidence expires from installer visibility after seven days without a fresh probe and is not a permanent-free guarantee. Integrated, generic OpenAI Chat, and Codex gateway fallback remain unsupported. See [AgentRouter through Claude Code](AGENTROUTER.md).
 
 ### Isolated profiles
 

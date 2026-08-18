@@ -1,5 +1,35 @@
 import { RequestError } from "./errors.mjs";
 
+const ATTACHMENT_LABELS = new Map([
+  ["input_image", "image"],
+  ["image_url", "image"],
+  ["output_image", "image"],
+  ["input_file", "file"],
+  ["file", "file"],
+  ["input_audio", "audio"],
+  ["audio", "audio"],
+  ["output_audio", "audio"],
+  ["input_video", "media"],
+  ["video", "media"],
+  ["output_video", "media"],
+  ["generated_image", "generated media"],
+  ["generated_audio", "generated media"],
+  ["generated_media", "generated media"],
+]);
+
+const NON_PUBLIC_HOST_SUFFIXES = [
+  ".corp",
+  ".example",
+  ".home",
+  ".internal",
+  ".invalid",
+  ".lan",
+  ".local",
+  ".localhost",
+  ".onion",
+  ".test",
+];
+
 /**
  * Convert Responses-style input into a provider-neutral message list.
  * Content blocks are preserved where possible; unsupported binary/image payloads become explicit text placeholders.
@@ -108,7 +138,7 @@ function appendInputItems(messages, items) {
       messages.push({
         role: "tool",
         toolCallId: String(item.call_id ?? item.id ?? "computer_call"),
-        content: `[computer output omitted by generic bridge: ${JSON.stringify(item.output ?? null)}]`,
+        content: "[computer output omitted]",
       });
       continue;
     }
@@ -124,18 +154,45 @@ function normalizeRole(role) {
 
 function normalizeContent(content) {
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return content == null ? "" : JSON.stringify(content);
+  if (!Array.isArray(content)) {
+    if (content && typeof content === "object") return normalizeContent([content]);
+    return content == null ? "" : JSON.stringify(content);
+  }
   return content.map((part) => {
     if (typeof part === "string") return part;
     if (!part || typeof part !== "object") return "";
     if (["input_text", "output_text", "text"].includes(part.type)) return String(part.text ?? "");
-    if (["input_image", "image_url"].includes(part.type)) {
-      const value = part.image_url ?? part.url ?? part.file_id ?? "embedded image";
-      return `[image: ${value}]`;
+    const attachmentLabel = ATTACHMENT_LABELS.get(part.type);
+    if (attachmentLabel) {
+      const publicReference = normalizePublicAttachmentUrl(
+        part.image_url ?? part.audio_url ?? part.file_url ?? part.media_url ?? part.url,
+      );
+      return publicReference
+        ? `[${attachmentLabel}: ${publicReference}]`
+        : `[${attachmentLabel} attachment omitted]`;
     }
-    if (part.type === "input_file") return `[file: ${part.filename ?? part.file_id ?? "attached file"}]`;
     return `[unsupported content block: ${part.type ?? "unknown"}]`;
   }).filter(Boolean).join("\n");
+}
+
+/** Keep only a syntactically public HTTP(S) origin and path from an attachment reference. */
+function normalizePublicAttachmentUrl(value) {
+  const candidate = value && typeof value === "object" ? value.url : value;
+  if (typeof candidate !== "string" || candidate.length === 0) return undefined;
+  let url;
+  try { url = new URL(candidate); } catch { return undefined; }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return undefined;
+  const hostname = url.hostname.toLowerCase().replace(/\.$/u, "");
+  if (!isPublicHostname(hostname)) return undefined;
+  url.hostname = hostname;
+  return `${url.origin}${url.pathname}`;
+}
+
+/** Reject local, reserved, single-label, and IP-literal attachment hosts without performing DNS. */
+function isPublicHostname(hostname) {
+  if (!hostname || hostname === "localhost" || !hostname.includes(".")) return false;
+  if (hostname.startsWith("[") || /^\d{1,3}(?:\.\d{1,3}){3}$/u.test(hostname)) return false;
+  return !NON_PUBLIC_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
 }
 
 function normalizeArguments(value) {

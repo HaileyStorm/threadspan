@@ -129,7 +129,7 @@ export class ProviderRegistry {
         resolvedAccount = routedAccount;
       }
       resolvedModel = segments.join("/");
-    } else if (segments.length >= 2 && this.providers.has(segments[0])) {
+    } else if (!providerId && segments.length >= 2 && this.providers.has(segments[0])) {
       const routedProvider = segments.shift();
       resolvedProvider ??= routedProvider;
       if (segments[0]?.startsWith("@")) {
@@ -150,7 +150,7 @@ export class ProviderRegistry {
     const provider = this.#providerForAccount(resolvedProvider, account);
     resolvedModel ||= provider.config.model ?? this.config.defaults?.model ?? "auto";
     provider.assertMode(resolvedMode);
-    return { provider, providerId: resolvedProvider, accountId: account.id, account, mode: resolvedMode, model: resolvedModel, smart: false };
+    return { provider, providerId: resolvedProvider, accountId: account.id, account, mode: resolvedMode, model: resolvedModel, smart: false, explicitAccount: Boolean(resolvedAccount) };
   }
 
   /**
@@ -424,6 +424,52 @@ export class ProviderRegistry {
     }).slice(0, limit);
   }
 
+  /** Build policy-ranked cross-provider candidates without weakening the source route's mode or quality floor. */
+  takeoverRoutes(route, options = {}) {
+    if (!route?.providerId || !route?.mode) return [];
+    const maximum = Math.max(0, Math.min(8, Number(options.maximum ?? 1)));
+    if (maximum === 0) return [];
+    const sourceProfile = this.config.routing?.providerProfiles?.[route.providerId] ?? {};
+    const sourcePrivacyClass = explicitPrivacyClass(sourceProfile);
+    if (!sourcePrivacyClass) return [];
+    if (options.privacyClass !== undefined && options.privacyClass !== sourcePrivacyClass) return [];
+    const sourceIntelligence = boundedWeight(sourceProfile.intelligence, defaultIntelligence(route.provider?.config?.adapter));
+    const minimumIntelligence = boundedWeight(options.minimumIntelligence, sourceIntelligence);
+    const requiredContextWindow = Number(options.requiredContextWindow ?? route.provider?.config?.contextWindow ?? 0);
+    return this.#eligibleProviders(route.mode).flatMap(([providerId, provider, account]) => {
+      if (providerId === route.providerId) return [];
+      if (this.#health(providerId, account.id).status !== "available") return [];
+      const profile = this.config.routing?.providerProfiles?.[providerId] ?? {};
+      const intelligence = boundedWeight(profile.intelligence, defaultIntelligence(provider.config.adapter));
+      const contextWindow = Number(provider.config.contextWindow ?? 0);
+      if (intelligence < minimumIntelligence) return [];
+      if (requiredContextWindow > 0 && (!Number.isFinite(contextWindow) || contextWindow < requiredContextWindow)) return [];
+      if (explicitPrivacyClass(profile) !== sourcePrivacyClass) return [];
+      try {
+        provider.assertMode(route.mode);
+        return [{
+          provider,
+          providerId,
+          account,
+          accountId: account.id,
+          mode: route.mode,
+          model: provider.config.model ?? "auto",
+          smart: true,
+          requestedProviderId: "threadspan",
+          takeoverFromProviderId: route.providerId,
+          takeoverFromAccountId: route.accountId,
+          intelligence,
+          contextWindow,
+          privacy: Number(profile.privacy ?? 0),
+          takeoverTools: Array.isArray(profile.takeoverTools) ? profile.takeoverTools.map(String) : [],
+          certifiedHealthy: true,
+        }];
+      } catch {
+        return [];
+      }
+    }).slice(0, maximum);
+  }
+
   /** Dispose a removed account's isolated adapter without disturbing the provider default. */
   async releaseAccount(accountId) {
     const provider = this.accountProviders.get(accountId);
@@ -438,14 +484,14 @@ export class ProviderRegistry {
       const provider = this.#providerForAccount(account.providerId, account);
       provider.assertMode(mode);
       const model = !requestedModel || requestedModel === "auto" ? provider.config.model ?? "auto" : requestedModel;
-      return { provider, providerId: account.providerId, accountId: account.id, account, mode, model, smart: true, requestedProviderId: "threadspan" };
+      return { provider, providerId: account.providerId, accountId: account.id, account, mode, model, smart: true, explicitAccount: true, requestedProviderId: "threadspan" };
     }
     const candidates = this.#eligibleProviders(mode);
     if (candidates.length === 0) throw new RequestError(`No currently eligible Threadspan provider supports '${mode}' mode`);
     const [providerId, provider, account] = candidates[0];
     const model = !requestedModel || requestedModel === "auto" ? provider.config.model ?? "auto" : requestedModel;
     provider.assertMode(mode);
-    return { provider, providerId, accountId: account.id, account, mode, model, smart: true, requestedProviderId: "threadspan" };
+    return { provider, providerId, accountId: account.id, account, mode, model, smart: true, explicitAccount: false, requestedProviderId: "threadspan" };
   }
 
   #eligibleProviders(mode) {
@@ -641,6 +687,12 @@ function numberOrZero(value) {
 function boundedWeight(value, fallback) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(1, Math.min(100, Math.round(numeric))) : fallback;
+}
+
+function explicitPrivacyClass(profile) {
+  if (!profile || typeof profile !== "object" || !Object.hasOwn(profile, "privacyClass")) return null;
+  const value = profile.privacyClass;
+  return typeof value === "string" && value.length > 0 && value.trim() === value ? value : null;
 }
 
 function defaultIntelligence(adapter) {

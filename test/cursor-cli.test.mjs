@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -25,6 +25,48 @@ test("Cursor CLI adapter discovers signed-in account models", async () => {
     { id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6" },
   ]);
   assert.deepEqual(parseCursorModels("noise\na - A\n"), [{ id: "a", name: "A" }]);
+});
+
+test("Cursor CLI keeps native profile auth paths but excludes unnamed provider and daemon credentials", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "threadspan-cursor-env-"));
+  const script = join(directory, "cursor-env.mjs");
+  writeFileSync(script, `process.stdout.write(JSON.stringify({ result: JSON.stringify({
+    home: process.env.HOME ?? process.env.USERPROFILE,
+    named: process.env.THREADSPAN_CURSOR_NAMED,
+    configured: process.env.THREADSPAN_CURSOR_CONFIGURED,
+    providerKey: process.env.CURSOR_API_KEY,
+    daemonCredential: process.env.THREADSPAN_TOKEN,
+    unrelated: process.env.THREADSPAN_CURSOR_PRIVATE,
+  }) }));\n`);
+  const names = ["HOME", "THREADSPAN_CURSOR_NAMED", "THREADSPAN_CURSOR_PRIVATE", "CURSOR_API_KEY", "THREADSPAN_TOKEN"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  Object.assign(process.env, {
+    HOME: "/threadspan-test-home",
+    THREADSPAN_CURSOR_NAMED: "named-value",
+    THREADSPAN_CURSOR_PRIVATE: "must-not-leak",
+    CURSOR_API_KEY: "provider-key-must-not-leak",
+    THREADSPAN_TOKEN: "daemon-credential-must-not-leak",
+  });
+  t.after(() => {
+    rmSync(directory, { recursive: true, force: true });
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  const events = [];
+  for await (const event of provider({
+    commandArgs: [script],
+    envAllowlist: ["THREADSPAN_CURSOR_NAMED"],
+    env: { THREADSPAN_CURSOR_CONFIGURED: "configured-value" },
+  }).run({ mode: "consult", model: "auto", messages: [{ role: "user", content: "hello" }] })) events.push(event);
+
+  assert.deepEqual(JSON.parse(events.at(-1).message.content), {
+    home: "/threadspan-test-home",
+    named: "named-value",
+    configured: "configured-value",
+  });
 });
 
 test("Cursor CLI Consult uses a disposable workspace and normalizes usage", async () => {

@@ -135,7 +135,7 @@ test("AgentRouter gateway validation and child environment fail closed without l
   assert.equal(provider().capabilities().liveTested, false);
   for (const invalid of [
     { ...gateway, baseUrl: "http://agentrouter.org" },
-    { ...gateway, baseUrl: "https://user:secret@agentrouter.org" },
+    { ...gateway, baseUrl: "https://user:secret@agentrouter.example.test" },
     { ...gateway, apiKeyEnv: "NOT VALID" },
     { ...gateway, model: "other-model" },
     { ...gateway, secret: "forbidden" },
