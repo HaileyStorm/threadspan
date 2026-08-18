@@ -89,6 +89,8 @@ test("HTML carries route-bar semantics, landmarks, and HUD non-injection copy", 
     "route-picker",
     "appearance",
     "compatibility",
+    "compatibility-actionable",
+    "compatibility-diagnostics",
     "maximum-utilization",
     "tip",
     "glossary",
@@ -260,10 +262,25 @@ test("adapter normalizes synthetic JSON and fails closed on bad state", async ()
       status: "attention", changed: true, observedAt: "2026-08-18T12:00:00.000Z",
       products: [{ id: "codex-desktop", label: "Codex Desktop", status: "detected", version: "1.2.3" }],
       changes: [{ productId: "codex-desktop", kind: "changed", current: { path: "/private/app", authorization: "secret" } }],
+      transitions: [{
+        transitionId: "c".repeat(64), platform: "win32", executionPlatform: "linux", product: "codex-desktop", productLabel: "Codex Desktop",
+        N: "1.2.3", "N+1": "1.2.4", status: "rollback-incomplete", acceptanceScope: "not-accepted",
+        observedAt: "2026-08-18T12:00:00.000Z", updatedAt: "2026-08-18T12:01:00.000Z",
+        outcomes: { attach: { status: "fail", evidenceClass: "synthetic", path: "/private/app" } },
+        path: "/private/app", claimId: "secret", oldWorkingSurface: true, sidecarRetained: true,
+      }, {
+        transitionId: "d".repeat(64), platform: "linux", executionPlatform: "linux", product: "chatgpt-desktop", productLabel: "ChatGPT Desktop",
+        N: "2.0", "N+1": "2.1", status: "accepted", acceptanceScope: "synthetic",
+        outcomes: { settings: { status: "pass", evidenceClass: "synthetic" } }, oldWorkingSurface: true, sidecarRetained: true,
+      }],
     },
   }).compatibility;
   assert.equal(JSON.stringify(compatibility.changes), JSON.stringify([{ productId: "codex-desktop", kind: "changed" }]));
-  assert.doesNotMatch(JSON.stringify(compatibility), /private|secret|authorization|current/);
+  assert.equal(compatibility.actionable.length, 1);
+  assert.equal(compatibility.diagnostics.length, 1);
+  assert.equal(compatibility.transitions[0].executionPlatform, "linux");
+  assert.equal(compatibility.transitions[0].outcomes.attach.evidenceClass, "synthetic");
+  assert.doesNotMatch(JSON.stringify(compatibility), /private|secret|authorization|current|claimId/);
 
   const publicActionItems = api.adaptActionItems({
     schemaVersion: 1,
@@ -329,6 +346,15 @@ test("renderer keeps authoritative quota and local recent-burn projection visibl
   assert.match(source, /Recent burn:/);
   assert.match(source, /forecastEvidence/);
   assert.match(source, /projected exhaustion/);
+});
+
+test("Compatibility Watch HUD keeps actionable transitions separate from diagnostics", async () => {
+  const source = await read("ui/threadspan.js");
+  assert.match(source, /data-field='compatibility-actionable'/);
+  assert.match(source, /data-field='compatibility-diagnostics'/);
+  assert.match(source, /synthetic only/);
+  assert.match(source, /No transition currently requires action/);
+  assert.doesNotMatch(source.slice(source.indexOf("function renderCompatibility"), source.indexOf("function renderAccounts")), /transitionId|claimId|artifactSha256|pathHash/);
 });
 
 test("HUD state is initialized before the first render can use it", async () => {

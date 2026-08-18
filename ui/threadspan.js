@@ -1226,15 +1226,36 @@
   function renderCompatibility(compatibility) {
     const summary = root.querySelector("[data-field='compatibility-summary']");
     const list = root.querySelector("[data-field='compatibility-products']");
-    if (!summary || !list) return;
+    const actionable = root.querySelector("[data-field='compatibility-actionable']");
+    const diagnostics = root.querySelector("[data-field='compatibility-diagnostics']");
+    if (!summary || !list || !actionable || !diagnostics) return;
+    const actionCount = compatibility.actionable?.length ?? 0;
     summary.textContent = compatibility.status === "disabled"
       ? "Watch disabled. Run compatibility doctor after an app update."
-      : `${compatibility.status}${compatibility.changed ? " · changes need review" : " · no reported drift"}${compatibility.observedAt ? ` · ${formatUtc(compatibility.observedAt)}` : ""}`;
+      : `${compatibility.status}${actionCount ? ` · ${actionCount} exact transition${actionCount === 1 ? "" : "s"} need review` : compatibility.changed ? " · drift diagnostics available" : " · no reported drift"}${compatibility.observedAt ? ` · ${formatUtc(compatibility.observedAt)}` : ""}`;
     list.replaceChildren();
     for (const product of compatibility.products) {
       const item = document.createElement("li");
       item.textContent = `${product.label} · ${product.status}${product.version ? ` · ${product.version}` : ""}`;
       list.appendChild(item);
+    }
+    actionable.replaceChildren();
+    diagnostics.replaceChildren();
+    for (const transition of compatibility.transitions ?? []) {
+      const item = document.createElement("li");
+      const evidence = transition.acceptanceScope === "synthetic" ? "synthetic only" : transition.acceptanceScope.replaceAll("-", " ");
+      item.textContent = `${transition.productLabel} · ${transition.platform} · ${transition.N} → ${transition["N+1"]} · ${transition.status} · ${evidence}`;
+      (transition.actionRequired ? actionable : diagnostics).appendChild(item);
+    }
+    if (!actionable.childElementCount) {
+      const item = document.createElement("li");
+      item.textContent = "No transition currently requires action.";
+      actionable.appendChild(item);
+    }
+    if (!diagnostics.childElementCount) {
+      const item = document.createElement("li");
+      item.textContent = "No exact-build diagnostics recorded.";
+      diagnostics.appendChild(item);
     }
   }
 

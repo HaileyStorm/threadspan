@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -25,6 +25,11 @@ function fakeResult(stdout) {
   return { stdout, stderr: "", exitCode: 0, exitSignal: null, startedAt: 0, durationMs: 1 };
 }
 
+function probeOutcomes(status = "pass", evidenceClass = "synthetic") {
+  return Object.fromEntries(["attach", "protocol", "routing", "provider", "settings"]
+    .map((name) => [name, { status, evidenceClass }]));
+}
+
 test("watch is disabled and performs no IO by default", async (t) => {
   const root = await temporaryRoot(t);
   const stateRoot = join(root, "state");
@@ -42,6 +47,12 @@ test("watch is disabled and performs no IO by default", async (t) => {
   assert.equal(report.networkAccess, false);
   await assert.rejects(lstat(stateRoot), /ENOENT/);
   assert.throws(() => watch.startPolling(), /disabled/);
+});
+
+test("transition core has no updater, Desktop host, provider, auth, settings, or task mutation dependency", async () => {
+  const source = await readFile(new URL("../src/maintenance/desktop-update.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /from "\.\.\/(?:desktop|installer|providers)\//);
+  assert.doesNotMatch(source, /\b(?:checkAndUpdate|relaunch|executeResponse|selectDesktopRoute|accountStore|taskStore)\b/);
 });
 
 test("Linux and Windows probes record bounded version and artifact changes", async (t) => {
@@ -127,6 +138,254 @@ test("default product definitions cover the required products on Linux and Windo
   assert.throws(() => new DesktopCompatibilityWatch({
     products: [{ id: "codex-cli", kind: "command", commands: ["codex"], versionArgs: ["self-update"] }],
   }), /must not request update/);
+});
+
+test("exact N to N+1 transitions preserve N until every separate probe passes", async (t) => {
+  const root = await temporaryRoot(t);
+  for (const platform of ["linux", "win32"]) {
+    const platformRoot = join(root, platform);
+    const artifact = await createFile(join(platformRoot, "Desktop.bin"), "artifact-N\n");
+    const metadata = await createFile(join(platformRoot, "package.json"), JSON.stringify({ version: "N" }));
+    const stateRoot = join(platformRoot, "state");
+    const watch = new DesktopCompatibilityWatch({
+      enabled: true,
+      platform,
+      stateRoot,
+      products: [{ id: "codex-desktop", label: "Codex Desktop", kind: "artifact", candidates: [artifact], versionFiles: [metadata] }],
+    });
+
+    await watch.doctorAfterUpdate();
+    await writeFile(artifact, "artifact-N+1\n");
+    await writeFile(metadata, JSON.stringify({ version: "N+1" }));
+    const changed = await watch.doctorAfterUpdate();
+    assert.equal(changed.transitions.length, 1);
+    const transition = changed.transitions[0];
+    assert.equal(transition.platform, platform);
+    assert.equal(transition.executionPlatform, process.platform);
+    assert.equal(transition.N, "N");
+    assert.equal(transition["N+1"], "N+1");
+    assert.equal(transition.status, "probes-pending");
+    assert.equal(transition.oldWorkingSurface, true);
+    assert.equal(transition.sidecarRetained, true);
+    const acceptedBefore = JSON.parse(await readFile(join(stateRoot, "accepted-observations.json"), "utf8"));
+    assert.equal(acceptedBefore.products[0].version, "N");
+
+    const acceptanceOutcomes = probeOutcomes("pass", platform === process.platform ? "synthetic" : "native-manual");
+    const accepted = await watch.recordTransitionProbe({
+      transitionId: transition.transitionId,
+      claimId: `synthetic-${platform}`,
+      source: "manual",
+      outcomes: acceptanceOutcomes,
+    });
+    assert.equal(accepted.status, "accepted");
+    assert.equal(accepted.acceptanceScope, "synthetic");
+    assert.deepEqual(Object.keys(accepted.probe.outcomes), ["attach", "protocol", "routing", "provider", "settings"]);
+    const acceptedAfter = JSON.parse(await readFile(join(stateRoot, "accepted-observations.json"), "utf8"));
+    assert.equal(acceptedAfter.products[0].version, "N+1");
+    await writeFile(join(stateRoot, "accepted-observations.json"), `${JSON.stringify(acceptedBefore)}\n`);
+    await watch.recordTransitionProbe({
+      transitionId: transition.transitionId,
+      claimId: `synthetic-${platform}`,
+      source: "manual",
+      outcomes: acceptanceOutcomes,
+    });
+    assert.equal(JSON.parse(await readFile(join(stateRoot, "accepted-observations.json"), "utf8")).products[0].version, "N+1");
+    const mismatchedWatch = new DesktopCompatibilityWatch({
+      enabled: true,
+      platform: platform === "linux" ? "win32" : "linux",
+      stateRoot,
+      products: [{ id: "codex-desktop", label: "Codex Desktop", kind: "artifact", candidates: [artifact], versionFiles: [metadata] }],
+    });
+    await assert.rejects(mismatchedWatch.recordTransitionProbe({
+      transitionId: transition.transitionId,
+      claimId: `wrong-platform-${platform}`,
+      source: "manual",
+      outcomes: probeOutcomes("pass", "native-manual"),
+    }), /platform does not match/);
+    await assert.rejects(mismatchedWatch.doctor(), /state does not match this watcher platform/);
+    assert.match(await readFile(join(stateRoot, "transitions", transition.transitionId, "transition.json"), "utf8"), /"last-known-working"/);
+  }
+});
+
+test("simultaneous acceptance of different products preserves both generations and index entries", async (t) => {
+  const root = await temporaryRoot(t);
+  const products = [];
+  for (const id of ["codex-desktop", "chatgpt-desktop"]) {
+    const artifact = await createFile(join(root, id, "Desktop.bin"), `${id}-N\n`);
+    const metadata = await createFile(join(root, id, "package.json"), JSON.stringify({ version: "N" }));
+    products.push({ id, label: id, kind: "artifact", candidates: [artifact], versionFiles: [metadata], artifact, metadata });
+  }
+  const watch = new DesktopCompatibilityWatch({
+    enabled: true,
+    stateRoot: join(root, "state"),
+    products: products.map(({ artifact, metadata, ...product }) => ({ ...product, candidates: [artifact], versionFiles: [metadata] })),
+  });
+  await watch.doctor();
+  for (const product of products) {
+    await writeFile(product.artifact, `${product.id}-N+1\n`);
+    await writeFile(product.metadata, JSON.stringify({ version: "N+1" }));
+  }
+  const transitions = (await watch.doctor()).transitions;
+  assert.equal(transitions.length, 2);
+  const results = await Promise.all(transitions.map((transition) => watch.recordTransitionProbe({
+    transitionId: transition.transitionId,
+    claimId: `accept-${transition.product}`,
+    source: "manual",
+    outcomes: probeOutcomes(),
+  })));
+  assert.equal(results.every((result) => result.status === "accepted"), true);
+  const accepted = JSON.parse(await readFile(join(root, "state", "accepted-observations.json"), "utf8"));
+  assert.deepEqual(accepted.products.map((product) => [product.id, product.version]).sort(), [["chatgpt-desktop", "N+1"], ["codex-desktop", "N+1"]]);
+  const index = JSON.parse(await readFile(join(root, "state", "transition-index.json"), "utf8"));
+  assert.equal(index.transitions.filter((transition) => transition.status === "accepted").length, 2);
+});
+
+test("concurrent first-run doctors cannot replace N with N+1 as a second baseline", async (t) => {
+  const root = await temporaryRoot(t);
+  const executable = await createFile(join(root, "codex"), "N\n");
+  const stateRoot = join(root, "state");
+  let releaseSlow;
+  let slowEntered;
+  const entered = new Promise((resolve) => { slowEntered = resolve; });
+  const blocked = new Promise((resolve) => { releaseSlow = resolve; });
+  const common = {
+    enabled: true,
+    stateRoot,
+    products: [{ id: "codex-cli", kind: "command", commands: ["codex"] }],
+    runProcess: async ({ command }) => fakeResult((await readFile(command, "utf8")).trim()),
+  };
+  const slow = new DesktopCompatibilityWatch({
+    ...common,
+    resolveExecutable: async () => { slowEntered(); await blocked; return executable; },
+  });
+  const fast = new DesktopCompatibilityWatch({ ...common, resolveExecutable: async () => executable });
+  const slowDoctor = slow.doctor();
+  await entered;
+  await fast.doctor();
+  await writeFile(executable, "N+1\n");
+  releaseSlow();
+  const slowReport = await slowDoctor;
+  assert.equal(slowReport.transitions.length, 1);
+  assert.equal(slowReport.transitions[0].N, "N");
+  assert.equal(slowReport.transitions[0]["N+1"], "N+1");
+  const accepted = JSON.parse(await readFile(join(stateRoot, "accepted-observations.json"), "utf8"));
+  assert.equal(accepted.products[0].version, "N");
+});
+
+test("transition probes serialize across watch processes and never infer manual from passive evidence", async (t) => {
+  const root = await temporaryRoot(t);
+  const artifact = await createFile(join(root, "Desktop.bin"), "N\n");
+  const metadata = await createFile(join(root, "package.json"), JSON.stringify({ version: "N" }));
+  const options = {
+    enabled: true,
+    stateRoot: join(root, "state"),
+    products: [{ id: "codex-desktop", kind: "artifact", candidates: [artifact], versionFiles: [metadata] }],
+  };
+  const first = new DesktopCompatibilityWatch(options);
+  const second = new DesktopCompatibilityWatch(options);
+  await first.doctor();
+  await writeFile(artifact, "N+1\n");
+  await writeFile(metadata, JSON.stringify({ version: "N+1" }));
+  const transitionId = (await first.doctor()).transitions[0].transitionId;
+
+  await assert.rejects(first.recordTransitionProbe({
+    transitionId,
+    claimId: "wrong-evidence-class",
+    source: "passive",
+    outcomes: probeOutcomes("pass", "native-manual"),
+  }), /cannot claim native-manual/);
+
+  const outcomes = await Promise.allSettled([
+    first.recordTransitionProbe({ transitionId, claimId: "process-one", source: "passive", outcomes: probeOutcomes() }),
+    second.recordTransitionProbe({ transitionId, claimId: "process-one", source: "passive", outcomes: probeOutcomes() }),
+  ]);
+  assert.equal(outcomes.filter((item) => item.status === "fulfilled").length, 1);
+  assert.equal(outcomes.filter((item) => item.status === "rejected").length, 1);
+  assert.match(outcomes.find((item) => item.status === "rejected").reason.message, /already claimed/);
+});
+
+test("transition repair binds the exact failed probe and leaves acceptance pending after apply", async (t) => {
+  const root = await temporaryRoot(t);
+  const artifact = await createFile(join(root, "Desktop.bin"), "N\n");
+  const metadata = await createFile(join(root, "package.json"), JSON.stringify({ version: "N" }));
+  const repairRoot = join(root, "sidecar");
+  await mkdir(repairRoot);
+  const target = await createFile(join(repairRoot, "attach-profile.txt"), "old\n");
+  const watch = new DesktopCompatibilityWatch({
+    enabled: true,
+    readOnly: false,
+    applyEnabled: true,
+    stateRoot: join(root, "state"),
+    products: [{ id: "codex-desktop", kind: "artifact", candidates: [artifact], versionFiles: [metadata] }],
+  });
+  await watch.doctor();
+  await writeFile(artifact, "N+1\n");
+  await writeFile(metadata, JSON.stringify({ version: "N+1" }));
+  const transitionId = (await watch.doctor()).transitions[0].transitionId;
+  const failingOutcomes = probeOutcomes();
+  failingOutcomes.attach = { status: "fail", evidenceClass: "synthetic" };
+  const failed = await watch.recordTransitionProbe({ transitionId, claimId: "failed-probe", source: "manual", outcomes: failingOutcomes });
+  assert.equal(failed.status, "repair-needed");
+  assert.deepEqual(failed.actionable, ["attach"]);
+
+  await assert.rejects(watch.prepareTransitionRepairPlan({
+    transitionId,
+    failedProbeDigest: "0".repeat(64),
+    planId: "wrong-probe",
+    repairRoot,
+    operations: [{ relativePath: "attach-profile.txt", content: "new\n" }],
+  }), /exact failed probe digest/);
+  const plan = await watch.prepareTransitionRepairPlan({
+    transitionId,
+    failedProbeDigest: failed.probe.digest,
+    planId: "exact-transition-repair",
+    repairRoot,
+    operations: [{ relativePath: "attach-profile.txt", content: "new\n" }],
+  });
+  const otherTarget = await createFile(join(repairRoot, "protocol-profile.txt"), "old-protocol\n");
+  const competingPlan = await watch.prepareTransitionRepairPlan({
+    transitionId,
+    failedProbeDigest: failed.probe.digest,
+    planId: "competing-transition-repair",
+    repairRoot,
+    operations: [{ relativePath: "protocol-profile.txt", content: "new-protocol\n" }],
+  });
+  assert.equal(plan.transition.transitionId, transitionId);
+  assert.equal(plan.transition.failedProbeDigest, failed.probe.digest);
+  const repairOutcomes = await Promise.allSettled([plan, competingPlan].map((candidate) => watch.applyRepairPlan(candidate, {
+    applyEnabled: true,
+    approvedPlanId: candidate.planId,
+    approvedDigest: candidate.digest,
+  })));
+  assert.equal(repairOutcomes.filter((item) => item.status === "fulfilled").length, 1);
+  assert.equal(repairOutcomes.filter((item) => item.status === "rejected").length, 1);
+  assert.match(repairOutcomes.find((item) => item.status === "rejected").reason.message, /transition target is already claimed|status 'repair-applying'|status 'repair-applied-awaiting-probes'/);
+  const result = repairOutcomes.find((item) => item.status === "fulfilled").value;
+  assert.equal(result.transitionStatus, "repair-applied-awaiting-probes");
+  assert.equal([await readFile(target, "utf8"), await readFile(otherTarget, "utf8")].filter((value) => value.startsWith("new")).length, 1);
+  assert.equal((await watch.transitionState(transitionId)).status, "repair-applied-awaiting-probes");
+});
+
+test("different plans cannot concurrently claim the same repair target", async (t) => {
+  const root = await temporaryRoot(t);
+  const repairRoot = join(root, "repair");
+  await mkdir(repairRoot);
+  const target = await createFile(join(repairRoot, "managed.txt"), "before\n");
+  const watch = new DesktopCompatibilityWatch({ enabled: true, readOnly: false, applyEnabled: true, stateRoot: join(root, "state"), products: [] });
+  const plans = await Promise.all(["plan-a", "plan-b"].map((planId) => watch.prepareRepairPlan({
+    planId,
+    repairRoot,
+    operations: [{ relativePath: "managed.txt", content: `${planId}\n` }],
+  })));
+  const outcomes = await Promise.allSettled(plans.map((plan) => watch.applyRepairPlan(plan, {
+    applyEnabled: true,
+    approvedPlanId: plan.planId,
+    approvedDigest: plan.digest,
+  })));
+  assert.equal(outcomes.filter((item) => item.status === "fulfilled").length, 1);
+  assert.equal(outcomes.filter((item) => item.status === "rejected").length, 1);
+  assert.match(outcomes.find((item) => item.status === "rejected").reason.message, /already claimed|changed after planning/);
+  assert.match(await readFile(target, "utf8"), /^plan-[ab]\n$/);
 });
 
 test("Windows command wrappers are fingerprinted without shell execution", async (t) => {
@@ -389,6 +648,21 @@ test("read-only mode and changed preimages fail before mutation", async (t) => {
     approvedDigest: preview.digest,
   }), /changed after planning/);
   assert.equal(await readFile(target, "utf8"), "changed-after-preview\n");
+
+  const modeTarget = await createFile(join(repairRoot, "mode.txt"), "same-content\n");
+  await chmod(modeTarget, 0o600);
+  const modePlan = await writable.prepareRepairPlan({
+    planId: "mode-preimage",
+    repairRoot,
+    operations: [{ relativePath: "mode.txt", content: "replacement\n" }],
+  });
+  await chmod(modeTarget, 0o644);
+  await assert.rejects(writable.applyRepairPlan(modePlan, {
+    applyEnabled: true,
+    approvedPlanId: modePlan.planId,
+    approvedDigest: writable.previewRepairPlan(modePlan).digest,
+  }), /mode changed after planning/);
+  assert.equal(await readFile(modeTarget, "utf8"), "same-content\n");
 });
 
 test("repair planning enforces rollback bounds and secret-free text", async (t) => {

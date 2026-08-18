@@ -140,6 +140,18 @@ test("Threadspan state publishes a bounded Compatibility Watch transition and st
     observedAt: "2026-08-18T12:00:00.000Z",
     products: [{ id: "codex-desktop", label: "Codex Desktop", status: "detected", version: "1.2.3", path: "/private/app", authorization: "secret" }],
     changes: [{ productId: "codex-desktop", kind: "changed", current: { pathHash: "private", rawOutput: "secret" } }],
+    transitions: [{
+      transitionId: "a".repeat(64), platform: "linux", executionPlatform: "linux", product: "codex-desktop", productLabel: "Codex Desktop",
+      N: "1.2.3", "N+1": "1.2.4", status: "repair-needed", acceptanceScope: "not-accepted",
+      observedAt: "2026-08-18T12:00:00.000Z", updatedAt: "2026-08-18T12:01:00.000Z",
+      outcomes: { attach: { status: "fail", evidenceClass: "synthetic", raw: "private" }, provider: { status: "pass", evidenceClass: "synthetic", account: "secret" } },
+      oldWorkingSurface: true, sidecarRetained: true, path: "/private/app", claimId: "secret-claim",
+    }, {
+      transitionId: "b".repeat(64), platform: "win32", executionPlatform: "linux", product: "chatgpt-desktop", productLabel: "ChatGPT Desktop",
+      N: "2.0", "N+1": "2.1", status: "accepted", acceptanceScope: "synthetic",
+      observedAt: "2026-08-18T12:00:00.000Z", updatedAt: "2026-08-18T12:02:00.000Z",
+      outcomes: { settings: { status: "pass", evidenceClass: "synthetic" } }, oldWorkingSurface: true, sidecarRetained: true,
+    }],
   });
   const changed = await service.threadspanState();
   assert.deepEqual(changed.compatibility, {
@@ -148,8 +160,23 @@ test("Threadspan state publishes a bounded Compatibility Watch transition and st
     observedAt: "2026-08-18T12:00:00.000Z",
     products: [{ id: "codex-desktop", label: "Codex Desktop", status: "detected", version: "1.2.3" }],
     changes: [{ productId: "codex-desktop", kind: "changed" }],
+    transitions: [{
+      platform: "linux", executionPlatform: "linux", product: "codex-desktop", productLabel: "Codex Desktop",
+      N: "1.2.3", "N+1": "1.2.4", status: "repair-needed", acceptanceScope: "not-accepted",
+      observedAt: "2026-08-18T12:00:00.000Z", updatedAt: "2026-08-18T12:01:00.000Z",
+      outcomes: { attach: { status: "fail", evidenceClass: "synthetic" }, provider: { status: "pass", evidenceClass: "synthetic" } },
+      actionRequired: true, oldWorkingSurface: true, sidecarRetained: true,
+    }, {
+      platform: "win32", executionPlatform: "linux", product: "chatgpt-desktop", productLabel: "ChatGPT Desktop",
+      N: "2.0", "N+1": "2.1", status: "accepted", acceptanceScope: "synthetic",
+      observedAt: "2026-08-18T12:00:00.000Z", updatedAt: "2026-08-18T12:02:00.000Z",
+      outcomes: { settings: { status: "pass", evidenceClass: "synthetic" } },
+      actionRequired: false, oldWorkingSurface: true, sidecarRetained: true,
+    }],
+    actionableCount: 1,
+    diagnosticCount: 1,
   });
-  assert.doesNotMatch(JSON.stringify(changed.compatibility), /private|secret|authorization|rawOutput|pathHash/);
+  assert.doesNotMatch(JSON.stringify(changed.compatibility), /private|secret|authorization|rawOutput|pathHash|claimId/);
 
   await service.close();
   assert.equal(stopped, true);

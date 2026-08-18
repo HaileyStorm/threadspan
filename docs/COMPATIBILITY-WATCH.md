@@ -35,6 +35,26 @@ The default state location is:
 
 Files are written with private modes where the platform honors POSIX modes. Windows ACL inheritance remains an OS-level residual risk; place the state root in an owner-private directory.
 
+## Exact update transitions
+
+An observed build change creates an immutable transition identity containing exactly `platform`, `product`, `N`, and `N+1`. Both generations bind normalized version metadata, artifact name, path hash, artifact SHA-256, size, kind, and evidence type. The transition ID is the SHA-256 of that canonical identity. Same-version/different-artifact changes therefore remain distinct transitions.
+
+`accepted-observations.json` retains N as the last-known-working surface until every N+1 check passes. Ordinary `observations.json` continues to record what is currently installed; observing N+1 is not acceptance. The transition record also retains the detachable sidecar duty. Neither acceptance nor repair deletes N evidence or the sidecar.
+
+Artifact and version evidence is collected as one fail-closed unit. Command products retain the before/after executable fingerprint around `--version`. Desktop products re-fingerprint the artifact after bounded metadata collection and re-read the exact metadata file; a change to either side rejects the mixed observation.
+
+The five independent outcomes are:
+
+- `attach` — the reviewed HUD attachment surface;
+- `protocol` — the documented local protocol/read-only health contract;
+- `routing` — route and picker read-back without changing the route;
+- `provider` — already-published provider capability/readiness state without inference;
+- `settings` — stable documented or owner-reviewed Settings visibility without mutation.
+
+Each outcome is `pass`, `fail`, `not-run`, `unsupported`, or `unknown`, with a separate evidence class. Manual and passive evidence cannot impersonate one another. `synthetic` results exercise the state machine but never establish native Linux or Windows acceptance. All five must pass for N+1 to become accepted. A failure is actionable; incomplete or unknown outcomes remain diagnostics.
+
+`recordTransitionProbe()` records supplied results only after two exact N+1 rechecks. It does not call `DesktopHost.run()`, attach to Desktop, invoke provider inference, change routing, read or modify authentication, inspect entitlement, or change Settings. A product-scoped exclusive claim serializes different processes. A handled failure records `probe-interrupted`, releases its exact owned claim, and permits a fresh reviewed probe under a new exclusive claim. A real process crash can leave `probing`; that state and its claim remain blocked for reviewed reconciliation and are never cleared from PID age or guesswork.
+
 ## Manual doctor after an update
 
 Run the owner-local CLI after an app update:
@@ -58,7 +78,7 @@ Exact current Desktop behavior still needs native smoke testing on the installed
 
 ## Optional polling
 
-Polling requires separate `pollingEnabled: true` configuration. The interval is bounded (one minute to 24 hours by default), the timer is unreferenced, and ticks are single-flight: an overlapping tick is skipped. Polling only calls `doctor()` and never plans or applies repair work.
+Polling requires separate `pollingEnabled: true` configuration. The interval is bounded (one minute to 24 hours by default), the timer is unreferenced, and ticks are single-flight: an overlapping tick is skipped. Polling only calls `doctor()` and never plans or applies repair work. It may observe an exact transition, but it cannot invent any of the five passive outcomes or convert diagnostics into acceptance.
 
 ```js
 const watch = new DesktopCompatibilityWatch({
@@ -115,6 +135,8 @@ Repair is limited to exact secret-free text targets under an explicit existing r
 5. returns a deterministic plan ID and digest plus manual shutdown/restart prompts;
 6. does not change a repair target.
 
+For update repair, use `prepareTransitionRepairPlan()` instead. It additionally requires the exact `transitionId` and failed probe digest, and the durable transition must still be `repair-needed`. Apply re-fingerprints the exact N+1 product before any target mutation. Standalone `prepareRepairPlan()` remains for separately reviewed Threadspan-owned maintenance that is not claimed as N→N+1 acceptance.
+
 Preview and apply are separate:
 
 ```js
@@ -161,6 +183,8 @@ Apply proceeds only when all of these are true:
 The implementation never stops or restarts an app. It reports before/after prompts so the operator or a future documented integration can do so. After successful file replacement, manually restart the requested apps and run `doctorAfterUpdate()`.
 
 If a target write fails, only targets written by that attempt are restored in reverse order from the verified snapshot. Rollback refuses to overwrite a target changed by another actor after Threadspan's write. An incomplete restoration is reported as `rollback-incomplete`; it is never reported as success. An exclusive claim prevents concurrent or replayed apply attempts.
+
+Claims also exist at the canonical repair-target level. Different plan IDs cannot concurrently write the same target; multi-target plans acquire deterministic per-target claims. Claims bind the plan digest, transition when present, and exact preimage. A crash leaves the claim plus actionable `repair-claimed`, `repair-applying`, or `repair-recovery-required` truth for manual reconciliation rather than permitting a blind retry.
 
 The module repeatedly verifies directory and file identities around writes. Node does not expose a portable cross-platform `openat`/directory-relative rename primitive, so a hostile same-user process that can replace writable parent directories in the final pathname race remains outside this trusted-local-user boundary. Use an owner-private repair root and do not grant another process concurrent write access. Native Windows ACL/junction behavior remains a separate smoke-test gate.
 

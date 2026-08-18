@@ -819,7 +819,37 @@
   function adaptCompatibility(raw) {
     if (!isObject(raw)) return { status: "disabled", changed: false, products: [], changes: [] };
     const changeKinds = new Set(["baseline", "changed", "removed"]);
-    return {
+    const transitions = Array.isArray(raw.transitions) ? raw.transitions.slice(0, 12).flatMap((transition) => {
+      if (!isObject(transition)) return [];
+      const statuses = new Set(["probes-pending", "probing", "probe-interrupted", "repair-needed", "repair-claimed", "repair-applying", "repair-recovery-required", "repair-applied-awaiting-probes", "rollback-incomplete", "accepted"]);
+      const status = text(transition.status);
+      const platform = text(transition.platform);
+      const product = boundedText(transition.product, 80);
+      if (!statuses.has(status) || !["linux", "win32"].includes(platform) || !product) return [];
+      const outcomes = {};
+      const probeStatuses = new Set(["pass", "fail", "not-run", "unsupported", "unknown"]);
+      const evidenceClasses = new Set(["synthetic", "native-manual", "native-passive"]);
+      for (const name of ["attach", "protocol", "routing", "provider", "settings"]) {
+        const outcome = transition.outcomes?.[name];
+        if (isObject(outcome) && probeStatuses.has(text(outcome.status)) && evidenceClasses.has(text(outcome.evidenceClass))) {
+          outcomes[name] = { status: text(outcome.status), evidenceClass: text(outcome.evidenceClass) };
+        }
+      }
+      return [{
+        platform,
+        executionPlatform: ["linux", "win32"].includes(text(transition.executionPlatform)) ? text(transition.executionPlatform) : "unknown",
+        product, productLabel: boundedText(transition.productLabel, 120) || product,
+        N: boundedText(transition.N, 120) || "unknown", "N+1": boundedText(transition["N+1"], 120) || "unknown",
+        status,
+        acceptanceScope: ["not-accepted", "synthetic", "native-declared"].includes(text(transition.acceptanceScope)) ? text(transition.acceptanceScope) : "not-accepted",
+        observedAt: timestamp(transition.observedAt), updatedAt: timestamp(transition.updatedAt), outcomes,
+        actionRequired: ["probe-interrupted", "repair-needed", "repair-claimed", "repair-recovery-required", "rollback-incomplete"].includes(status),
+        oldWorkingSurface: transition.oldWorkingSurface === true,
+        sidecarRetained: transition.sidecarRetained === true,
+        repairStatus: boundedText(transition.repairStatus, 80),
+      }];
+    }) : [];
+    const result = {
       status: text(raw.status) || "unknown",
       changed: raw.changed === true,
       observedAt: text(raw.observedAt),
@@ -829,6 +859,12 @@
         return [{ productId: boundedText(change.productId, 80), kind: text(change.kind) }];
       }) : [],
     };
+    if (Array.isArray(raw.transitions)) {
+      result.transitions = transitions;
+      result.actionable = transitions.filter((item) => item.actionRequired);
+      result.diagnostics = transitions.filter((item) => !item.actionRequired);
+    }
+    return result;
   }
 
   function adaptCopyCheck(raw) {

@@ -1677,7 +1677,10 @@ function summarizeCompatibility(config, report) {
   const statuses = new Set(["ok", "attention", "error", "disabled", "unknown"]);
   const productStatuses = new Set(["detected", "missing", "error", "unknown"]);
   const changeKinds = new Set(["baseline", "changed", "removed"]);
-  return {
+  const transitions = Array.isArray(report.transitions)
+    ? report.transitions.slice(0, 12).flatMap((transition) => sanitizeCompatibilityTransition(transition))
+    : [];
+  const summary = {
     status: statuses.has(report.status) ? report.status : "unknown",
     changed: report.changed === true,
     observedAt: validIsoTimestamp(report.observedAt) ?? null,
@@ -1699,6 +1702,50 @@ function summarizeCompatibility(config, report) {
       return [{ productId, kind: change.kind }];
     }) : [],
   };
+  if (Array.isArray(report.transitions)) {
+    summary.transitions = transitions;
+    summary.actionableCount = transitions.filter((item) => item.actionRequired).length;
+    summary.diagnosticCount = transitions.filter((item) => !item.actionRequired).length;
+  }
+  return summary;
+}
+
+function sanitizeCompatibilityTransition(transition) {
+  if (!transition || typeof transition !== "object" || Array.isArray(transition)) return [];
+  const transitionId = typeof transition.transitionId === "string" && /^[0-9a-f]{64}$/.test(transition.transitionId)
+    ? transition.transitionId
+    : "";
+  const product = safeCompatibilityText(transition.product, 80);
+  const platforms = new Set(["linux", "win32"]);
+  const statuses = new Set(["probes-pending", "probing", "probe-interrupted", "repair-needed", "repair-claimed", "repair-applying", "repair-recovery-required", "repair-applied-awaiting-probes", "rollback-incomplete", "accepted"]);
+  if (!transitionId || !product || !platforms.has(transition.platform) || !statuses.has(transition.status)) return [];
+  const probeNames = ["attach", "protocol", "routing", "provider", "settings"];
+  const probeStatuses = new Set(["pass", "fail", "not-run", "unsupported", "unknown"]);
+  const evidenceClasses = new Set(["synthetic", "native-manual", "native-passive"]);
+  const outcomes = {};
+  for (const name of probeNames) {
+    const outcome = transition.outcomes?.[name];
+    if (!outcome || !probeStatuses.has(outcome.status) || !evidenceClasses.has(outcome.evidenceClass)) continue;
+    outcomes[name] = { status: outcome.status, evidenceClass: outcome.evidenceClass };
+  }
+  const actionRequired = new Set(["probe-interrupted", "repair-needed", "repair-claimed", "repair-recovery-required", "rollback-incomplete"]).has(transition.status);
+  return [{
+    platform: transition.platform,
+    executionPlatform: platforms.has(transition.executionPlatform) ? transition.executionPlatform : "unknown",
+    product,
+    productLabel: safeCompatibilityText(transition.productLabel, 120) || product,
+    N: safeCompatibilityText(transition.N, 120) || "unknown",
+    "N+1": safeCompatibilityText(transition["N+1"], 120) || "unknown",
+    status: transition.status,
+    acceptanceScope: new Set(["not-accepted", "synthetic", "native-declared"]).has(transition.acceptanceScope) ? transition.acceptanceScope : "not-accepted",
+    observedAt: validIsoTimestamp(transition.observedAt) ?? null,
+    updatedAt: validIsoTimestamp(transition.updatedAt) ?? null,
+    outcomes,
+    actionRequired,
+    oldWorkingSurface: transition.oldWorkingSurface === true,
+    sidecarRetained: transition.sidecarRetained === true,
+    ...(safeCompatibilityText(transition.repairStatus, 80) ? { repairStatus: safeCompatibilityText(transition.repairStatus, 80) } : {}),
+  }];
 }
 
 function safeCompatibilityText(value, maximum) {

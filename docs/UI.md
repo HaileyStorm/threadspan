@@ -33,6 +33,8 @@ The larger sidecar can still be:
 
 If attachment is unavailable after an app update, Compatibility Watch keeps the daemon and detachable sidecar usable while the exact build is rechecked.
 
+The collapsed **Compatibility** disclosure shows current products plus two compact transition queues: **Needs review** for failed, interrupted, claimed/recovery-required, or rollback-incomplete exact transitions, and **Diagnostics** for pending or accepted evidence. Rows show only product, platform, N→N+1 versions, bounded status, and evidence scope. Claim IDs, artifact and path hashes, raw probe details, authentication, account state, and target contents remain server-side. A synthetic pass is visibly labeled “synthetic only” and is not native host acceptance.
+
 ## Routing-gate layout
 
 The visual system is a live switchyard, not a dashboard:

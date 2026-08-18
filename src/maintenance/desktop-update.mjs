@@ -8,12 +8,21 @@ import { runCapturedProcess } from "../core/managed-process.mjs";
 
 const SCHEMA_VERSION = 1;
 const OBSERVATION_FILE = "observations.json";
+const ACCEPTED_OBSERVATION_FILE = "accepted-observations.json";
+const TRANSITION_INDEX_FILE = "transition-index.json";
+const TRANSITION_DIRECTORY = "transitions";
+const CLAIM_DIRECTORY = "claims";
 const ROLLBACK_DIRECTORY = "rollbacks";
 const PLAN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const PRODUCT_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const SECRET_PATTERN = /-----BEGIN [^-]*PRIVATE KEY-----|\bbearer\s+[A-Za-z0-9._~+\/-]{8,}|(?:^|[^A-Za-z0-9])[_A-Za-z0-9.-]*(?:api[_-]?key|private[_-]?key|access[_-]?key|token|secret|password|authorization|cookie)\s*["']?\s*[:=]/im;
 const CONTROL_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+const PROBE_NAMES = Object.freeze(["attach", "protocol", "routing", "provider", "settings"]);
+const PROBE_STATUSES = new Set(["pass", "fail", "not-run", "unsupported", "unknown"]);
+const PROBE_SOURCES = new Set(["manual", "passive"]);
+const EVIDENCE_CLASSES = new Set(["synthetic", "native-manual", "native-passive"]);
+const TRANSITION_BINDING = Symbol("desktop-transition-binding");
 
 export const DEFAULT_DESKTOP_UPDATE_LIMITS = Object.freeze({
   maxProducts: 8,
@@ -295,10 +304,55 @@ export class DesktopCompatibilityWatch {
     const stateRoot = await canonicalDirectoryRoot(this.stateRoot, { create: true });
     const statePath = boundedPath(stateRoot, OBSERVATION_FILE);
     const previous = await readOptionalJson(statePath, this.limits.maxStateBytes);
+    const acceptedPath = boundedPath(stateRoot, ACCEPTED_OBSERVATION_FILE);
+    const accepted = await readOptionalJson(acceptedPath, this.limits.maxStateBytes);
+    if (previous && (previous.schemaVersion !== SCHEMA_VERSION || previous.platform !== this.platform)) {
+      throw new Error("Observed compatibility state does not match this watcher platform/schema");
+    }
+    if (accepted && (accepted.schemaVersion !== SCHEMA_VERSION || accepted.platform !== this.platform)) {
+      throw new Error("Accepted compatibility state does not match this watcher platform/schema");
+    }
     const products = [];
     for (const product of this.products) products.push(await this.#inspectProduct(product));
     const observedAt = new Date(this.now()).toISOString();
     const changes = compareObservations(previous?.products, products);
+    let acceptedState = accepted;
+    let baselineCreated = false;
+    const transitions = [];
+    if (!acceptedState) {
+      const baselineOwner = sha256Text(stableStringify({ platform: this.platform, observedAt, products: products.map(persistedObservation) }));
+      const baseline = await withStateFileClaim(stateRoot, "accepted-observations", baselineOwner, this.limits, async () => {
+        const existing = await readOptionalJson(acceptedPath, this.limits.maxStateBytes);
+        if (existing) return { state: existing, created: false };
+        const state = {
+          schemaVersion: SCHEMA_VERSION,
+          acceptedAt: observedAt,
+          platform: this.platform,
+          products: products.map(persistedObservation),
+        };
+        await atomicJsonWrite(acceptedPath, state, 0o600);
+        return { state, created: true };
+      });
+      acceptedState = baseline.state;
+      baselineCreated = baseline.created;
+      if (acceptedState.schemaVersion !== SCHEMA_VERSION || acceptedState.platform !== this.platform) {
+        throw new Error("Accepted compatibility state does not match this watcher platform/schema");
+      }
+    }
+    if (!baselineCreated) {
+      const acceptedProducts = Array.isArray(acceptedState?.products) ? acceptedState.products : [];
+      for (const current of products) {
+        const prior = acceptedProducts.find((item) => item?.id === current.id);
+        if (!isExactDetectedObservation(prior) || !isExactDetectedObservation(current)) continue;
+        if (sameExactObservation(prior, current)) continue;
+        transitions.push(transitionIndexEntry(await persistObservedTransition(stateRoot, {
+          platform: this.platform,
+          product: current.id,
+          N: exactObservationIdentity(prior),
+          "N+1": exactObservationIdentity(current),
+        }, current.label, observedAt, this.limits)));
+      }
+    }
     const state = {
       schemaVersion: SCHEMA_VERSION,
       observedAt,
@@ -312,8 +366,10 @@ export class DesktopCompatibilityWatch {
       reason: options.reason ?? "manual",
       observedAt,
       platform: this.platform,
+      executionPlatform: process.platform,
       products,
       changes,
+      transitions: transitions.length > 0 ? transitions : await readTransitionIndex(stateRoot, this.limits),
       changed: changes.length > 0,
       networkPolicy: "threadspan-does-not-request-network",
       processNetworkIsolation: "not-enforced",
@@ -384,16 +440,158 @@ export class DesktopCompatibilityWatch {
     if (!artifactPath) return missingObservation(product);
     const artifact = await fingerprintFile(artifactPath, this.limits.maxArtifactBytes);
     let version;
+    let versionIdentity;
     for (const candidate of product.versionFiles) {
       if (!await isSafeExistingRegularFile(candidate)) continue;
       const raw = await readBoundedFile(candidate, this.limits.maxMetadataBytes);
       const metadata = JSON.parse(UTF8_DECODER.decode(raw));
       if (typeof metadata?.version === "string" && metadata.version.trim()) {
         version = normalizeVersion(metadata.version);
+        versionIdentity = { path: candidate, sha256: sha256Bytes(raw), bytes: raw.length };
         break;
       }
     }
-    return detectedObservation(product, artifactPath, artifact, version, version ? "artifact+metadata" : "artifact");
+    const after = await fingerprintFile(artifactPath, this.limits.maxArtifactBytes);
+    if (after.sha256 !== artifact.sha256 || after.bytes !== artifact.bytes) {
+      throw new Error("Desktop artifact changed while version metadata was inspected");
+    }
+    if (versionIdentity) {
+      const raw = await readBoundedFile(versionIdentity.path, this.limits.maxMetadataBytes);
+      if (sha256Bytes(raw) !== versionIdentity.sha256 || raw.length !== versionIdentity.bytes) {
+        throw new Error("Desktop version metadata changed during inspection");
+      }
+    }
+    return detectedObservation(product, artifactPath, after, version, version ? "artifact+metadata" : "artifact");
+  }
+
+  /**
+   * Record externally performed, non-mutating compatibility checks for one exact N -> N+1 artifact transition.
+   * This method only re-fingerprints the configured product and writes Threadspan-local evidence. It never
+   * attaches to Desktop, invokes a provider, changes routing/settings/auth, or accepts inferred outcomes.
+   * @param {{transitionId:string, claimId:string, source:"manual"|"passive", outcomes:Record<string,{status:string,evidenceClass:string,summary?:string}>}} options
+   */
+  async recordTransitionProbe(options) {
+    if (!this.enabled) throw new Error("Desktop Compatibility Watch is disabled");
+    const transitionId = normalizeDigest(options?.transitionId, "transitionId");
+    const claimId = normalizePlanId(options?.claimId);
+    const source = normalizeProbeSource(options?.source);
+    const outcomes = normalizeProbeOutcomes(options?.outcomes, source);
+    const probeDigest = sha256Text(stableStringify({ transitionId, source, outcomes }));
+    const stateRoot = await canonicalDirectoryRoot(this.stateRoot, { create: false });
+    let transition = await readTransitionRecord(stateRoot, transitionId, this.limits);
+    validateTransitionRecord(transition, transitionId);
+    if (transition.identity.platform !== this.platform) throw new Error("Transition platform does not match this watcher");
+    if (transition.status === "accepted") {
+      if (transition.probe?.digest !== probeDigest) throw new Error("Accepted transition cannot be replaced by different probe evidence");
+      await acceptTransitionObservation(stateRoot, transition, this.limits, this.now);
+      await updateTransitionIndex(stateRoot, transition, this.limits);
+      const completedClaim = transitionClaimPath(stateRoot, transition.targetKey);
+      if (await safeLstat(completedClaim)) await releaseExactClaim(completedClaim, transitionId, claimId, this.limits);
+      return structuredClone(transition);
+    }
+    if (!new Set(["probes-pending", "probe-interrupted", "repair-needed", "repair-applied-awaiting-probes"]).has(transition.status)) {
+      throw new Error(`Transition cannot record probe evidence from status '${transition.status}'`);
+    }
+
+    const claimPath = transitionClaimPath(stateRoot, transition.targetKey);
+    await acquireTransitionClaim(claimPath, { transitionId, claimId, probeDigest, claimedAt: new Date(this.now()).toISOString() }, this.limits);
+    const attempt = Number.isSafeInteger(transition.attempt) ? transition.attempt + 1 : 1;
+    transition = {
+      ...transition,
+      status: "probing",
+      updatedAt: new Date(this.now()).toISOString(),
+      attempt,
+      retryPolicy: "blocked-while-claim-in-flight",
+      probe: { source, outcomes, digest: probeDigest, startedAt: new Date(this.now()).toISOString() },
+    };
+    await writeTransitionRecord(stateRoot, transition, this.limits);
+    await updateTransitionIndex(stateRoot, transition, this.limits);
+
+    let acceptanceCommitted = false;
+    try {
+      const product = this.products.find((item) => item.id === transition.identity.product);
+      if (!product) throw new Error(`Transition product '${transition.identity.product}' is not configured`);
+      const before = await this.#inspectProduct(product);
+      assertObservationMatchesIdentity(before, transition.identity["N+1"]);
+      const after = await this.#inspectProduct(product);
+      assertObservationMatchesIdentity(after, transition.identity["N+1"]);
+
+      const actionable = PROBE_NAMES.filter((name) => outcomes[name].status === "fail");
+      const diagnostics = PROBE_NAMES.filter((name) => outcomes[name].status !== "pass" && outcomes[name].status !== "fail");
+      const allPassed = actionable.length === 0 && diagnostics.length === 0;
+      transition = {
+        ...transition,
+        status: allPassed ? "accepted" : actionable.length > 0 ? "repair-needed" : "probes-pending",
+        updatedAt: new Date(this.now()).toISOString(),
+        retryPolicy: allPassed ? "terminal" : actionable.length > 0 ? "repair-or-new-reviewed-probe" : "complete-missing-probes",
+        actionable,
+        diagnostics,
+        probe: { ...transition.probe, completedAt: new Date(this.now()).toISOString() },
+        acceptanceScope: allPassed && transition.identity.platform === this.platform && this.platform === process.platform
+          && PROBE_NAMES.every((name) => outcomes[name].evidenceClass === (source === "manual" ? "native-manual" : "native-passive"))
+          ? "native-declared"
+          : allPassed ? "synthetic" : "not-accepted",
+      };
+      await writeTransitionRecord(stateRoot, transition, this.limits);
+      if (allPassed) {
+        await acceptTransitionObservation(stateRoot, transition, this.limits, this.now);
+        acceptanceCommitted = true;
+      }
+      await releaseExactClaim(claimPath, transitionId, claimId, this.limits);
+      await updateTransitionIndex(stateRoot, transition, this.limits);
+      return structuredClone(transition);
+    } catch (error) {
+      let claimReleased = false;
+      if (!acceptanceCommitted) {
+        claimReleased = await releaseExactClaim(claimPath, transitionId, claimId, this.limits).then(() => true, () => false);
+      }
+      transition = {
+        ...transition,
+        status: acceptanceCommitted ? "accepted" : "probe-interrupted",
+        updatedAt: new Date(this.now()).toISOString(),
+        retryPolicy: acceptanceCommitted
+          ? "accepted-claim-reconciliation-required"
+          : claimReleased ? "retry-with-new-exclusive-claim" : "claim-reconciliation-required",
+        diagnostic: classifyProbeError(error),
+      };
+      await writeTransitionRecord(stateRoot, transition, this.limits).catch(() => undefined);
+      await updateTransitionIndex(stateRoot, transition, this.limits).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** Read one durable transition without probing or mutating product/app state. */
+  async transitionState(transitionId) {
+    if (!this.enabled) throw new Error("Desktop Compatibility Watch is disabled");
+    const normalized = normalizeDigest(transitionId, "transitionId");
+    const stateRoot = await canonicalDirectoryRoot(this.stateRoot, { create: false });
+    const transition = await readTransitionRecord(stateRoot, normalized, this.limits);
+    validateTransitionRecord(transition, normalized);
+    return structuredClone(transition);
+  }
+
+  /**
+   * Prepare a repair bound to the exact failing transition and failed probe digest.
+   * The older standalone planner remains available for non-transition Threadspan-owned maintenance.
+   */
+  async prepareTransitionRepairPlan(options) {
+    if (!this.enabled) throw new Error("Desktop Compatibility Watch is disabled");
+    const transitionId = normalizeDigest(options?.transitionId, "transitionId");
+    const failedProbeDigest = normalizeDigest(options?.failedProbeDigest, "failedProbeDigest");
+    const stateRoot = await canonicalDirectoryRoot(this.stateRoot, { create: false });
+    const transition = await readTransitionRecord(stateRoot, transitionId, this.limits);
+    validateTransitionRecord(transition, transitionId);
+    if (transition.status !== "repair-needed") throw new Error(`Transition repair requires repair-needed status, not '${transition.status}'`);
+    if (transition.probe?.digest !== failedProbeDigest) throw new Error("Transition repair requires the exact failed probe digest");
+    return this.prepareRepairPlan({
+      ...options,
+      [TRANSITION_BINDING]: {
+        transitionId,
+        transitionDigest: transition.identityDigest,
+        failedProbeDigest,
+        targetKey: transition.targetKey,
+      },
+    });
   }
 
   /**
@@ -409,6 +607,7 @@ export class DesktopCompatibilityWatch {
    */
   async prepareRepairPlan(options) {
     if (!this.enabled) throw new Error("Desktop Compatibility Watch is disabled");
+    const transitionBinding = options?.[TRANSITION_BINDING];
     const planId = normalizePlanId(options?.planId);
     const stateRoot = await canonicalDirectoryRoot(this.stateRoot, { create: true });
     const repairRoot = await canonicalDirectoryRoot(options?.repairRoot, { create: false });
@@ -461,6 +660,7 @@ export class DesktopCompatibilityWatch {
         repairRoot,
         rollbackSnapshot: relative(stateRoot, snapshotRoot),
         operations: operations.map((operation, index) => ({ ...operation, ...entries[index] })),
+        ...(transitionBinding ? { transition: structuredClone(transitionBinding) } : {}),
         shutdownProducts,
         restartProducts,
         prompts: repairPrompts(shutdownProducts, restartProducts),
@@ -474,6 +674,7 @@ export class DesktopCompatibilityWatch {
         status: "prepared",
         repairRoot,
         entries,
+        ...(transitionBinding ? { transition: structuredClone(transitionBinding) } : {}),
         totalBytes: rollbackBytes,
       };
       await atomicJsonWrite(boundedPath(snapshotRoot, "manifest.json"), manifest, 0o600);
@@ -532,6 +733,19 @@ export class DesktopCompatibilityWatch {
     let manifest = await readRequiredJson(manifestPath, this.limits.maxStateBytes);
     validateRollbackManifest(manifest, plan);
 
+    let boundTransition;
+    if (plan.transition) {
+      boundTransition = await readTransitionRecord(stateRoot, plan.transition.transitionId, this.limits);
+      validateTransitionBinding(plan.transition, boundTransition);
+      if (boundTransition.identity.platform !== this.platform) throw new Error("Bound transition platform does not match this watcher");
+      if (boundTransition.status !== "repair-needed") {
+        throw new Error(`Bound transition cannot apply from status '${boundTransition.status}'`);
+      }
+      const product = this.products.find((item) => item.id === boundTransition.identity.product);
+      if (!product) throw new Error(`Transition product '${boundTransition.identity.product}' is not configured`);
+      assertObservationMatchesIdentity(await this.#inspectProduct(product), boundTransition.identity["N+1"]);
+    }
+
     const targetGuards = new Map();
     for (const operation of plan.operations) {
       const target = boundedPath(repairRoot, operation.relativePath);
@@ -541,29 +755,108 @@ export class DesktopCompatibilityWatch {
     }
     await verifyRollbackBackups(snapshotRoot, plan.operations);
 
+    let transitionOperationClaim;
+    if (boundTransition) {
+      transitionOperationClaim = {
+        path: transitionClaimPath(stateRoot, boundTransition.targetKey),
+        claimId: `repair-${plan.planId}`,
+      };
+      await acquireTransitionClaim(transitionOperationClaim.path, {
+        transitionId: boundTransition.transitionId,
+        claimId: transitionOperationClaim.claimId,
+        probeDigest: plan.transition.failedProbeDigest,
+        claimedAt: new Date(this.now()).toISOString(),
+      }, this.limits);
+      try {
+        boundTransition = await readTransitionRecord(stateRoot, plan.transition.transitionId, this.limits);
+        validateTransitionBinding(plan.transition, boundTransition);
+        if (boundTransition.status !== "repair-needed") throw new Error(`Bound transition cannot apply from status '${boundTransition.status}'`);
+        const product = this.products.find((item) => item.id === boundTransition.identity.product);
+        if (!product) throw new Error(`Transition product '${boundTransition.identity.product}' is not configured`);
+        assertObservationMatchesIdentity(await this.#inspectProduct(product), boundTransition.identity["N+1"]);
+        boundTransition = {
+          ...boundTransition,
+          status: "repair-claimed",
+          updatedAt: new Date(this.now()).toISOString(),
+          repair: { planId: plan.planId, planDigest: plan.digest, status: "claimed" },
+        };
+        await writeTransitionRecord(stateRoot, boundTransition, this.limits);
+        await updateTransitionIndex(stateRoot, boundTransition, this.limits);
+      } catch (error) {
+        await releaseExactClaim(transitionOperationClaim.path, boundTransition.transitionId, transitionOperationClaim.claimId, this.limits).catch(() => undefined);
+        throw error;
+      }
+    }
+
+    const targetClaims = [];
+    try {
+      for (const operation of [...plan.operations].sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+        const claimPath = repairTargetClaimPath(stateRoot, repairRoot, operation.relativePath, this.platform);
+        const claim = await acquireRepairTargetClaim(claimPath, plan, operation, this.limits, this.now);
+        targetClaims.push({ path: claimPath, created: claim.created });
+      }
+    } catch (error) {
+      for (const claim of targetClaims.filter((item) => item.created)) {
+        await releaseRepairTargetClaim(claim.path, plan, this.limits).catch(() => undefined);
+      }
+      if (transitionOperationClaim) {
+        boundTransition = { ...boundTransition, status: "repair-needed", updatedAt: new Date(this.now()).toISOString(), repair: { planId: plan.planId, planDigest: plan.digest, status: "target-claim-failed" } };
+        await writeTransitionRecord(stateRoot, boundTransition, this.limits).catch(() => undefined);
+        await updateTransitionIndex(stateRoot, boundTransition, this.limits).catch(() => undefined);
+        await releaseExactClaim(transitionOperationClaim.path, boundTransition.transitionId, transitionOperationClaim.claimId, this.limits).catch(() => undefined);
+      }
+      throw error;
+    }
+
     const claimPath = boundedPath(snapshotRoot, "apply.claim.json");
     await createExclusiveJson(claimPath, {
       schemaVersion: SCHEMA_VERSION,
       planId: plan.planId,
       planDigest: plan.digest,
       claimedAt: new Date(this.now()).toISOString(),
-    }, 0o600).catch((error) => {
+    }, 0o600).catch(async (error) => {
+      if (transitionOperationClaim) {
+        for (const claim of targetClaims.filter((item) => item.created)) {
+          await releaseRepairTargetClaim(claim.path, plan, this.limits).catch(() => undefined);
+        }
+        boundTransition = { ...boundTransition, status: "repair-needed", updatedAt: new Date(this.now()).toISOString(), repair: { planId: plan.planId, planDigest: plan.digest, status: "apply-claim-failed" } };
+        await writeTransitionRecord(stateRoot, boundTransition, this.limits).catch(() => undefined);
+        await updateTransitionIndex(stateRoot, boundTransition, this.limits).catch(() => undefined);
+        await releaseExactClaim(transitionOperationClaim.path, boundTransition.transitionId, transitionOperationClaim.claimId, this.limits).catch(() => undefined);
+      }
       if (error?.code === "EEXIST") throw new Error(`Repair plan '${plan.planId}' is already claimed for apply`);
       throw error;
     });
 
-    manifest = await readRequiredJson(manifestPath, this.limits.maxStateBytes);
-    validateRollbackManifest(manifest, plan);
-    for (const operation of plan.operations) {
-      const target = boundedPath(repairRoot, operation.relativePath);
-      await assertTargetGuard(targetGuards.get(operation.relativePath));
-      await assertTargetMatchesPlan(target, operation);
-    }
-    await verifyRollbackBackups(snapshotRoot, plan.operations);
+    try {
+      manifest = await readRequiredJson(manifestPath, this.limits.maxStateBytes);
+      validateRollbackManifest(manifest, plan);
+      for (const operation of plan.operations) {
+        const target = boundedPath(repairRoot, operation.relativePath);
+        await assertTargetGuard(targetGuards.get(operation.relativePath));
+        await assertTargetMatchesPlan(target, operation);
+      }
+      await verifyRollbackBackups(snapshotRoot, plan.operations);
 
-    manifest.status = "applying";
-    manifest.applyStartedAt = new Date(this.now()).toISOString();
-    await atomicJsonWrite(manifestPath, manifest, 0o600);
+      if (boundTransition) {
+        boundTransition = { ...boundTransition, status: "repair-applying", updatedAt: new Date(this.now()).toISOString(), repair: { planId: plan.planId, planDigest: plan.digest, status: "applying" } };
+        await writeTransitionRecord(stateRoot, boundTransition, this.limits);
+        await updateTransitionIndex(stateRoot, boundTransition, this.limits);
+      }
+      manifest.status = "applying";
+      manifest.applyStartedAt = new Date(this.now()).toISOString();
+      await atomicJsonWrite(manifestPath, manifest, 0o600);
+    } catch (error) {
+      manifest.status = "recovery-required";
+      manifest.error = sanitizePersistedError(error, [repairRoot, stateRoot, snapshotRoot]);
+      await atomicJsonWrite(manifestPath, manifest, 0o600).catch(() => undefined);
+      if (boundTransition) {
+        boundTransition = { ...boundTransition, status: "repair-recovery-required", updatedAt: new Date(this.now()).toISOString(), repair: { planId: plan.planId, planDigest: plan.digest, status: "recovery-required" } };
+        await writeTransitionRecord(stateRoot, boundTransition, this.limits).catch(() => undefined);
+        await updateTransitionIndex(stateRoot, boundTransition, this.limits).catch(() => undefined);
+      }
+      throw error;
+    }
     const written = [];
     try {
       for (const operation of plan.operations) {
@@ -578,12 +871,33 @@ export class DesktopCompatibilityWatch {
       manifest.status = "applied";
       manifest.appliedAt = new Date(this.now()).toISOString();
       await atomicJsonWrite(manifestPath, manifest, 0o600);
+      if (boundTransition) {
+        boundTransition = { ...boundTransition, status: "repair-applied-awaiting-probes", updatedAt: new Date(this.now()).toISOString(), repair: { ...boundTransition.repair, status: "applied", appliedAt: manifest.appliedAt } };
+        await writeTransitionRecord(stateRoot, boundTransition, this.limits);
+        await updateTransitionIndex(stateRoot, boundTransition, this.limits);
+      }
+      for (const claim of targetClaims) await releaseRepairTargetClaim(claim.path, plan, this.limits);
+      if (transitionOperationClaim) await releaseExactClaim(transitionOperationClaim.path, boundTransition.transitionId, transitionOperationClaim.claimId, this.limits);
     } catch (error) {
       const rollbackErrors = await restoreWrittenTargets(repairRoot, snapshotRoot, written);
       manifest.status = rollbackErrors.length === 0 ? "rolled-back-after-error" : "rollback-incomplete";
       manifest.error = sanitizePersistedError(error, [repairRoot, stateRoot, snapshotRoot]);
       if (rollbackErrors.length > 0) manifest.rollbackErrors = rollbackErrors;
       await atomicJsonWrite(manifestPath, manifest, 0o600).catch(() => undefined);
+      if (boundTransition) {
+        boundTransition = {
+          ...boundTransition,
+          status: rollbackErrors.length === 0 ? "repair-needed" : "rollback-incomplete",
+          updatedAt: new Date(this.now()).toISOString(),
+          repair: { ...boundTransition.repair, status: manifest.status },
+        };
+        await writeTransitionRecord(stateRoot, boundTransition, this.limits).catch(() => undefined);
+        await updateTransitionIndex(stateRoot, boundTransition, this.limits).catch(() => undefined);
+      }
+      if (rollbackErrors.length === 0) {
+        for (const claim of targetClaims) await releaseRepairTargetClaim(claim.path, plan, this.limits).catch(() => undefined);
+        if (transitionOperationClaim) await releaseExactClaim(transitionOperationClaim.path, boundTransition.transitionId, transitionOperationClaim.claimId, this.limits).catch(() => undefined);
+      }
       if (rollbackErrors.length > 0) {
         throw new AggregateError([error], `Repair failed and rollback was incomplete for: ${rollbackErrors.map((item) => item.relativePath).join(", ")}`);
       }
@@ -596,6 +910,7 @@ export class DesktopCompatibilityWatch {
       digest: plan.digest,
       written: written.map((operation) => operation.relativePath),
       rollbackSnapshot: plan.rollbackSnapshot,
+      ...(plan.transition ? { transitionId: plan.transition.transitionId, transitionStatus: "repair-applied-awaiting-probes" } : {}),
       prompts: structuredClone(plan.prompts),
       appLifecycleActionsPerformed: false,
       nextAction: "Manually restart requested apps, then run doctorAfterUpdate().",
@@ -738,6 +1053,324 @@ function compareObservations(previous, current) {
   return changes;
 }
 
+function isExactDetectedObservation(value) {
+  return value?.status === "detected"
+    && typeof value.id === "string"
+    && /^[0-9a-f]{64}$/.test(value.artifactPathSha256 ?? "")
+    && /^[0-9a-f]{64}$/.test(value.artifactSha256 ?? "")
+    && Number.isSafeInteger(value.artifactBytes)
+    && value.artifactBytes >= 0;
+}
+
+function exactObservationIdentity(observation) {
+  if (!isExactDetectedObservation(observation)) throw new Error("Exact transition identity requires a detected artifact");
+  return {
+    version: normalizeVersion(observation.version) ?? null,
+    kind: observation.kind,
+    artifactName: observation.artifactName,
+    artifactPathSha256: observation.artifactPathSha256,
+    artifactSha256: observation.artifactSha256,
+    artifactBytes: observation.artifactBytes,
+    evidence: observation.evidence,
+  };
+}
+
+function sameExactObservation(observation, identityOrObservation) {
+  const right = Object.hasOwn(identityOrObservation ?? {}, "artifactPathSha256") && !Object.hasOwn(identityOrObservation ?? {}, "status")
+    ? identityOrObservation
+    : exactObservationIdentity(identityOrObservation);
+  return stableStringify(exactObservationIdentity(observation)) === stableStringify(right);
+}
+
+function assertObservationMatchesIdentity(observation, identity) {
+  if (!isExactDetectedObservation(observation) || !sameExactObservation(observation, identity)) {
+    throw new Error("Exact N+1 artifact/version identity changed; refusing transition operation");
+  }
+}
+
+async function persistObservedTransition(stateRoot, identity, productLabel, observedAt, limits) {
+  const identityDigest = sha256Text(stableStringify(identity));
+  const transitionId = identityDigest;
+  const targetKey = sha256Text(`${identity.platform}\0${identity.product}`);
+  const transition = {
+    schemaVersion: SCHEMA_VERSION,
+    kind: "desktop-compatibility-transition",
+    transitionId,
+    identityDigest,
+    targetKey,
+    identity,
+    productLabel: normalizeDisplayText(productLabel ?? identity.product, 120, "product label"),
+    status: "probes-pending",
+    acceptanceScope: "not-accepted",
+    actionable: [],
+    diagnostics: [...PROBE_NAMES],
+    observedAt,
+    updatedAt: observedAt,
+    preservation: { N: "last-known-working", sidecar: "retained" },
+  };
+  const path = transitionRecordPath(stateRoot, transitionId);
+  try {
+    await createExclusiveJson(path, transition, 0o600);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    const existing = await readRequiredJson(path, limits.maxStateBytes);
+    validateTransitionRecord(existing, transitionId);
+    if (existing.identityDigest !== identityDigest) throw new Error("Transition identity collision");
+    await updateTransitionIndex(stateRoot, existing, limits);
+    return existing;
+  }
+  await updateTransitionIndex(stateRoot, transition, limits);
+  return transition;
+}
+
+function transitionRecordPath(stateRoot, transitionId) {
+  return boundedPath(stateRoot, join(TRANSITION_DIRECTORY, normalizeDigest(transitionId, "transitionId"), "transition.json"));
+}
+
+async function readTransitionRecord(stateRoot, transitionId, limits) {
+  return readRequiredJson(transitionRecordPath(stateRoot, transitionId), limits.maxStateBytes);
+}
+
+async function writeTransitionRecord(stateRoot, transition, limits) {
+  validateTransitionRecord(transition, transition.transitionId);
+  const text = JSON.stringify(transition);
+  if (Buffer.byteLength(text) > limits.maxStateBytes) throw new Error("Transition record exceeds maxStateBytes");
+  await atomicJsonWrite(transitionRecordPath(stateRoot, transition.transitionId), transition, 0o600);
+}
+
+function validateTransitionRecord(transition, transitionId) {
+  if (!transition || transition.schemaVersion !== SCHEMA_VERSION || transition.kind !== "desktop-compatibility-transition") {
+    throw new Error("Invalid Desktop Compatibility transition record");
+  }
+  const expected = normalizeDigest(transitionId, "transitionId");
+  if (transition.transitionId !== expected || transition.identityDigest !== expected) throw new Error("Transition identity mismatch");
+  if (!transition.identity || !new Set(["linux", "win32"]).has(transition.identity.platform)) throw new Error("Invalid transition platform");
+  if (!PRODUCT_ID_PATTERN.test(transition.identity.product ?? "")) throw new Error("Invalid transition product");
+  normalizeDisplayText(transition.productLabel, 120, "transition product label");
+  for (const generation of ["N", "N+1"]) validateExactIdentity(transition.identity[generation]);
+  if (sha256Text(stableStringify(transition.identity)) !== expected) throw new Error("Transition identity digest mismatch");
+  if (transition.targetKey !== sha256Text(`${transition.identity.platform}\0${transition.identity.product}`)) throw new Error("Transition target mismatch");
+  const statuses = new Set(["probes-pending", "probing", "probe-interrupted", "repair-needed", "repair-claimed", "repair-applying", "repair-recovery-required", "repair-applied-awaiting-probes", "rollback-incomplete", "accepted"]);
+  if (!statuses.has(transition.status)) throw new Error("Invalid transition status");
+  if (!new Set(["not-accepted", "synthetic", "native-declared"]).has(transition.acceptanceScope)) throw new Error("Invalid transition acceptance scope");
+  for (const field of ["actionable", "diagnostics"]) {
+    if (!Array.isArray(transition[field]) || transition[field].some((name) => !PROBE_NAMES.includes(name))) throw new Error(`Invalid transition ${field}`);
+  }
+  if (transition.probe !== undefined) {
+    const source = normalizeProbeSource(transition.probe.source);
+    const outcomes = normalizeProbeOutcomes(transition.probe.outcomes, source);
+    const digest = sha256Text(stableStringify({ transitionId: expected, source, outcomes }));
+    if (transition.probe.digest !== digest) throw new Error("Transition probe digest mismatch");
+  }
+  if (transition.status === "accepted" && (!transition.probe || PROBE_NAMES.some((name) => transition.probe.outcomes[name].status !== "pass"))) {
+    throw new Error("Accepted transition lacks complete passing probes");
+  }
+}
+
+function validateExactIdentity(identity) {
+  if (!identity || !new Set(["command", "artifact"]).has(identity.kind)) throw new Error("Invalid exact artifact identity");
+  if (identity.version !== null && (typeof identity.version !== "string" || identity.version.length > 256)) throw new Error("Invalid exact version identity");
+  if (!/^[0-9a-f]{64}$/.test(identity.artifactPathSha256 ?? "") || !/^[0-9a-f]{64}$/.test(identity.artifactSha256 ?? "")) {
+    throw new Error("Invalid exact artifact digest");
+  }
+  if (!Number.isSafeInteger(identity.artifactBytes) || identity.artifactBytes < 0) throw new Error("Invalid exact artifact size");
+}
+
+function transitionIndexEntry(transition) {
+  const outcomes = {};
+  for (const name of PROBE_NAMES) {
+    const outcome = transition.probe?.outcomes?.[name];
+    if (outcome) outcomes[name] = { status: outcome.status, evidenceClass: outcome.evidenceClass };
+  }
+  return {
+    transitionId: transition.transitionId,
+    platform: transition.identity.platform,
+    executionPlatform: process.platform,
+    product: transition.identity.product,
+    productLabel: transition.productLabel,
+    N: transition.identity.N.version,
+    "N+1": transition.identity["N+1"].version,
+    status: transition.status,
+    acceptanceScope: transition.acceptanceScope,
+    observedAt: transition.observedAt,
+    updatedAt: transition.updatedAt,
+    outcomes,
+    actionable: Array.isArray(transition.actionable) ? transition.actionable.slice(0, PROBE_NAMES.length) : [],
+    diagnostics: Array.isArray(transition.diagnostics) ? transition.diagnostics.slice(0, PROBE_NAMES.length) : [],
+    repairStatus: transition.repair?.status,
+    oldWorkingSurface: true,
+    sidecarRetained: true,
+  };
+}
+
+async function updateTransitionIndex(stateRoot, transition, limits) {
+  await withStateFileClaim(stateRoot, "transition-index", transition.transitionId, limits, async () => {
+    const path = boundedPath(stateRoot, TRANSITION_INDEX_FILE);
+    const current = await readOptionalJson(path, limits.maxStateBytes);
+    const entries = Array.isArray(current?.transitions) ? current.transitions : [];
+    const next = [transitionIndexEntry(transition), ...entries.filter((entry) => entry?.transitionId !== transition.transitionId)]
+      .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)))
+      .slice(0, 20);
+    await atomicJsonWrite(path, { schemaVersion: SCHEMA_VERSION, transitions: next }, 0o600);
+  });
+}
+
+async function readTransitionIndex(stateRoot, limits) {
+  const value = await readOptionalJson(boundedPath(stateRoot, TRANSITION_INDEX_FILE), limits.maxStateBytes);
+  return Array.isArray(value?.transitions) ? value.transitions.slice(0, 20) : [];
+}
+
+function normalizeDigest(value, name) {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) throw new TypeError(`${name} must be a SHA-256 digest`);
+  return value;
+}
+
+function normalizeProbeSource(value) {
+  if (!PROBE_SOURCES.has(value)) throw new TypeError("Probe source must be manual or passive");
+  return value;
+}
+
+function normalizeProbeOutcomes(value, source) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Probe outcomes must be an object");
+  const extra = Object.keys(value).filter((name) => !PROBE_NAMES.includes(name));
+  if (extra.length > 0) throw new TypeError(`Unsupported probe outcome: ${extra[0]}`);
+  return Object.fromEntries(PROBE_NAMES.map((name) => {
+    const outcome = value[name];
+    if (!outcome || typeof outcome !== "object" || Array.isArray(outcome) || !PROBE_STATUSES.has(outcome.status)) {
+      throw new TypeError(`Probe outcome '${name}' is missing or invalid`);
+    }
+    if (!EVIDENCE_CLASSES.has(outcome.evidenceClass)) throw new TypeError(`Probe evidence class '${name}' is invalid`);
+    if (source === "manual" && outcome.evidenceClass === "native-passive") throw new Error("Manual probes cannot claim native-passive evidence");
+    if (source === "passive" && outcome.evidenceClass === "native-manual") throw new Error("Passive probes cannot claim native-manual evidence");
+    const summary = outcome.summary === undefined ? undefined : normalizeDisplayText(outcome.summary, 160, `${name} summary`);
+    if (summary !== undefined) assertSecretFreeText(summary, `${name} summary`);
+    return [name, { status: outcome.status, evidenceClass: outcome.evidenceClass, ...(summary ? { summary } : {}) }];
+  }));
+}
+
+function transitionClaimPath(stateRoot, targetKey) {
+  return boundedPath(stateRoot, join(CLAIM_DIRECTORY, "transitions", `${normalizeDigest(targetKey, "targetKey")}.json`));
+}
+
+async function acquireTransitionClaim(path, claim, limits) {
+  try {
+    await createExclusiveJson(path, { schemaVersion: SCHEMA_VERSION, kind: "desktop-transition-claim", ...claim }, 0o600);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    const existing = await readRequiredJson(path, limits.maxStateBytes);
+    if (existing.kind !== "desktop-transition-claim") throw new Error("Desktop transition claim is malformed");
+    throw new Error("Desktop transition target is already claimed by another operation");
+  }
+}
+
+async function releaseExactClaim(path, transitionId, claimId, limits) {
+  const existing = await readRequiredJson(path, limits.maxStateBytes);
+  if (existing.transitionId !== transitionId || existing.claimId !== claimId) throw new Error("Refusing to release a different transition claim");
+  await rm(path, { force: false });
+}
+
+async function acceptTransitionObservation(stateRoot, transition, limits, now) {
+  await withStateFileClaim(stateRoot, "accepted-observations", transition.transitionId, limits, async () => {
+    const path = boundedPath(stateRoot, ACCEPTED_OBSERVATION_FILE);
+    const accepted = await readRequiredJson(path, limits.maxStateBytes);
+    const products = Array.isArray(accepted.products) ? accepted.products.filter((item) => item?.id !== transition.identity.product) : [];
+    const next = transition.identity["N+1"];
+    products.push({
+      id: transition.identity.product,
+      label: transition.productLabel,
+      kind: next.kind,
+      status: "detected",
+      ...(next.version ? { version: next.version } : {}),
+      artifactName: next.artifactName,
+      artifactPathSha256: next.artifactPathSha256,
+      artifactSha256: next.artifactSha256,
+      artifactBytes: next.artifactBytes,
+      evidence: next.evidence,
+    });
+    await atomicJsonWrite(path, { schemaVersion: SCHEMA_VERSION, acceptedAt: new Date(now()).toISOString(), platform: transition.identity.platform, products }, 0o600);
+  });
+}
+
+async function withStateFileClaim(stateRoot, name, owner, limits, operation) {
+  normalizePlanId(name);
+  const claimPath = boundedPath(stateRoot, join(CLAIM_DIRECTORY, "state-files", `${name}.json`));
+  const claim = { schemaVersion: SCHEMA_VERSION, kind: "desktop-state-file-claim", name, owner: normalizeDigest(owner, "state claim owner") };
+  let acquired = false;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await createExclusiveJson(claimPath, claim, 0o600);
+      acquired = true;
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (attempt === 199) throw new Error(`Desktop state file '${name}' remains claimed`);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+    }
+  }
+  if (!acquired) throw new Error(`Desktop state file '${name}' could not be claimed`);
+  try {
+    return await operation();
+  } finally {
+    const existing = await readRequiredJson(claimPath, limits.maxStateBytes);
+    if (existing.kind !== claim.kind || existing.name !== name || existing.owner !== claim.owner) throw new Error("Refusing to release a different Desktop state-file claim");
+    await rm(claimPath, { force: false });
+  }
+}
+
+function normalizeTransitionBinding(binding) {
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) throw new Error("Invalid repair transition binding");
+  return {
+    transitionId: normalizeDigest(binding.transitionId, "transitionId"),
+    transitionDigest: normalizeDigest(binding.transitionDigest, "transitionDigest"),
+    failedProbeDigest: normalizeDigest(binding.failedProbeDigest, "failedProbeDigest"),
+    targetKey: normalizeDigest(binding.targetKey, "targetKey"),
+  };
+}
+
+function validateTransitionBinding(binding, transition) {
+  const normalized = normalizeTransitionBinding(binding);
+  validateTransitionRecord(transition, normalized.transitionId);
+  if (normalized.transitionDigest !== transition.identityDigest || normalized.targetKey !== transition.targetKey || normalized.failedProbeDigest !== transition.probe?.digest) {
+    throw new Error("Repair plan does not match the exact failing transition");
+  }
+}
+
+function repairTargetClaimPath(stateRoot, repairRoot, relativePath, platform) {
+  const identity = platform === "win32"
+    ? `${repairRoot.toLocaleLowerCase("en-US")}\0${relativePath.toLocaleLowerCase("en-US")}`
+    : `${repairRoot}\0${relativePath}`;
+  return boundedPath(stateRoot, join(CLAIM_DIRECTORY, "repair-targets", `${sha256Text(identity)}.json`));
+}
+
+async function acquireRepairTargetClaim(path, plan, operation, limits, now) {
+  const claim = {
+    schemaVersion: SCHEMA_VERSION,
+    kind: "desktop-repair-target-claim",
+    planId: plan.planId,
+    planDigest: plan.digest,
+    targetPreimage: operation.existed ? operation.originalSha256 : "absent",
+    transitionId: plan.transition?.transitionId ?? null,
+    claimedAt: new Date(now()).toISOString(),
+  };
+  try {
+    await createExclusiveJson(path, claim, 0o600);
+    return { created: true };
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    const existing = await readRequiredJson(path, limits.maxStateBytes);
+    if (existing.kind !== claim.kind || existing.planId !== claim.planId || existing.planDigest !== claim.planDigest || existing.targetPreimage !== claim.targetPreimage || existing.transitionId !== claim.transitionId) {
+      throw new Error("Repair target is already claimed by another plan");
+    }
+    return { created: false };
+  }
+}
+
+async function releaseRepairTargetClaim(path, plan, limits) {
+  const existing = await readRequiredJson(path, limits.maxStateBytes);
+  if (existing.planId !== plan.planId || existing.planDigest !== plan.digest) throw new Error("Refusing to release a different repair target claim");
+  await rm(path, { force: false });
+}
+
 function normalizePlanId(value) {
   if (typeof value !== "string" || !PLAN_ID_PATTERN.test(value)) throw new TypeError("planId contains unsupported characters");
   return value;
@@ -820,6 +1453,7 @@ function validateRepairPlan(plan, limits) {
   }
   const shutdownProducts = normalizeProductList(plan.shutdownProducts);
   const restartProducts = normalizeProductList(plan.restartProducts);
+  if (plan.transition !== undefined) normalizeTransitionBinding(plan.transition);
   if (stableStringify(plan.prompts) !== stableStringify(repairPrompts(shutdownProducts, restartProducts))) {
     throw new Error("Repair prompts do not match the plan's app lifecycle requirements");
   }
@@ -833,6 +1467,9 @@ function validateRollbackManifest(manifest, plan) {
   if (manifest.status !== "prepared") throw new Error(`Repair plan cannot apply from rollback status '${String(manifest.status)}'`);
   if (manifest.repairRoot !== plan.repairRoot || stableStringify(manifest.entries) !== stableStringify(plan.operations.map(planEntry))) {
     throw new Error("Rollback snapshot entries do not match the approved repair plan");
+  }
+  if (stableStringify(manifest.transition ?? null) !== stableStringify(plan.transition ?? null)) {
+    throw new Error("Rollback snapshot transition binding does not match the approved repair plan");
   }
 }
 
@@ -858,6 +1495,7 @@ async function assertTargetMatchesPlan(path, operation) {
     return;
   }
   if (!current?.isFile() || current.isSymbolicLink()) throw new Error(`Repair target changed type after planning: ${operation.relativePath}`);
+  if ((current.mode & 0o777) !== operation.originalMode) throw new Error(`Repair target mode changed after planning: ${operation.relativePath}`);
   let content;
   try {
     content = await readBoundedFile(path, operation.originalBytes);

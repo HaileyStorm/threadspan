@@ -14,8 +14,8 @@ Current 0.5.0 Linux release-candidate result:
 
 ```text
 npm run check: passed
-610 tests
-610 passed
+697 tests
+697 passed
 0 failed
 0 skipped
 ```
@@ -43,6 +43,7 @@ The suite uses local fakes, local HTTP servers, and isolated temporary paths. It
 | Grok Build | Non-consuming executable/version/hash preflight, model/usage/error parsing, finite safety argv, profiles/overrides, snapshot Consult, quota failure/no retry, Integrated rejection, and opt-in Delegate exploration classification with trusted top-level fields, exact session echo, workspace-keyed serialization, and one same-session patch/test recovery. |
 | Managed workers | Weighted FIFO admission and expected/actual turn reconciliation, private run ledger/evidence, Git linked-worktree/branch/clean gates, and multi-skill installation. |
 | xAI-compatible accounting | Reasoning usage plus exact `cost_in_usd_ticks` preservation as provider metadata. |
+| Compatibility Watch | Exact N→N+1 artifact/version identities, retained N acceptance, separate attach/protocol/routing/provider/settings outcomes, manual/passive evidence rules, process-shared transition and repair-target claims, transition-bound preimages, truthful retry/rollback states, and sanitized actionable/diagnostic HUD projection. Linux/Windows plans are synthetic unless run natively. |
 
 ## Why offline fakes are not enough
 
