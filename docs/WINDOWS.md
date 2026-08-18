@@ -113,7 +113,9 @@ per-user Task Scheduler entries under the current interactive identity:
 
 - `Threadspan Daemon` — launches `threadspan serve`.
 - `Threadspan Desktop Host` — launches `threadspan desktop attach` without
-  launching or restarting the Desktop app.
+  launching or restarting the Desktop app. Attach reconnects only to an exact
+  owner-private authenticated supervisor generation; it cannot open a bootstrap
+  inspector or inject a new generation.
 
 Both tasks use generated PowerShell wrappers owned by the same lifecycle
 fingerprint and exact source revision. The plan also binds the CLI SHA-256 so an
@@ -136,6 +138,12 @@ tasks survive the installing shell or SSH session ending, and reject a restart
 that leaves the previous detached `serve` process on the listener. A native
 Windows run is still required; Linux synthetic tests do not certify Task
 Scheduler, PowerShell, Desktop attachment, or restart durability.
+
+The successor channel uses mandatory per-Electron-generation token
+authentication on exact loopback. Source tests label Windows ACL evidence
+`token-authenticated-native-acl-unverified`; they do not claim native named-pipe,
+TCP ACL, packaged-path/junction, or owner-bound process acceptance. Those gates
+must be run on the exact installed Windows build without copying Linux evidence.
 
 Task state plus loopback `/health` is registration/availability evidence only;
 it does not source-bind the listener. The installer therefore reports

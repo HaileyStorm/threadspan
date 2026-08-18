@@ -93,10 +93,12 @@ test("Linux lifecycle binds daemon and Desktop host to one exact revision withou
   assert.equal(plan.lifecycleKind, "systemd-user");
   assert.deepEqual(plan.workloads.map((item) => item.id), ["daemon", "desktop-host"]);
   assert.equal(plan.workloads.every((item) => item.sourceRevision === "c4f4113" && item.ownerFingerprint === plan.ownerFingerprint), true);
+  assert.deepEqual(plan.workloads[1], { ...plan.workloads[1], attachmentMode: "authenticated-supervisor-reconnect-only", appLifecycleAuthority: "none" });
   assert.equal(plan.files.length, 2);
   assert.match(plan.files[0].content, /PassEnvironment=THREADSPAN_TOKEN NOUS_API_KEY/);
   assert.match(plan.files[0].content, /KillMode=control-group\nTimeoutStopSec=10s/);
   assert.match(plan.files[1].content, /desktop attach --config/);
+  assert.match(plan.note, /never launches or restarts the app/);
   assert.doesNotMatch(plan.files.map((file) => file.content).join("\n"), /PrivateTmp|secret-value|NOUS_API_KEY=/);
   assert.deepEqual(plan.commands.activate[1].argv, ["systemctl", "--user", "enable", "--now", "threadspan.service", "threadspan-desktop-host.service"]);
   assert.equal(previewDaemonServicePlan(plan).digest, plan.digest);
@@ -141,6 +143,8 @@ test("Windows lifecycle uses per-user Task Scheduler for daemon and Desktop host
   const { plan } = await lifecycleFixture(t, "win32");
   assert.equal(plan.lifecycleKind, "windows-task-scheduler");
   assert.deepEqual(plan.workloads.map((item) => item.taskName), ["Threadspan Daemon", "Threadspan Desktop Host"]);
+  assert.equal(plan.workloads[1].attachmentMode, "authenticated-supervisor-reconnect-only");
+  assert.equal(plan.workloads[1].appLifecycleAuthority, "none");
   assert.equal(plan.files.length, 4);
   const register = plan.files.find((file) => file.role === "task-registration").content;
   assert.match(register, /New-ScheduledTaskPrincipal -UserId \$identity -LogonType Interactive -RunLevel Limited/);

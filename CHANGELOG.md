@@ -2,6 +2,7 @@
 
 ## 0.5.0 - 2026-08-18
 
+- Replaced the persistent Electron inspector HUD transport with an offline-tested one-time canonical bootstrap: exact target/source binding, per-generation authenticated closed supervisor protocol, event-driven navigation/window reattachment, replay-bounded renderer actions, durable indeterminate recovery, exact `app.asar`/package immutability evidence, and authenticated rollback that leaves the inspector closed. Exact native Linux/Windows bootstrap and Windows ACL acceptance remain open.
 - Added a supervised, app-attached ChatGPT/Codex Desktop HUD on Linux and Windows with fast cold-start state, expandable model/provider/mode routes, immediate selection feedback, owner-authenticated route mutation, persistence, and explicit-mode preservation.
 - Added default-off, one-continuation Grok Build exploration recovery with exact session binding, trusted terminal fields, canonical physical-worktree serialization, bounded patch/test reserve, privacy-preserving evidence, and terminal auth/quota/rate/payment handling.
 - Added a durable owner-private action-item store and compact global/per-project **Needs you** rail with strict public projection, owner-only loopback controls, revision-bound idempotent completion, and exact-owner delivery outbox.
@@ -11,7 +12,7 @@
 - Added Compatibility Watch exact N→N+1 identities, atomic artifact/version rechecks, retained last-known-working/sidecar state, separate non-mutating attach/protocol/routing/provider/settings evidence, cross-process transition/target claims, transition-bound repair/rollback truth, and compact sanitized Needs-review/Diagnostics queues. Linux/Windows coverage for this delta remains synthetic, not native acceptance.
 - Refreshed the synthetic dashboard, picker, route-map screenshots and GIF, with a hash-bound privacy-reviewed media manifest and desktop/mobile browser smoke evidence.
 
-The 724-test Linux source gate passes, and the installed Linux and Windows ChatGPT/Codex Desktop renderers were captured live with the attached HUD and working picker. The strengthened Continuity controls have offline fake/source/VM evidence only; exact native App Server and true-browser interaction remain separate gates. Compatibility Watch N→N+1 transition acceptance remains synthetic for this delta pending separate exact-build native checks.
+The installed Linux and Windows ChatGPT/Codex Desktop renderers were previously captured live with the attached HUD and working picker. That evidence predates the one-time authenticated bootstrap transport and does not certify it. The new Electron bootstrap, strengthened Continuity controls, and Compatibility Watch N→N+1 transition acceptance retain separate exact-build/native gates.
 
 ## 0.4.2 - 2026-08-18
 

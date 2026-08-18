@@ -61,7 +61,7 @@ function linuxPlan(options, environmentVariables) {
     allowedWriteRoots: [serviceDirectory, options.stateRoot],
     workloads: [
       { id: "daemon", serviceName: "threadspan.service", sourceRevision: options.sourceRevision, ownerFingerprint: options.ownerFingerprint },
-      { id: "desktop-host", serviceName: "threadspan-desktop-host.service", sourceRevision: options.sourceRevision, ownerFingerprint: options.ownerFingerprint },
+      { id: "desktop-host", serviceName: "threadspan-desktop-host.service", sourceRevision: options.sourceRevision, ownerFingerprint: options.ownerFingerprint, attachmentMode: "authenticated-supervisor-reconnect-only", appLifecycleAuthority: "none" },
     ],
     files: inspectPlannedFiles([
       { role: "daemon", path: resolve(serviceDirectory, "threadspan.service"), content: daemonUnit, mode: 0o600 },
@@ -96,7 +96,7 @@ function linuxPlan(options, environmentVariables) {
       ],
       finalize: [lifecycleCommand("final-daemon-reload", ["systemctl", "--user", "daemon-reload"])],
     },
-    note: "Import required environment variables into the user manager before activation; values are never written into the units.",
+    note: "Import required environment variables into the user manager before activation; values are never written into the units. Desktop attach reconnects only to an existing authenticated supervisor and never launches or restarts the app.",
   };
 }
 
@@ -131,7 +131,7 @@ function windowsPlan(options, environmentVariables) {
     allowedWriteRoots: [options.stateRoot],
     workloads: [
       { id: "daemon", taskName: "Threadspan Daemon", sourceRevision: options.sourceRevision, ownerFingerprint: options.ownerFingerprint },
-      { id: "desktop-host", taskName: "Threadspan Desktop Host", sourceRevision: options.sourceRevision, ownerFingerprint: options.ownerFingerprint },
+      { id: "desktop-host", taskName: "Threadspan Desktop Host", sourceRevision: options.sourceRevision, ownerFingerprint: options.ownerFingerprint, attachmentMode: "authenticated-supervisor-reconnect-only", appLifecycleAuthority: "none" },
     ],
     files: inspectPlannedFiles([
       { role: "daemon", path: daemonScriptPath, content: daemonScript, mode: 0o600 },
@@ -152,7 +152,7 @@ function windowsPlan(options, environmentVariables) {
       verifyAbsent: inspect.map((command) => ({ ...command, id: command.id.replace("inspect", "absent"), expectation: { absent: true } })),
       finalize: [],
     },
-    note: "The per-user scheduled tasks use the current interactive identity, keep only reviewed environment names, and never write provider credential values.",
+    note: "The per-user scheduled tasks use the current interactive identity, keep only reviewed environment names, and never write provider credential values. Desktop attach reconnects only to an existing authenticated supervisor and never launches or restarts the app.",
   };
 }
 

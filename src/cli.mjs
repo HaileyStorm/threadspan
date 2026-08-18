@@ -332,8 +332,8 @@ export async function main(argv = process.argv.slice(2)) {
       await runServe(config, logger);
       return;
     }
-    if (command === "desktop" && ["attach", "launch"].includes(subcommand)) {
-      await runDesktopHost(config, parsed.options, subcommand === "launch");
+    if (command === "desktop" && ["attach", "launch", "rollback", "recover", "claim"].includes(subcommand)) {
+      await runDesktopHost(config, parsed.options, subcommand);
       return;
     }
     if (command === "mcp") {
@@ -487,7 +487,7 @@ async function runServe(config, logger) {
   await service.close();
 }
 
-async function runDesktopHost(config, options, launch) {
+async function runDesktopHost(config, options, mode) {
   const controller = new AbortController();
   const stop = () => controller.abort();
   process.once("SIGINT", stop);
@@ -495,10 +495,24 @@ async function runDesktopHost(config, options, launch) {
   try {
     const host = new DesktopHost(config, {
       appPath: valueOption(options.app),
-      inspectPort: valueOption(options.inspectPort),
+      bootstrapPort: valueOption(options.bootstrapPort) ?? valueOption(options.inspectPort),
       pollIntervalMs: valueOption(options.pollInterval),
     });
-    await host.run({ launch, signal: controller.signal });
+    if (mode === "rollback") {
+      process.stdout.write(`${JSON.stringify(await host.rollback(valueOption(options.reason)), null, 2)}\n`);
+      return;
+    }
+    if (mode === "recover") {
+      const claimDigest = valueOption(options.recoverClaimDigest);
+      if (claimDigest) await host.recoverHostClaim(claimDigest, { offlineConfirmed: options.confirmHostsStopped === true });
+      process.stdout.write(`${JSON.stringify(await host.recoverDeadGeneration(valueOption(options.reason)), null, 2)}\n`);
+      return;
+    }
+    if (mode === "claim") {
+      process.stdout.write(`${JSON.stringify(await host.inspectHostClaim(), null, 2)}\n`);
+      return;
+    }
+    await host.run({ launch: mode === "launch", signal: controller.signal });
   } finally {
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
@@ -913,8 +927,11 @@ Usage:
   threadspan install service-claim
   threadspan config init [--config PATH] [--force]
   threadspan serve [--config PATH]
-  threadspan desktop launch [--config PATH] [--app PATH] [--inspect-port N]
-  threadspan desktop attach [--config PATH] [--inspect-port N]
+  threadspan desktop launch [--config PATH] [--app PATH] [--bootstrap-port N]
+  threadspan desktop attach [--config PATH] [--bootstrap-port N]
+  threadspan desktop rollback [--config PATH] [--bootstrap-port N] [--reason TEXT]
+  threadspan desktop recover [--config PATH] [--reason TEXT] [--recover-claim-digest SHA256] [--confirm-hosts-stopped]
+  threadspan desktop claim [--config PATH]
   threadspan mcp [--config PATH] [--remote URL|--embedded] [--token-file CONNECTOR_TOKEN_PATH]
   threadspan host install --host grok|cursor|claude-code|hermes --token-file CONNECTOR_TOKEN_PATH [--target PATH] [--allow-preview]
   threadspan doctor [--config PATH] [--live]
@@ -929,6 +946,9 @@ Usage:
   threadspan codex install [--config PATH] [--codex-config PATH] [--embedded-mcp]
   threadspan codex uninstall [--codex-config PATH]
   threadspan skill install [--skill consult|managed-worker|all] [--target SKILLS_ROOT] [--force]
+
+Desktop compatibility:
+  --inspect-port N is retained as an alias for --bootstrap-port N; the inspector is closed after authenticated supervisor cutover.
 
 Modes:
   Consult     Advisory second opinion. Cursor and Claude Code use disposable workspace snapshots.

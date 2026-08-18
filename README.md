@@ -45,7 +45,7 @@ The setup window is source-run in an app-style Vivaldi/Chrome/Edge window, not a
 - Direct Nous Portal Consult/Integrated routes and a bounded Codex-worker Delegate path.
 - OpenRouter discovery, including currently free models.
 - Explicit-only AgentRouter/Claude Code support plus check-first Mistral API, GroqCloud, Cloudflare Workers AI, and Gemini API discovery candidates.
-- An app-attached ChatGPT/Codex Desktop HUD with health, utilization, usage, ranking, and a compact route picker; detachable browser mode remains available.
+- An app-attached ChatGPT/Codex Desktop HUD with health, utilization, usage, ranking, and a compact route picker. Explicit `desktop launch` uses the Electron inspector only for one-time source-bound bootstrap, then closes it and switches to a distinct per-generation authenticated supervisor; detachable browser mode remains available.
 - A compact owner-only **Needs you** rail for durable global and per-project actions, with exact-owner completion delivery and stale/closed history kept out of the active queue.
 - Optional heuristic-first Tips: disabled by default, dismissible, cooldown-bound, and limited to one compact tip per browser session; cheap-model refinement and session-only Ask are separately gated and user-initiated.
 - Optional Copy review for every installation: local readability checks, protected-span enforcement, and an explicitly configured provider rewrite that never auto-applies.
@@ -125,10 +125,18 @@ Unsupported combinations fail closed. Threadspan does not turn Consult into Dele
    Card-free/free-credit candidates are also explicit-only and collapsed under **Add providers** without current ready evidence. Selection adds prerequisites only; signup, credential creation, app installation, billing changes, live probing, and route enablement each require user permission and a reviewed plan.
 3. Protect running tasks grouped by project. The default is **finish before install**; pausing is explicit.
 4. Review exact files, prerequisites, estimated usage, and plan digest.
-5. Separately approve the one-time Desktop restart needed to activate the app-attached HUD.
+5. Separately approve the one-time canonical Desktop launch needed to activate the app-attached HUD. It validates one exact bootstrap target and launched process, installs an owner-private authenticated supervisor, proves the inspector closed, and binds executable/`app.asar`/package immutability. `desktop attach` and installed services reconnect only; they never launch or restart Desktop.
 6. Run focused live checks and keep rollback with the evidence.
 
 CLI, Desktop, and direct-release launches use the same plan/preview/apply engine. If the window disappears, a product-local recovery record lets Threadspan notify the origin through that host's native resume path. Explicit Cancel suppresses that notification.
+
+The Electron bootstrap has offline/source evidence only in this candidate. Prior
+live Linux/Windows HUD captures used the predecessor inspector transport and do
+not certify the new successor channel, Windows ACLs, update/restart recovery, or
+exact installed-build package bindings. If bootstrap cannot be proven, the
+daemon and detachable sidecar remain available and Threadspan does not disturb
+the running app. `--inspect-port` remains a compatibility spelling for
+`--bootstrap-port`; it does not restore persistent inspector semantics.
 
 ## Prerequisites
 

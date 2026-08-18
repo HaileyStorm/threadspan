@@ -89,6 +89,66 @@ Before non-loopback exposure, add at least:
 - separate OS identity/container/VM;
 - a decision about whether source snapshots may leave the host.
 
+## Electron HUD bootstrap and successor channel
+
+The Electron inspector is an unauthenticated bootstrap mechanism and therefore
+must never remain the HUD transport. Only explicit `threadspan desktop launch`
+may create it. Bootstrap accepts one exact Node target on the exact loopback
+port, binds the launched PID/executable/start identity and reviewed package
+digests, receives a source-bound supervisor acknowledgement, and then proves
+both inspector discovery and the WebSocket closed. Port squatting, target
+multiplicity/spoofing, premature closure, and later reappearance fail closed.
+If target/source validation fails before a trusted supervisor exists, Threadspan
+does not evaluate or signal the untrusted target; it tells the owner to close the
+explicitly launched app so the bootstrap inspector is removed before recovery.
+
+The successor protocol has a distinct random capability for each Electron
+generation. It uses timing-safe per-frame HMAC authentication plus exact generation,
+per-connection sequence, and globally bounded action IDs. Frames, results,
+timeouts, route catalogs, and retained replay sets are bounded. Its operation
+set is closed to health/identity, sanitized HUD synchronization, bounded renderer
+action read, and authenticated teardown; it provides no shell or arbitrary
+evaluation surface. The capability never enters argv, environment, renderer,
+public receipts, logs, or successor frames. Owner-private state retains the capability and only
+sanitized hashes/endpoint metadata needed for exact reconnect/recovery.
+
+Each accepted socket receives a fresh authenticated session challenge. Requests
+and responses bind that challenge; reconnect resets sequence state only after a
+valid hello. Per-socket frames, queued work, results, output backpressure, pending
+client requests, connections, and pre-authentication idle time are bounded.
+
+The renderer is not an authentication boundary. Renderer action IDs provide
+bounded duplicate/stale rejection, not trusted-gesture provenance; any script in
+that renderer can propose a fresh schema-valid route action. The supervisor
+catalog/schema checks and owner-authenticated daemon route validation remain the
+authority boundary.
+
+Loopback does not prove peer ownership. Capability authentication is mandatory
+on every platform. Current Linux and Windows coverage is offline/synthetic;
+native Windows ACL/packaged-path acceptance remains explicitly unverified.
+
+Bootstrap and rollback may write only Threadspan-owned private state. Exact
+digest-or-absence evidence covers reviewed executable, `app.asar`, and package
+metadata paths before and after. Threadspan never modifies Desktop packages,
+and rollback never restores a persistent inspector. Uncertain injection or
+teardown becomes owner-visible recovery state rather than automatic replay.
+The original bootstrap port is part of durable generation identity. Closure
+requires two explicit TCP refusals plus matching `/json/list` refusal; timeout,
+reset, or another listener is ambiguous/reoccupied state, never proof of closure.
+A process-shared host claim spans the complete launch/attach lifetime, and a
+dead generation is retired only by explicit recovery after process-absence,
+port-closure, and current package-disposition checks.
+Rollback uses an authenticated two-step teardown/finalize protocol. The teardown
+tombstone stays reachable after renderer/listener removal so a crash or transient
+renderer failure can resume the same exact capability/generation; final channel
+closure happens only after durable rolled-back evidence. Transaction and host
+claim mutations use narrow guards, and abandoned claims/guards are preserved and
+released only by exact reviewed digest.
+Guard-file recovery itself is not a concurrent CAS operation. It is exposed only
+as an explicit stop-the-world owner procedure after every Desktop host/service
+is stopped, with a separate `--confirm-hosts-stopped` assertion; using it while
+another owner is active violates the recovery contract and is refused by default.
+
 ## Consult snapshot
 
 The Cursor snapshot boundary is designed to protect the **source tree from mutation**. It is not a comprehensive sandbox.

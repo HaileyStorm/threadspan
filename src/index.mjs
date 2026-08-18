@@ -76,7 +76,26 @@ export { CodexWorkerProvider, buildCodexWorkerArguments, parseCodexWorkerJsonl }
 export { OpenRouterProvider } from "./providers/openrouter.mjs";
 export { UsageLedger, aggregateUsageEvents, normalizeUsageEvent, resolveUsageLedgerPath } from "./core/usage-ledger.mjs";
 export { DesktopCompatibilityWatch, assessNativeDesktopMigration, computeRepairPlanDigest } from "./maintenance/desktop-update.mjs";
-export { DesktopHost, createDesktopLaunchPlan, mainWindowEvaluationExpression, renderDesktopHudScript } from "./desktop/host.mjs";
+export { DesktopHost, createDesktopLaunchPlan, sanitizeDesktopHudState } from "./desktop/host.mjs";
+export {
+  DESKTOP_BOOTSTRAP_PHASES,
+  DESKTOP_SUPERVISOR_SCHEMA_VERSION,
+  DesktopBootstrapStore,
+  DesktopSupervisorClient,
+  assertDesktopPackagesUnchanged,
+  assertInspectorStillClosed,
+  capabilityDigest,
+  createElectronGeneration,
+  createSupervisorBootstrapExpression,
+  createSupervisorCapability,
+  discoverInspectorTarget,
+  normalizeBootstrapPort,
+  probeLoopbackPort,
+  proveInspectorClosed,
+  snapshotDesktopPackages,
+  validateInspectorTargetList,
+  validateSupervisorAcknowledgement,
+} from "./desktop/supervisor.mjs";
 export { GitHubCompatibilityIntake } from "./maintenance/github-intake.mjs";
 export * from "./installer/index.mjs";
 export {

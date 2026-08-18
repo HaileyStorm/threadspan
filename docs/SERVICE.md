@@ -7,6 +7,19 @@ workloads owned as one unit: `threadspan serve` and `threadspan desktop attach`.
 Both carry the same opaque owner fingerprint, exact source revision, CLI file
 SHA-256, configuration path, and plan digest:
 
+The Desktop workload has `attachmentMode=authenticated-supervisor-reconnect-only`
+and `appLifecycleAuthority=none`. It can reconnect to the exact owner-private
+Electron generation/capability installed by an earlier explicit
+`threadspan desktop launch`; it cannot create a bootstrap inspector, inject a
+new generation, or launch/restart/kill/signal/focus/navigate Desktop. When that
+state is unavailable, the workload fails closed while the daemon and detachable
+sidecar remain usable.
+One process-shared host claim admits either the explicit launch owner or the
+installed attach workload, not both. The service never mutates an in-progress
+bootstrap it does not own. An abandoned claim requires `desktop claim` inspection
+and exact-digest owner recovery rather than PID/age-based clearing; displaced
+claim bytes remain as Threadspan-private evidence.
+
 The public lifecycle API is version `1`; service plans use schema version `2`,
 while manifests, uninstall plans, claims, and receipts carry their own schema
 version plus the same API version. Consumers must validate both fields.
@@ -83,3 +96,6 @@ gathered on the other.
 
 The lifecycle starts or stops Threadspan's daemon and Desktop host process. It
 does not close, launch, restart, sign out of, or uninstall Desktop/provider apps.
+It does not reinterpret an installed service as app lifecycle ownership after an
+update. A new Electron generation requires a separately reviewed canonical
+launch, and exact installed-service migration remains a separate lifecycle gate.

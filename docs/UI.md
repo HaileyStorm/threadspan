@@ -1,6 +1,6 @@
 # Threadspan Desktop HUD and sidecar UI
 
-**Status:** the compact Electron HUD is implemented and live-accepted in the installed ChatGPT/Codex Desktop builds on Linux and Windows. The larger browser sidecar remains available for detached use.
+**Status:** the compact Electron HUD was live-accepted through the earlier attachment transport on installed Linux and Windows builds. The authenticated one-time bootstrap successor is implemented and offline-tested, but exact-build native Linux and Windows acceptance remains open. The larger browser sidecar remains available for detached use.
 
 Threadspan is the operator-facing route surface for this bridge: **one task, every model**, without collapsing Consult, Integrated, and Delegate into a single “use another model” switch.
 
@@ -21,7 +21,19 @@ No images, webfonts, CDNs, or JavaScript packages are required.
 
 ## App attachment
 
-Threadspan starts the unchanged Electron app with a loopback-only main-process attachment channel. The Desktop host supervises the largest visible ChatGPT/Codex window, inserts an isolated Shadow DOM HUD below the host status area, and reattaches it after renderer navigation. Provider credentials and bearer tokens stay in the owner process and are never copied into the renderer.
+`threadspan desktop launch` is the only canonical path that starts the unchanged Electron app for attachment. It opens a loopback inspector only for bootstrap, requires one exact Node target plus the launched process/source identity, injects a schema-versioned main-process supervisor with a fresh per-generation capability, waits for a source-bound ready acknowledgement, and then closes and independently checks both the inspector discovery endpoint and WebSocket. Any wrong/multiple target, occupied port, identity mismatch, premature close, or later inspector reappearance fails closed.
+
+After cutover, the Desktop host uses only the closed authenticated supervisor protocol. It supports health/identity, sanitized `sync-hud`, bounded `read-action`, and authenticated teardown—never arbitrary evaluation. Exact generation, authenticated session challenge, per-frame HMAC, sequence, and action IDs fence successor-channel spoofing and replay. The capability is private owner state; it never enters argv, environment, successor frames, renderer state, public receipts, or logs. TCP loopback is paired with mandatory token authentication; loopback alone supplies no native ACL proof. Windows native ACL enforcement remains an explicit unverified acceptance gate.
+
+Renderer actions are untrusted and contain no secret. The supervisor accepts only the current generation, a closed `select-route` schema, a route in the last sanitized catalog, and a fresh bounded action ID; malformed, stale, or duplicate actions are rejected. Another script already running in that renderer could still propose a new schema-valid action, so the owner-authenticated daemon route validation remains authoritative.
+
+The supervisor selects the largest visible non-destroyed ChatGPT/Codex window, uses its current `webContents`, inserts an isolated Shadow DOM HUD, and narrowly observes window creation, DOM-ready, navigation/load, renderer loss, and destruction so the last sanitized HUD is reattached idempotently. It removes listeners during authenticated teardown. Provider credentials, account-private data, and daemon bearer tokens are never copied into the renderer.
+
+Bootstrap state is an owner-private exactly-once transaction (`prepared` → `injected` → `acknowledged` → `inspector-closed` → `attached`) with explicit `indeterminate` and `recovery-required` outcomes. It binds the exact original bootstrap port as well as generation, capability digest, endpoint, source, and package evidence. One process-shared Desktop-host claim spans the whole launch/attach session so an installed attach service cannot poison cutover or race renderer actions. Uncertainty is never reinjected or replayed. `desktop attach` reconnects only when the exact private state remains usable; it never launches, restarts, kills, signals, focuses, or navigates Desktop.
+
+After a normal app exit or update, owner-reviewed `threadspan desktop recover` proves the recorded process is absent, the exact stored bootstrap port explicitly refuses connections, and records the current package-digest disposition before retiring the dead generation and private capability. Only then may another explicit `desktop launch` create a generation. Authenticated rollback first journals recovery, removes every tracked renderer HUD/listener, retains a capability-authenticated tombstone for crash-safe retry, verifies packages and the closed inspector, records `rolled-back`, and only then finalizes the tombstone and removes the capability. It never reopens a persistent inspector. An abandoned cooperative host or transaction claim/guard is inspected with `threadspan desktop claim` and may be preserved/released only by passing its exact reviewed digest to `desktop recover --recover-claim-digest`; it is never cleared from PID age. Guard recovery is deliberately stop-the-world: every Desktop host/service must first be stopped and the CLI requires `--confirm-hosts-stopped`, preventing it from being presented as safe concurrent recovery.
+
+Before and after bootstrap or rollback, reviewed executable, `app.asar`, and package metadata paths are bound by exact digest or exact absence. Threadspan does not unpack, patch, replace, rename, delete, or restore Desktop packages.
 
 The dark strip at the top of standalone `ui/index.html` remains an illustrative host placeholder. It is not used by the app-attached HUD in `src/desktop/host.mjs`.
 
@@ -31,7 +43,7 @@ The larger sidecar can still be:
 2. **Opened independently** in a desktop browser from `ui/index.html` (file open or any local static server);
 3. **Hosted through a supported plugin or MCP UI surface** that can display a local HTML document.
 
-If attachment is unavailable after an app update, Compatibility Watch keeps the daemon and detachable sidecar usable while the exact build is rechecked.
+If bootstrap or reattachment is unavailable after an app update/restart, Compatibility Watch keeps the daemon and detachable sidecar usable while the exact new generation is reviewed. No service silently launches or restarts the app.
 
 The collapsed **Compatibility** disclosure shows current products plus two compact transition queues: **Needs review** for failed, interrupted, claimed/recovery-required, or rollback-incomplete exact transitions, and **Diagnostics** for pending or accepted evidence. Rows show only product, platform, N→N+1 versions, bounded status, and evidence scope. Claim IDs, artifact and path hashes, raw probe details, authentication, account state, and target contents remain server-side. A synthetic pass is visibly labeled “synthetic only” and is not native host acceptance.
 

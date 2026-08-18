@@ -91,3 +91,15 @@ test("JSON CLI results include continuity ids without stderr output", () => {
   assert.equal(JSON.parse(stdout).threadId, "thread_2");
   assert.equal(stderr, "");
 });
+
+test("Desktop CLI documents one-time bootstrap semantics and the legacy alias", async () => {
+  const source = await readFile(new URL("../src/cli.mjs", import.meta.url), "utf8");
+  assert.match(source, /desktop launch .*--bootstrap-port N/);
+  assert.match(source, /desktop attach .*--bootstrap-port N/);
+  assert.match(source, /desktop rollback .*--bootstrap-port N/);
+  assert.match(source, /desktop recover .*--reason TEXT/);
+  assert.match(source, /--confirm-hosts-stopped/);
+  assert.match(source, /desktop claim \[--config PATH\]/);
+  assert.match(source, /--inspect-port N is retained as an alias for --bootstrap-port N/);
+  assert.doesNotMatch(source, /desktop attach \[--config PATH\] \[--inspect-port N\]/);
+});

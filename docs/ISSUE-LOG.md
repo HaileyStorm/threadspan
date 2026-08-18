@@ -76,7 +76,7 @@
 - **Observed:** the 0.4.2 rollout installed routing/runtime state but nothing visible inside Windows ChatGPT Desktop; Linux initially reopened to a black renderer. The standalone picker was presentation-only.
 - **Fix:** restarted the stale Linux renderer, added the cross-platform Electron main-window attachment host, a fast configured-route state endpoint, owner-authenticated persistent selection, explicit-mode preservation, Linux user-service/launcher wiring, and Windows Task Scheduler startup. Deployed the complete source dependency closure after a partial-file rollout exposed a missing-module failure.
 - **Evidence:** 616/616 source tests passed. Live renderer captures show the collapsed Linux HUD and expanded Windows picker. Windows and Linux route selection returned canonical daemon read-back.
-- **Residual:** the loopback Electron inspector is an owner-local attachment dependency. Compatibility Watch must recheck it after each Desktop update; if the hook changes, the daemon and detachable sidecar remain available while attachment is repaired.
+- **Historical residual:** that accepted build kept the loopback Electron inspector as an owner-local attachment dependency. The 0.5.0 source successor now uses it only for one-time authenticated supervisor bootstrap and requires proof that it closes; this does not retroactively upgrade the recorded live evidence. Compatibility Watch must still recheck the exact hook after each Desktop update, and the daemon plus detachable sidecar remain available while native bootstrap acceptance is repaired.
 
 ## 2026-08-17 continuation wave
 

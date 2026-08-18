@@ -14,8 +14,8 @@ Current 0.5.0 Linux release-candidate result:
 
 ```text
 npm run check: passed
-724 tests
-724 passed
+748 tests
+748 passed
 0 failed
 0 skipped
 ```
@@ -44,6 +44,7 @@ The suite uses local fakes, local HTTP servers, and isolated temporary paths. It
 | Managed workers | Weighted FIFO admission and expected/actual turn reconciliation, private run ledger/evidence, Git linked-worktree/branch/clean gates, and multi-skill installation. |
 | xAI-compatible accounting | Reasoning usage plus exact `cost_in_usd_ticks` preservation as provider metadata. |
 | Compatibility Watch | Exact N→N+1 artifact/version identities, retained N acceptance, separate attach/protocol/routing/provider/settings outcomes, manual/passive evidence rules, process-shared transition and repair-target claims, transition-bound preimages, truthful retry/rollback states, and sanitized actionable/diagnostic HUD projection. Linux/Windows plans are synthetic unless run natively. |
+| Electron HUD bootstrap | Exact single-target discovery, source-bound acknowledgement, per-generation capability privacy, session-HMAC/sequence/action replay rejection, bounded pre-auth connections/frame queues/results/backpressure, process-shared whole-host admission, cooperative transaction/CAS phases, indeterminate no-replay, exact persisted-port refusal/reappearance, transactional injection failure cleanup, multi-window/navigation HUD cleanup, resumable teardown, route-action schema, launch-vs-attach non-disturbance, dead-generation recovery, exact package/`app.asar` immutability, rollback→relaunch, and synthetic Linux/Windows endpoint semantics. Native app/ACL evidence remains separate. |
 
 ## Why offline fakes are not enough
 
@@ -74,6 +75,17 @@ Use disposable repositories and low cost limits.
 - [ ] SSE client receives terminal event then `[DONE]`.
 - [ ] Disconnect/cancel ends provider work.
 - [ ] Process shutdown leaves no child/SDK process.
+
+### Electron HUD bootstrap (run separately on each exact Linux/Windows build)
+
+- [ ] Explicit canonical launch binds the expected executable, PID/start generation, and package/`app.asar` preimage.
+- [ ] Exactly one Node target is acknowledged and the bootstrap inspector HTTP/WebSocket close after successor readiness.
+- [ ] The authenticated supervisor attaches the sanitized HUD and route selection reads back through the owner daemon.
+- [ ] Renderer navigation and largest-window replacement reattach once without stale/duplicate actions.
+- [ ] Attach/service restart reconnects the exact generation but never launches, restarts, signals, focuses, or navigates Desktop.
+- [ ] App update/restart without a reviewed bootstrap fails closed to daemon plus detachable sidecar.
+- [ ] Native owner/ACL checks reject another local principal; Windows evidence is not inferred from Linux.
+- [ ] Authenticated rollback removes only Threadspan state/supervisor, leaves the inspector closed, and preserves exact package/`app.asar` digests.
 
 ### Codex
 
