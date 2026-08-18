@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,16 +45,21 @@ test("native quota binds the selected isolated Codex account and official multi-
     now: () => "2026-08-17T20:00:00Z",
     callAppServerBatch: async (requests, options) => {
       call = { requests, options };
+      if (requests.length === 1) {
+        const recheckResults = [{ account: { type: "chatgpt", email: "owner@example.test", planType: "pro" }, requiresOpenaiAuth: true }];
+        return { receipt: nativeProcessReceipt(codexHome, recheckResults, ["account/read"]), results: recheckResults };
+      }
+      const results = [{ account: { type: "chatgpt", email: "owner@example.test", planType: "pro" }, requiresOpenaiAuth: true }, {
+        rateLimitsByLimitId: {
+          codex: { limitId: "codex", primary: { usedPercent: 96, windowDurationMins: 300, resetsAt: 1787515200 }, secondary: { usedPercent: 45, windowDurationMins: 10080, resetsAt: 1786996800 }, planType: "pro", rateLimitReachedType: null },
+          "secondary-controls": { limitId: "secondary-controls", primary: { usedPercent: 45, windowDurationMins: 300, resetsAt: 1786996800 }, secondary: { usedPercent: 95, windowDurationMins: 10080, resetsAt: 1787515200 }, planType: "pro", rateLimitReachedType: null },
+          weekly: { limitId: "weekly", primary: { usedPercent: 45, windowDurationMins: 10080, resetsAt: 1787515200 }, secondary: null, planType: "pro", rateLimitReachedType: null },
+        },
+        rateLimitResetCredits: { availableCount: 2, credits: null },
+      }];
       return {
-        receipt: nativeProcessReceipt(codexHome),
-        results: [{ account: { type: "chatgpt", email: "owner@example.test", planType: "pro" }, requiresOpenaiAuth: true }, {
-          rateLimitsByLimitId: {
-            codex: { limitId: "codex", primary: { usedPercent: 96, windowDurationMins: 300, resetsAt: 1787515200 }, secondary: { usedPercent: 45, windowDurationMins: 10080, resetsAt: 1786996800 }, planType: "pro", rateLimitReachedType: null },
-            "secondary-controls": { limitId: "secondary-controls", primary: { usedPercent: 45, windowDurationMins: 300, resetsAt: 1786996800 }, secondary: { usedPercent: 95, windowDurationMins: 10080, resetsAt: 1787515200 }, planType: "pro", rateLimitReachedType: null },
-            weekly: { limitId: "weekly", primary: { usedPercent: 45, windowDurationMins: 10080, resetsAt: 1787515200 }, secondary: null, planType: "pro", rateLimitReachedType: null },
-          },
-          rateLimitResetCredits: { availableCount: 2, credits: null },
-        }],
+        receipt: nativeProcessReceipt(codexHome, results),
+        results,
       };
     },
   });
@@ -81,6 +87,62 @@ test("native quota binds the selected isolated Codex account and official multi-
   assert.doesNotMatch(JSON.stringify(result), /owner@example\.test/);
   assert.match(result.observations[0].windowIdentity, /^[a-f0-9]{64}$/);
   assert.match(result.observations[0].sourceDigest, /^[a-f0-9]{64}$/);
+  assert.match(result.bindingProofDigest, /^[a-f0-9]{64}$/);
+  assert.equal((await adapter.revalidateBinding(result)).valid, true);
+});
+
+test("native quota binding recheck rejects selected-profile substitution before commit", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-native-recheck-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const firstHome = join(root, "first");
+  const secondHome = join(root, "second");
+  await mkdir(firstHome);
+  await mkdir(secondHome);
+  const store = new AccountStore({ path: join(root, "accounts.json") });
+  const first = await store.create({ providerId: "openai-codex", label: "First", authKind: "cli-login", profileRef: "first" });
+  const second = await store.create({ providerId: "openai-codex", label: "Second", authKind: "cli-login", profileRef: "second" });
+  await store.select(first.id);
+  const results = [
+    { account: { type: "chatgpt", email: "owner@example.test", planType: "pro" }, requiresOpenaiAuth: true },
+    { rateLimitsByLimitId: { codex: { limitId: "codex", primary: { usedPercent: 96 }, secondary: null, planType: "pro", rateLimitReachedType: null } } },
+  ];
+  const adapter = new CodexNativeQuotaAdapter({
+    accountStore: store,
+    config: { accounts: { profileSources: {
+      first: { kind: "codex-home", root: firstHome },
+      second: { kind: "codex-home", root: secondHome },
+    } } },
+    callAppServerBatch: async () => ({ results, receipt: nativeProcessReceipt(firstHome, results) }),
+  });
+  const batch = await adapter.read();
+  await store.select(second.id);
+  await assert.rejects(adapter.revalidateBinding(batch), /Active account binding changed/);
+});
+
+test("native quota recheck rejects same-profile native identity substitution", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-native-identity-recheck-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const codexHome = join(root, "codex-home");
+  await mkdir(codexHome);
+  const store = new AccountStore({ path: join(root, "accounts.json") });
+  const account = await store.create({ providerId: "openai-codex", label: "Work", authKind: "cli-login", profileRef: "work" });
+  await store.select(account.id);
+  const adapter = new CodexNativeQuotaAdapter({
+    accountStore: store,
+    config: { accounts: { profileSources: { work: { kind: "codex-home", root: codexHome } } } },
+    callAppServerBatch: async (requests) => {
+      const identity = requests.length === 1 ? "replacement@example.test" : "owner@example.test";
+      const results = requests.length === 1
+        ? [{ account: { type: "chatgpt", email: identity, planType: "pro" }, requiresOpenaiAuth: true }]
+        : [
+          { account: { type: "chatgpt", email: identity, planType: "pro" }, requiresOpenaiAuth: true },
+          { rateLimitsByLimitId: { codex: { limitId: "codex", primary: { usedPercent: 96 }, secondary: null, planType: "pro", rateLimitReachedType: null } } },
+        ];
+      return { receipt: nativeProcessReceipt(codexHome, results, requests.map((request) => request.method)), results };
+    },
+  });
+  const batch = await adapter.read();
+  await assert.rejects(adapter.revalidateBinding(batch), /identity changed before quota commit/);
 });
 
 test("App Server receipt binds canonical executable hash version argv and isolated CODEX_HOME", async (t) => {
@@ -112,19 +174,27 @@ test("native quota fails closed when App Server identity or source receipt is no
   const store = new AccountStore({ path: join(root, "accounts.json") });
   const account = await store.create({ providerId: "openai-codex", label: "Work", authKind: "cli-login", profileRef: "codex-work" });
   await store.select(account.id);
-  const makeAdapter = (accountResult, receipt = nativeProcessReceipt(codexHome)) => new CodexNativeQuotaAdapter({
+  const makeAdapter = (accountResult, receiptOverrides = {}) => new CodexNativeQuotaAdapter({
     accountStore: store,
     config: {
       accounts: { profileSources: { "codex-work": { kind: "codex-home", root: codexHome } } },
       providers: { "openai-codex": { command: "codex-fixture" } },
     },
-    callAppServerBatch: async () => ({
-      receipt,
-      results: [accountResult, { rateLimitsByLimitId: { codex: { limitId: "codex", primary: { usedPercent: 96 }, secondary: null, planType: "pro", rateLimitReachedType: null } } }],
-    }),
+    callAppServerBatch: async () => {
+      const results = [accountResult, { rateLimitsByLimitId: { codex: { limitId: "codex", primary: { usedPercent: 96 }, secondary: null, planType: "pro", rateLimitReachedType: null } } }];
+      return { receipt: { ...nativeProcessReceipt(codexHome, results), ...receiptOverrides }, results };
+    },
   });
   await assert.rejects(makeAdapter({ account: { type: "chatgpt", email: null, planType: "pro" }, requiresOpenaiAuth: true }).read(), /bindable native ChatGPT account identity/);
-  await assert.rejects(makeAdapter({ account: { type: "chatgpt", email: "owner@example.test", planType: "pro" }, requiresOpenaiAuth: true }, { ...nativeProcessReceipt(codexHome), executableVerifiedAfterRead: false }).read(), /not source-bound/);
+  const identity = { account: { type: "chatgpt", email: "owner@example.test", planType: "pro" }, requiresOpenaiAuth: true };
+  for (const overrides of [
+    { executableVerifiedAfterRead: false },
+    { processId: null },
+    { methods: ["account/rateLimits/read", "account/read"] },
+    { argv: [process.execPath, "wrong"] },
+    { resultDigest: "c".repeat(64) },
+    { id: "d".repeat(64) },
+  ]) await assert.rejects(makeAdapter(identity, overrides).read(), /not source-bound/);
 });
 
 test("native quota rejects canonical aliases of the default profile before App Server use", async (t) => {
@@ -171,16 +241,29 @@ test("authoritative executable binding rejects indirect Windows launchers and bo
   }), /exceeded 8 bytes/);
 });
 
-function nativeProcessReceipt(codexHome) {
-  return {
-    id: "d".repeat(64),
+function nativeProcessReceipt(codexHome, results, methods = ["account/read", "account/rateLimits/read"]) {
+  const receipt = {
     kind: "codex-app-server-process",
-    methods: ["account/read", "account/rateLimits/read"],
+    methods,
+    processId: 12345,
+    startedAt: "2026-08-17T19:59:59Z",
+    completedAt: "2026-08-17T20:00:00Z",
     executable: { path: process.execPath, sha256: "a".repeat(64), version: process.version, metadataDigest: "b".repeat(64) },
     argv: [process.execPath, "app-server", "--stdio"],
     spawnArgv: [process.execPath, "app-server", "--stdio"],
     codexHome,
     executableVerifiedAfterRead: true,
-    resultDigest: "c".repeat(64),
+    resultDigest: digest(results),
   };
+  return { ...receipt, id: digest(receipt) };
+}
+
+function digest(value) {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  return JSON.stringify(value) ?? "undefined";
 }

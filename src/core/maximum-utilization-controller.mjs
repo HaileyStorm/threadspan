@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
 
 export const MAXIMUM_UTILIZATION_SOURCE_KIND = "codex-native-quota";
 
@@ -13,6 +14,9 @@ export const DEFAULT_MAXIMUM_UTILIZATION_POLICY = Object.freeze({
   pressuredRolloverConsideration: 0.75,
   oneManifestPerEpoch: true,
   requireExactNativeQuotaRecovery: true,
+  nativeReceiptMaxAgeMs: 120_000,
+  nativeReceiptFutureSkewMs: 5_000,
+  dispatchLeaseMs: 30_000,
 });
 
 const BLOCKED_SUPERVISOR_ACTIONS = new Set([
@@ -46,6 +50,7 @@ export function createMaximumUtilizationState(policy = {}) {
     epoch: 0,
     bucket: null,
     observationsByScope: {},
+    lastNativeBatch: null,
     suppressedWindowsByScope: {},
     lastNativeObservation: null,
     snapshot: null,
@@ -128,15 +133,17 @@ export function reduce(previousState, event, policy = {}) {
  * Stateful daemon composition around the pure reducer and durable outbox.
  */
 export class MaximumUtilizationController {
-  /** @param {{policy: Record<string, any>, journal: any, quotaAdapter?: any, snapshotProvider?: Function, capabilities?: Record<string, Function>, logger?: any}} options */
+  /** @param {{policy: Record<string, any>, journal: any, quotaAdapter?: any, snapshotProvider?: Function, capabilities?: Record<string, {adapterId: string, execute: Function}>, logger?: any, now?: () => Date|number|string, dispatcherId?: string}} options */
   constructor(options) {
     if (!options?.journal) throw new TypeError("maximum-utilization journal is required");
     this.policy = normalizePolicy(options.policy);
     this.journal = options.journal;
-    this.capabilities = Object.freeze({ ...(options.capabilities ?? {}) });
+    this.capabilities = normalizeCapabilityRegistrations(options.capabilities);
     this.logger = options.logger;
     this.quotaAdapter = options.quotaAdapter;
     this.snapshotProvider = options.snapshotProvider;
+    this.now = options.now ?? (() => new Date());
+    this.dispatcherId = nonEmpty(options.dispatcherId) ?? randomUUID();
     this.state = createMaximumUtilizationState(this.policy);
     this.queue = Promise.resolve();
     this.initialized = false;
@@ -160,7 +167,7 @@ export class MaximumUtilizationController {
     this.state = snapshot.state ? cloneState(snapshot.state, this.policy) : createMaximumUtilizationState(this.policy);
     if (this.policy.enabled !== true && needsDisabledMaximumUtilizationRecovery(snapshot)) {
       const transition = reconcileDisabledRestart(this.state, snapshot.outbox);
-      await this.journal.commit(transition);
+      await this.#persistTransition({ ...transition, expectedStateDigest: digest(this.state) });
       this.state = transition.state;
     }
     this.initialized = true;
@@ -179,7 +186,13 @@ export class MaximumUtilizationController {
     return this.#serialized(async () => {
       if (!this.initialized) await this.initialize();
       const transition = reduce(this.state, event, this.policy);
-      await this.journal.commit({ event, state: transition.state, actions: transition.actions, cancellations: transition.cancellations });
+      await this.#persistTransition({
+        event,
+        state: transition.state,
+        actions: transition.actions,
+        cancellations: transition.cancellations,
+        expectedStateDigest: digest(this.state),
+      });
       this.state = transition.state;
       await this.dispatchPending();
       return { accepted: true, actionCount: transition.actions.length, readModel: await this.readModel() };
@@ -196,17 +209,45 @@ export class MaximumUtilizationController {
   async #refreshNative() {
     if (!this.initialized) await this.initialize();
     const result = await this.quotaAdapter.read();
-    const observations = sortNativeObservations(result.observations ?? []);
-    const accountId = nonEmpty(result.accountId);
-    if (!accountId || observations.length === 0 || observations.some((observation) => observation.accountId !== accountId || observation.controllingAccountId !== accountId)) {
-      throw new Error("Native Codex quota adapter returned an unbound or empty observation batch");
-    }
+    const observations = validateNativeQuotaBatch(result, this.policy, this.now());
     const worst = observations[0];
     const snapshot = worst.usedRatio >= this.policy.triggerUsedRatio && worst.exhausted !== true && worst.usedRatio < 1 && !activeProtection(this.state)
       ? (typeof this.snapshotProvider === "function" ? await this.snapshotProvider() : {})
       : undefined;
-    const outcome = await this.#commitEvent({ type: "native-quota-batch-observed", observations, ...(snapshot ? { snapshot } : {}) });
+    const outcome = await this.#commitNativeBatch(result, observations, snapshot);
     return { ...outcome, accountBound: true, observationCount: observations.length };
+  }
+
+  async #commitNativeBatch(batch, observations, snapshot) {
+    return this.#serialized(async () => {
+      if (typeof this.quotaAdapter?.withRevalidatedBinding !== "function") {
+        throw new Error("Native Codex quota adapter lacks atomic selected-account binding revalidation");
+      }
+      const transition = await this.quotaAdapter.withRevalidatedBinding(batch, async (recheck) => {
+        assertNativeBindingRecheck(recheck, batch);
+        const verifiedObservations = validateNativeQuotaBatch(batch, this.policy, this.now());
+        if (digest(verifiedObservations.map((observation) => observation.sourceDigest))
+          !== digest(observations.map((observation) => observation.sourceDigest))) {
+          throw new Error("Native Codex quota batch changed during selected-account binding recheck");
+        }
+        if (!nativeBatchIsNewer(this.state.lastNativeBatch, verifiedObservations)) {
+          throw new Error("Native Codex quota batch is not newer than the committed adapter generation");
+        }
+        const event = { type: "native-quota-batch-observed", observations: verifiedObservations, ...(snapshot ? { snapshot } : {}) };
+        const committed = reduce(this.state, event, this.policy);
+        await this.#persistTransition({
+          event,
+          state: committed.state,
+          actions: committed.actions,
+          cancellations: committed.cancellations,
+          expectedStateDigest: digest(this.state),
+        });
+        return committed;
+      });
+      this.state = transition.state;
+      await this.dispatchPending();
+      return { accepted: true, actionCount: transition.actions.length, readModel: await this.readModel() };
+    });
   }
 
   /** Enter owner-requested quota-independent full-push mode for one labeled scope. */
@@ -253,24 +294,46 @@ export class MaximumUtilizationController {
       const entries = await this.journal.replayableOutbox();
       for (const entry of entries) {
         if (this.policy.enabled !== true && !INVERSE_CLEANUP_ACTION_TYPES.includes(entry.action.type)) {
-          await this.journal.recordDispatch(entry.idempotencyKey, { status: "cancelled", error: "disabled restart rejected obsolete non-cleanup action" });
+          await this.journal.recordUndispatched(entry.idempotencyKey, { status: "cancelled", error: "disabled restart rejected obsolete non-cleanup action" });
           continue;
         }
-        const handler = this.capabilities[entry.action.capability];
-        if (typeof handler !== "function") {
-          if (entry.status !== "unsupported") await this.journal.recordDispatch(entry.idempotencyKey, { status: "unsupported" });
+        const registration = this.capabilities[entry.action.capability];
+        if (!registration) {
+          if (entry.status !== "unsupported") await this.journal.recordUndispatched(entry.idempotencyKey, { status: "unsupported" });
           continue;
         }
+        const claimed = await this.journal.claimDispatch(entry.idempotencyKey, {
+          dispatcherId: this.dispatcherId,
+          leaseMs: positivePolicyInteger(this.policy.dispatchLeaseMs, DEFAULT_MAXIMUM_UTILIZATION_POLICY.dispatchLeaseMs),
+        });
+        if (!claimed) continue;
+        const dispatchKind = entry.action.type === "start-manual-full-push-manifest" ? "manual" : "automatic";
+        const actionDigest = digest(entry.action);
+        const invocation = await this.journal.invokeClaimedDispatch(claimed.claimToken, () => registration.execute(structuredClone(entry.action), {
+          idempotencyKey: entry.idempotencyKey,
+          dispatchKind,
+          claimId: claimed.claimToken.id,
+          capability: entry.action.capability,
+          actionDigest,
+          leaseExpiresAt: claimed.claimToken.leaseExpiresAt,
+        }));
+        if (!invocation.invoked) continue;
         try {
-          const result = await handler(structuredClone(entry.action));
-          const status = result?.supported === false ? "unsupported" : "executed";
-          await this.journal.recordDispatch(entry.idempotencyKey, { status });
+          const invocationResult = await invocation.result;
+          if (!invocationResult.ok) throw invocationResult.error;
+          const result = invocationResult.value;
+          if (result?.supported === false) {
+            await this.journal.completeDispatch(claimed.claimToken, { status: "unsupported" });
+            continue;
+          }
+          const receiptDigest = validateHostDispatchReceipt(result, entry.action, claimed.claimToken, dispatchKind, registration.adapterId, this.now(), this.policy);
+          await this.journal.completeDispatch(claimed.claimToken, { status: "executed", receiptDigest });
         } catch (error) {
-          await this.journal.recordDispatch(entry.idempotencyKey, {
-            status: "pending",
+          await this.journal.completeDispatch(claimed.claimToken, {
+            status: "indeterminate",
             error: error instanceof Error ? error.message : String(error),
           });
-          this.logger?.warn?.("Maximum-utilization host action remains pending", {
+          this.logger?.warn?.("Maximum-utilization host action is indeterminate and will not replay automatically", {
             capability: entry.action.capability,
             message: error instanceof Error ? error.message : String(error),
           });
@@ -336,6 +399,18 @@ export class MaximumUtilizationController {
     this.queue = run.catch(() => undefined);
     return run;
   }
+
+  async #persistTransition(transition) {
+    try {
+      return await this.journal.commit(transition);
+    } catch (error) {
+      if (error?.code === "MAXIMUM_UTILIZATION_STATE_CONFLICT") {
+        const snapshot = await this.journal.snapshot();
+        this.state = snapshot.state ? cloneState(snapshot.state, this.policy) : createMaximumUtilizationState(this.policy);
+      }
+      throw error;
+    }
+  }
 }
 
 function reduceNativeQuota(state, event, policy, actions, cancellations) {
@@ -376,6 +451,7 @@ function reduceNativeQuotaBatch(state, event, policy, actions, cancellations) {
     .map(normalizeNativeObservation)
     .filter(Boolean);
   if (observations.length === 0) return;
+  if (!recordNativeBatch(state, observations)) return;
   const controlling = state.bucket
     ? observations.find((observation) => bucketMatchesScope(state.bucket, observation))
     : null;
@@ -410,10 +486,40 @@ function reduceNativeQuotaBatch(state, event, policy, actions, cancellations) {
   applyNativeObservation(state, authoritative, event.snapshot, policy, actions, cancellations, true);
 }
 
+function recordNativeBatch(state, observations) {
+  const current = batchIdentityOf(observations[0]);
+  if (!current) return true;
+  if (observations.some((observation) => stableStringify(batchIdentityOf(observation)) !== stableStringify(current))) return false;
+  if (!nativeBatchIsNewer(state.lastNativeBatch, observations)) return false;
+  state.lastNativeBatch = current;
+  return true;
+}
+
+function nativeBatchIsNewer(previous, observations) {
+  const current = batchIdentityOf(observations?.[0]);
+  if (!current) return previous == null;
+  if (!previous) return true;
+  if (current.batchId === previous.batchId) return false;
+  if (current.adapterInstanceId === previous.adapterInstanceId && current.adapterGenerationId === previous.adapterGenerationId) {
+    return current.batchSequence > previous.batchSequence;
+  }
+  return Date.parse(current.receiptCompletedAt) > Date.parse(previous.receiptCompletedAt)
+    && Date.parse(current.observedAt) > Date.parse(previous.observedAt);
+}
+
 function recordNativeObservation(state, observation) {
   const scopeKey = bucketScopeKey(observation);
   const previous = state.observationsByScope?.[scopeKey];
-  if (previous?.adapterInstanceId === observation.adapterInstanceId && observation.monotonicObservation <= previous.monotonicObservation) return false;
+  if (previous) {
+    const sameGeneration = previous.adapterInstanceId === observation.adapterInstanceId
+      && previous.adapterGenerationId === observation.adapterGenerationId;
+    if (sameGeneration && observation.monotonicObservation <= previous.monotonicObservation) return false;
+    if (!sameGeneration && previous.receiptCompletedAt && observation.receiptCompletedAt
+      && (Date.parse(observation.receiptCompletedAt) <= Date.parse(previous.receiptCompletedAt)
+        || Date.parse(observation.observedAt) <= Date.parse(previous.observedAt))) return false;
+    if (!sameGeneration && (!previous.receiptCompletedAt || !observation.receiptCompletedAt)
+      && previous.adapterInstanceId !== observation.adapterInstanceId) return false;
+  }
   state.observationsByScope ??= {};
   state.observationsByScope[scopeKey] = observation;
   return true;
@@ -689,6 +795,188 @@ function maybeRequestFastCanary(state, observation, policy, actions) {
   }));
 }
 
+function validateNativeQuotaBatch(result, policy, nowValue) {
+  const accountId = nonEmpty(result?.accountId);
+  const proof = result?.bindingProof;
+  const proofDigest = nonEmpty(result?.bindingProofDigest);
+  const observations = sortNativeObservations(result?.observations ?? []);
+  if (!accountId || observations.length === 0 || !proof || proof?.kind !== "codex-native-quota-binding"
+    || proofDigest !== digest(proof) || proof.accountId !== accountId || proof.providerId !== "openai-codex") {
+    throw new Error("Native Codex quota adapter returned an unbound or empty observation batch");
+  }
+  const nowMs = new Date(nowValue).getTime();
+  if (!Number.isFinite(nowMs)) throw new Error("Native Codex quota controller clock is invalid");
+  const maximumAge = positivePolicyInteger(policy.nativeReceiptMaxAgeMs, DEFAULT_MAXIMUM_UTILIZATION_POLICY.nativeReceiptMaxAgeMs);
+  const futureSkew = positivePolicyInteger(policy.nativeReceiptFutureSkewMs, DEFAULT_MAXIMUM_UTILIZATION_POLICY.nativeReceiptFutureSkewMs);
+  const bucketIds = new Set();
+  const sourceDigests = [];
+  for (const observation of observations) {
+    const receipt = observation?.nativeReceipt;
+    const completedAt = timestamp(receipt?.completedAt);
+    const startedAt = timestamp(receipt?.startedAt);
+    const observedAt = timestamp(observation?.observedAt);
+    const receiptBase = nativeProcessReceiptBase(receipt);
+    const unsignedObservation = observation && typeof observation === "object" ? { ...observation } : null;
+    if (unsignedObservation) delete unsignedObservation.sourceDigest;
+    const invalid = [
+      ["scope", observation?.sourceKind !== MAXIMUM_UTILIZATION_SOURCE_KIND || observation.providerId !== "openai-codex"
+        || observation.accountId !== accountId || observation.controllingAccountId !== accountId
+        || observation.limitId !== observation.bucketId || observation.windowIdentity !== observation.windowId
+        || bucketIds.has(observation.bucketId) || !nonEmpty(observation.bucketId) || !nonEmpty(observation.windowId)],
+      ["capacity", ratio(observation.usedRatio) == null || !Number.isFinite(observation.remainingCapacity)
+        || Math.abs(observation.remainingCapacity - Math.max(0, 1 - observation.usedRatio)) > Number.EPSILON * 8],
+      ["source-digest", observation.sourceDigest !== digest(unsignedObservation)],
+      ["process", receipt?.kind !== "codex-app-server-process"
+        || stableStringify(receipt?.methods) !== stableStringify(["account/read", "account/rateLimits/read"])
+        || receipt?.id !== digest(receiptBase) || !Number.isSafeInteger(receipt?.processId) || receipt.processId <= 0],
+      ["time", !startedAt || !completedAt || !observedAt || Date.parse(completedAt) < Date.parse(startedAt)
+        || Date.parse(completedAt) > nowMs + futureSkew || Date.parse(observedAt) > nowMs + futureSkew
+        || nowMs - Date.parse(completedAt) > maximumAge || nowMs - Date.parse(observedAt) > maximumAge
+        || Date.parse(observedAt) + futureSkew < Date.parse(completedAt)],
+      ["executable", receipt?.executableVerifiedAfterRead !== true || !isAbsolute(receipt?.executable?.path ?? "")
+        || !hexDigest(receipt?.executable?.sha256) || !hexDigest(receipt?.executable?.metadataDigest)
+        || !nonEmpty(receipt?.executable?.version) || !Array.isArray(receipt?.argv) || receipt.argv[0] !== receipt.executable.path
+        || !Array.isArray(receipt?.spawnArgv) || receipt.spawnArgv.length === 0 || receipt.spawnArgv.some((part) => !nonEmpty(part))],
+      ["binding", !hexDigest(receipt?.resultDigest) || !hexDigest(receipt?.nativeAccountIdentityDigest)
+        || !hexDigest(receipt?.profileBindingDigest) || !hexDigest(receipt?.accountSelectionBindingDigest)
+        || !hexDigest(receipt?.resultBindingDigest) || !hexDigest(receipt?.bucketBindingDigest)
+        || receipt?.adapterInstanceId !== observation.adapterInstanceId || receipt?.adapterGenerationId !== observation.adapterGenerationId
+        || receipt?.monotonicObservation !== observation.monotonicObservation || receipt?.batchId !== proof.batchId
+        || receipt?.batchSequence !== proof.batchSequence || receipt?.resultBindingDigest !== proof.resultBindingDigest],
+      ["bucket-binding", receipt?.bucketBindingDigest !== digest({ resultBindingDigest: receipt.resultBindingDigest, ...boundObservationResult(observation) })],
+    ].find(([, failed]) => failed)?.[0];
+    if (invalid) throw new Error(`Native Codex quota observation receipt failed ${invalid} validation`);
+    bucketIds.add(observation.bucketId);
+    sourceDigests.push(observation.sourceDigest);
+  }
+  const firstReceipt = observations[0].nativeReceipt;
+  if (observations.some((observation) => {
+    const receipt = observation.nativeReceipt;
+    return receipt.id !== firstReceipt.id
+      || receipt.resultDigest !== firstReceipt.resultDigest
+      || receipt.profileBindingDigest !== firstReceipt.profileBindingDigest
+      || receipt.accountSelectionBindingDigest !== firstReceipt.accountSelectionBindingDigest
+      || receipt.nativeAccountIdentityDigest !== firstReceipt.nativeAccountIdentityDigest
+      || receipt.adapterInstanceId !== firstReceipt.adapterInstanceId
+      || receipt.adapterGenerationId !== firstReceipt.adapterGenerationId
+      || receipt.adapterGenerationStartedAt !== firstReceipt.adapterGenerationStartedAt
+      || receipt.batchId !== firstReceipt.batchId || receipt.batchSequence !== firstReceipt.batchSequence;
+  })) throw new Error("Native Codex quota batch spans inconsistent source receipts");
+  const resultBindingDigest = digest({
+    processResultDigest: firstReceipt.resultDigest,
+    nativeAccountIdentityDigest: firstReceipt.nativeAccountIdentityDigest,
+    buckets: observations.map(boundObservationResult).sort((left, right) => left.bucketId.localeCompare(right.bucketId)),
+  });
+  const profileBindingDigest = digest({
+    accountId,
+    profileRef: proof.profileRef,
+    codexHome: proof.codexHome,
+    nativeAccountIdentityDigest: firstReceipt.nativeAccountIdentityDigest,
+    executableSha256: firstReceipt.executable.sha256,
+    accountSelectionBindingDigest: proof.accountSelectionBindingDigest,
+  });
+  const batchId = digest({
+    processReceiptId: firstReceipt.id,
+    profileBindingDigest,
+    resultBindingDigest,
+    adapterInstanceId: firstReceipt.adapterInstanceId,
+    adapterGenerationId: firstReceipt.adapterGenerationId,
+    batchSequence: firstReceipt.batchSequence,
+  });
+  if (proof.profileBindingDigest !== profileBindingDigest || firstReceipt.profileBindingDigest !== profileBindingDigest
+    || proof.accountSelectionBindingDigest !== firstReceipt.accountSelectionBindingDigest
+    || proof.resultBindingDigest !== resultBindingDigest || firstReceipt.resultBindingDigest !== resultBindingDigest
+    || proof.batchId !== batchId || firstReceipt.batchId !== batchId
+    || proof.processReceiptId !== firstReceipt.id
+    || proof.nativeAccountIdentityDigest !== firstReceipt.nativeAccountIdentityDigest
+    || proof.executableSha256 !== firstReceipt.executable.sha256
+    || proof.adapterInstanceId !== firstReceipt.adapterInstanceId
+    || proof.adapterGenerationId !== firstReceipt.adapterGenerationId
+    || proof.adapterGenerationStartedAt !== firstReceipt.adapterGenerationStartedAt
+    || proof.batchSequence !== firstReceipt.batchSequence
+    || stableStringify(proof.observationDigests) !== stableStringify(sourceDigests.sort())) {
+    throw new Error("Native Codex quota batch binding proof is incomplete or tampered");
+  }
+  return observations;
+}
+
+function validateHostDispatchReceipt(result, action, claimToken, dispatchKind, expectedAdapterId, nowValue, policy) {
+  const receipt = result?.receipt;
+  const unsignedReceipt = receipt && typeof receipt === "object" ? { ...receipt } : null;
+  if (unsignedReceipt) delete unsignedReceipt.id;
+  const startedAt = timestamp(receipt?.startedAt);
+  const completedAt = timestamp(receipt?.completedAt);
+  const nowMs = new Date(nowValue).getTime();
+  const futureSkew = positivePolicyInteger(policy.nativeReceiptFutureSkewMs, DEFAULT_MAXIMUM_UTILIZATION_POLICY.nativeReceiptFutureSkewMs);
+  const actionDigest = digest(action);
+  const idempotencyKey = action.idempotencyKey;
+  if (result?.supported !== true || result?.applied !== true
+    || result.idempotencyKey !== idempotencyKey
+    || !receipt || receipt.kind !== "maximum-utilization-host-effect"
+    || receipt.id !== digest(unsignedReceipt) || receipt.hostAdapterId !== expectedAdapterId
+    || receipt.idempotencyKey !== idempotencyKey
+    || receipt.dispatchKind !== dispatchKind
+    || receipt.claimId !== claimToken.id
+    || receipt.capability !== action.capability
+    || receipt.actionDigest !== actionDigest
+    || receipt.status !== "executed" || receipt.applied !== true
+    || !startedAt || !completedAt || Date.parse(completedAt) < Date.parse(startedAt)
+    || Date.parse(startedAt) + futureSkew < Date.parse(claimToken.claimedAt)
+    || Date.parse(completedAt) > Date.parse(claimToken.leaseExpiresAt)
+    || Date.parse(completedAt) > nowMs + futureSkew) {
+    throw new Error("Maximum-utilization host adapter did not return a source-bound executed claim receipt");
+  }
+  return digest(receipt);
+}
+
+function assertNativeBindingRecheck(recheck, batch) {
+  const proof = batch?.bindingProof;
+  if (recheck?.valid !== true || recheck.batchId !== proof?.batchId
+    || recheck.bindingProofDigest !== batch?.bindingProofDigest
+    || recheck.accountSelectionBindingDigest !== proof?.accountSelectionBindingDigest
+    || recheck.adapterInstanceId !== proof?.adapterInstanceId
+    || recheck.adapterGenerationId !== proof?.adapterGenerationId
+    || recheck.batchSequence !== proof?.batchSequence
+    || !hexDigest(recheck.nativeIdentityRecheckReceiptId)) {
+    throw new Error("Native Codex quota selected-account binding recheck failed");
+  }
+}
+
+function nativeProcessReceiptBase(receipt) {
+  return {
+    kind: receipt?.kind,
+    methods: receipt?.methods,
+    processId: receipt?.processId,
+    startedAt: receipt?.startedAt,
+    completedAt: receipt?.completedAt,
+    executable: receipt?.executable,
+    argv: receipt?.argv,
+    spawnArgv: receipt?.spawnArgv,
+    codexHome: receipt?.codexHome,
+    executableVerifiedAfterRead: receipt?.executableVerifiedAfterRead,
+    resultDigest: receipt?.resultDigest,
+  };
+}
+
+function boundObservationResult(observation) {
+  return {
+    bucketId: observation.bucketId,
+    windowId: observation.windowId,
+    usedRatio: observation.usedRatio,
+    remainingCapacity: observation.remainingCapacity,
+    exhausted: observation.exhausted === true || observation.usedRatio >= 1,
+    resetAt: timestamp(observation.resetAt),
+  };
+}
+
+function positivePolicyInteger(value, fallback) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function hexDigest(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
 function normalizeNativeObservation(event) {
   if (event.sourceKind !== MAXIMUM_UTILIZATION_SOURCE_KIND) return null;
   const accountId = nonEmpty(event.accountId);
@@ -699,6 +987,10 @@ function normalizeNativeObservation(event) {
   const receiptId = nonEmpty(typeof receipt === "string" ? receipt : receipt?.id);
   const monotonicObservation = event.monotonicObservation;
   const adapterInstanceId = nonEmpty(event.adapterInstanceId ?? receipt?.adapterInstanceId);
+  const adapterGenerationId = nonEmpty(event.adapterGenerationId ?? receipt?.adapterGenerationId);
+  const batchId = nonEmpty(receipt?.batchId);
+  const batchSequence = receipt?.batchSequence;
+  const receiptCompletedAt = timestamp(receipt?.completedAt);
   const usedRatio = ratio(event.usedRatio);
   const observedAt = timestamp(event.observedAt);
   const remainingCapacity = Number(event.remainingCapacity);
@@ -714,11 +1006,34 @@ function normalizeNativeObservation(event) {
     nativeReceiptDigest: digest(receipt),
     monotonicObservation,
     adapterInstanceId,
+    adapterGenerationId,
+    batchId,
+    batchSequence: Number.isSafeInteger(batchSequence) ? batchSequence : null,
+    processReceiptId: receiptId,
+    receiptCompletedAt,
     usedRatio,
     remainingCapacity,
     observedAt,
     resetAt: timestamp(event.resetAt),
     exhausted: event.exhausted === true || usedRatio >= 1,
+  };
+}
+
+function batchIdentityOf(observation) {
+  const receipt = observation?.nativeReceipt;
+  const batchId = observation?.batchId ?? receipt?.batchId;
+  const adapterGenerationId = observation?.adapterGenerationId ?? receipt?.adapterGenerationId;
+  const batchSequence = observation?.batchSequence ?? receipt?.batchSequence;
+  const receiptCompletedAt = observation?.receiptCompletedAt ?? timestamp(receipt?.completedAt);
+  if (!batchId || !adapterGenerationId || !Number.isSafeInteger(batchSequence)
+    || !receiptCompletedAt || !observation.observedAt) return null;
+  return {
+    batchId,
+    adapterInstanceId: observation.adapterInstanceId ?? receipt?.adapterInstanceId,
+    adapterGenerationId,
+    batchSequence,
+    receiptCompletedAt,
+    observedAt: observation.observedAt,
   };
 }
 
@@ -812,6 +1127,20 @@ function nativeObservationTieBreak(value) {
 
 function normalizePolicy(value) {
   return { ...DEFAULT_MAXIMUM_UTILIZATION_POLICY, ...(value ?? {}) };
+}
+
+function normalizeCapabilityRegistrations(value) {
+  if (value == null) return Object.freeze({});
+  if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("Maximum-utilization capabilities must be an object");
+  const registrations = {};
+  for (const [capability, registration] of Object.entries(value)) {
+    const adapterId = nonEmpty(registration?.adapterId);
+    if (!nonEmpty(capability) || !adapterId || typeof registration?.execute !== "function") {
+      throw new TypeError(`Maximum-utilization capability '${capability}' requires adapterId and execute`);
+    }
+    registrations[capability] = Object.freeze({ adapterId, execute: registration.execute });
+  }
+  return Object.freeze(registrations);
 }
 
 function cloneState(value, policy) {

@@ -87,6 +87,33 @@ test("concurrent child select and remove preserve both mutations", { timeout: 20
   assert.equal(store.list().length, 2);
 });
 
+test("selection generation binding blocks cross-process selection through a bound commit", { timeout: 20_000 }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-account-bound-generation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "accounts.json");
+  const gatePath = join(root, "select-start");
+  const store = new AccountStore({ path, now: () => "2026-08-17T12:00:00Z" });
+  const first = await store.create({ providerId: "codex", label: "First", authKind: "cli-login", profileRef: "codex-first" });
+  const second = await store.create({ providerId: "codex", label: "Second", authKind: "cli-login", profileRef: "codex-second" });
+  const binding = store.createSelectionBinding("codex", first.id);
+  const worker = launchWorker({ action: "select", path, gatePath, payload: { accountId: second.id } });
+  t.after(() => worker.child.kill());
+  await worker.ready;
+  let childCompleted = false;
+  void worker.completed.then(() => { childCompleted = true; });
+
+  await store.withSelectionBinding(binding, async (held) => {
+    assert.equal(held.digest, binding.digest);
+    await writeFile(gatePath, "start", "utf8");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(childCompleted, false);
+    assert.equal(store.resolve("codex").id, first.id);
+  });
+  await worker.completed;
+  assert.equal(new AccountStore({ path }).resolve("codex").id, second.id);
+  await assert.rejects(store.withSelectionBinding(binding, async () => undefined), /Active account binding changed/);
+});
+
 test("persistent reader observes child-process creation, selection, and removal", { timeout: 20_000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "threadspan-account-process-reader-"));
   t.after(() => rm(root, { recursive: true, force: true }));

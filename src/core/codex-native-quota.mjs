@@ -27,8 +27,12 @@ export class CodexNativeQuotaAdapter {
     this.callAppServerBatch = options.callAppServerBatch ?? callCodexAppServerBatchWithReceipt;
     this.now = options.now ?? (() => new Date());
     this.instanceId = options.instanceId ?? randomUUID();
+    this.generationId = options.generationId ?? randomUUID();
+    this.generationStartedAt = new Date(this.now()).toISOString();
+    this.batchSequence = 0;
     this.sequence = 0;
     this.inFlight = null;
+    this.lastIssuedBatch = null;
   }
 
   /** Perform one single-flight account/rateLimits/read against the current openai-codex account. */
@@ -63,7 +67,7 @@ export class CodexNativeQuotaAdapter {
       commandArgs,
       environment,
     });
-    assertNativeProcessReceipt(receipt, { commandArgs, codexHome });
+    assertNativeProcessReceipt(receipt, { methods: ["account/read", "account/rateLimits/read"], commandArgs, codexHome, results });
     const nativeAccountIdentityDigest = digest(normalizeNativeAccountIdentity(results?.[0]));
     const selectedAfter = this.accountStore.resolve(CODEX_NATIVE_QUOTA_PROVIDER_ID);
     const sourceAfter = this.config.accounts?.profileSources?.[selectedAfter?.profileRef];
@@ -71,6 +75,7 @@ export class CodexNativeQuotaAdapter {
       || sourceAfter?.kind !== "codex-home" || await realpath(sourceAfter.root) !== codexHome) {
       throw new Error("Selected opaque Codex account profile changed during native quota read");
     }
+    const accountSelectionBinding = this.accountStore.createSelectionBinding(CODEX_NATIVE_QUOTA_PROVIDER_ID, account.id);
     const result = results?.[1];
     const profileBindingDigest = digest({
       accountId: account.id,
@@ -78,6 +83,7 @@ export class CodexNativeQuotaAdapter {
       codexHome,
       nativeAccountIdentityDigest,
       executableSha256: receipt.executable.sha256,
+      accountSelectionBindingDigest: accountSelectionBinding.digest,
     });
     const observedAt = new Date(this.now()).toISOString();
     const buckets = normalizeBuckets(result).sort((left, right) => {
@@ -89,6 +95,20 @@ export class CodexNativeQuotaAdapter {
     });
     if (buckets.length === 0) throw new Error("Codex App Server account/rateLimits/read returned no rate-limit buckets");
     const resetCreditsAvailable = nonnegativeInteger(result?.rateLimitResetCredits?.availableCount);
+    const batchSequence = ++this.batchSequence;
+    const resultBindingDigest = digest({
+      processResultDigest: receipt.resultDigest,
+      nativeAccountIdentityDigest,
+      buckets: buckets.map(boundBucketResult).sort((left, right) => left.bucketId.localeCompare(right.bucketId)),
+    });
+    const batchId = digest({
+      processReceiptId: receipt.id,
+      profileBindingDigest,
+      resultBindingDigest,
+      adapterInstanceId: this.instanceId,
+      adapterGenerationId: this.generationId,
+      batchSequence,
+    });
     const observations = buckets.map((bucket) => {
       const monotonicObservation = ++this.sequence;
       const windowIdentity = digest({
@@ -100,7 +120,17 @@ export class CodexNativeQuotaAdapter {
         ...receipt,
         nativeAccountIdentityDigest,
         profileBindingDigest,
+        accountSelectionBindingDigest: accountSelectionBinding.digest,
         adapterInstanceId: this.instanceId,
+        adapterGenerationId: this.generationId,
+        adapterGenerationStartedAt: this.generationStartedAt,
+        batchSequence,
+        batchId,
+        resultBindingDigest,
+        bucketBindingDigest: digest({
+          resultBindingDigest,
+          ...boundBucketResult(bucket),
+        }),
         monotonicObservation,
       };
       const observation = {
@@ -125,7 +155,94 @@ export class CodexNativeQuotaAdapter {
       };
       return { ...observation, sourceDigest: digest(observation) };
     });
-    return { providerId: CODEX_NATIVE_QUOTA_PROVIDER_ID, accountId: account.id, observations };
+    const bindingProof = {
+      kind: "codex-native-quota-binding",
+      providerId: CODEX_NATIVE_QUOTA_PROVIDER_ID,
+      accountId: account.id,
+      profileRef: account.profileRef,
+      codexHome,
+      profileBindingDigest,
+      accountSelectionBindingDigest: accountSelectionBinding.digest,
+      nativeAccountIdentityDigest,
+      executableSha256: receipt.executable.sha256,
+      adapterInstanceId: this.instanceId,
+      adapterGenerationId: this.generationId,
+      adapterGenerationStartedAt: this.generationStartedAt,
+      batchSequence,
+      batchId,
+      processReceiptId: receipt.id,
+      resultBindingDigest,
+      observationDigests: observations.map((observation) => observation.sourceDigest).sort(),
+    };
+    const batch = {
+      providerId: CODEX_NATIVE_QUOTA_PROVIDER_ID,
+      accountId: account.id,
+      observations,
+      bindingProof,
+      bindingProofDigest: digest(bindingProof),
+    };
+    this.lastIssuedBatch = {
+      batchId,
+      bindingProofDigest: batch.bindingProofDigest,
+      observationDigests: bindingProof.observationDigests,
+      accountSelectionBinding,
+    };
+    return batch;
+  }
+
+  /** Hold the selected-account generation through native identity recheck and controller commit. */
+  async withRevalidatedBinding(batch, operation) {
+    if (typeof operation !== "function") throw new TypeError("Native quota binding commit operation is required");
+    const proof = batch?.bindingProof;
+    const proofDigest = digest(proof);
+    const observationDigests = Array.isArray(batch?.observations)
+      ? batch.observations.map((observation) => observation?.sourceDigest).sort()
+      : [];
+    if (!proof || proof.kind !== "codex-native-quota-binding"
+      || batch?.bindingProofDigest !== proofDigest
+      || proof.batchId !== this.lastIssuedBatch?.batchId
+      || proofDigest !== this.lastIssuedBatch?.bindingProofDigest
+      || proof.accountSelectionBindingDigest !== this.lastIssuedBatch?.accountSelectionBinding?.digest
+      || stableStringify(observationDigests) !== stableStringify(this.lastIssuedBatch?.observationDigests)) {
+      throw new Error("Native Codex quota binding proof is not the adapter's current issued batch");
+    }
+    return this.accountStore.withSelectionBinding(this.lastIssuedBatch.accountSelectionBinding, async () => {
+      const account = this.accountStore.resolve(CODEX_NATIVE_QUOTA_PROVIDER_ID);
+      const source = this.config.accounts?.profileSources?.[account?.profileRef];
+      if (!account || account.id !== proof.accountId || account.profileRef !== proof.profileRef
+        || source?.kind !== "codex-home" || await realpath(source.root) !== proof.codexHome) {
+        throw new Error("Selected opaque Codex account profile changed before native quota commit");
+      }
+      const command = this.config.providers?.[CODEX_NATIVE_QUOTA_PROVIDER_ID]?.command ?? "codex";
+      const commandArgs = ["app-server", "--stdio"];
+      const { results, receipt } = await this.callAppServerBatch([
+        { method: "account/read", params: { refreshToken: false } },
+      ], {
+        command,
+        commandArgs,
+        environment: isolatedCodexEnvironment(proof.codexHome),
+      });
+      assertNativeProcessReceipt(receipt, { methods: ["account/read"], commandArgs, codexHome: proof.codexHome, results });
+      if (digest(normalizeNativeAccountIdentity(results?.[0])) !== proof.nativeAccountIdentityDigest
+        || receipt.executable.sha256 !== proof.executableSha256) {
+        throw new Error("Native Codex account identity changed before quota commit");
+      }
+      return operation({
+        valid: true,
+        batchId: proof.batchId,
+        bindingProofDigest: proofDigest,
+        accountSelectionBindingDigest: proof.accountSelectionBindingDigest,
+        adapterInstanceId: this.instanceId,
+        adapterGenerationId: this.generationId,
+        batchSequence: proof.batchSequence,
+        nativeIdentityRecheckReceiptId: receipt.id,
+      });
+    });
+  }
+
+  /** Recheck without a commit callback for diagnostics and focused tests. */
+  async revalidateBinding(batch) {
+    return this.withRevalidatedBinding(batch, async (proof) => proof);
   }
 }
 
@@ -142,9 +259,13 @@ function normalizeNativeAccountIdentity(result) {
 function assertNativeProcessReceipt(receipt, expected) {
   const executable = receipt?.executable;
   const expectedArgv = [executable?.path, ...expected.commandArgs];
+  const startedAt = timestamp(receipt?.startedAt);
+  const completedAt = timestamp(receipt?.completedAt);
+  const receiptWithoutId = receipt && typeof receipt === "object" ? { ...receipt } : null;
+  if (receiptWithoutId) delete receiptWithoutId.id;
   if (receipt?.kind !== "codex-app-server-process"
     || !Array.isArray(receipt.methods)
-    || stableStringify(receipt.methods) !== stableStringify(["account/read", "account/rateLimits/read"])
+    || stableStringify(receipt.methods) !== stableStringify(expected.methods)
     || receipt.codexHome !== expected.codexHome
     || receipt.executableVerifiedAfterRead !== true
     || !executable || !isAbsolute(executable.path)
@@ -152,11 +273,28 @@ function assertNativeProcessReceipt(receipt, expected) {
     || !/^[a-f0-9]{64}$/.test(executable.metadataDigest ?? "")
     || typeof executable.version !== "string" || !executable.version.trim()
     || stableStringify(receipt.argv) !== stableStringify(expectedArgv)
-    || !Array.isArray(receipt.spawnArgv) || receipt.spawnArgv.length === 0
-    || !/^[a-f0-9]{64}$/.test(receipt.resultDigest ?? "")
-    || !/^[a-f0-9]{64}$/.test(receipt.id ?? "")) {
+    || !Array.isArray(receipt.spawnArgv) || receipt.spawnArgv.length === 0 || receipt.spawnArgv.some((part) => typeof part !== "string" || !part)
+    || !Number.isSafeInteger(receipt.processId) || receipt.processId <= 0
+    || !startedAt || !completedAt || Date.parse(completedAt) < Date.parse(startedAt)
+    || receipt.resultDigest !== digest(expected.results)
+    || receipt.id !== digest(receiptWithoutId)) {
     throw new Error("Codex App Server native quota receipt is not source-bound");
   }
+}
+
+function boundBucketResult(bucket) {
+  return {
+    bucketId: bucket.limitId,
+    windowId: digest({
+      limitId: bucket.limitId,
+      primary: windowIdentityFields(bucket.primary),
+      secondary: windowIdentityFields(bucket.secondary),
+    }),
+    usedRatio: bucket.usedRatio,
+    remainingCapacity: Math.max(0, 1 - bucket.usedRatio),
+    exhausted: bucket.rateLimitReachedType !== null || bucket.usedRatio >= 1,
+    resetAt: resetAt(bucket.controllingWindow),
+  };
 }
 
 function normalizeBuckets(result) {
@@ -255,4 +393,8 @@ function positiveNumberOrNull(value) {
 function epochSecondsOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function timestamp(value) {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 }

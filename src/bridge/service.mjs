@@ -39,7 +39,7 @@ const TIP_CONVERSATION_LIMIT = 16;
 export class BridgeService {
   /**
    * @param {Record<string, any>} config Validated bridge configuration.
-   * @param {{logger?: Logger, registry?: ProviderRegistry, sessions?: SessionStore, accountStore?: AccountStore, actionItemStore?: ActionItemStore, actionItemDeliveryAdapter?: Function|{deliver: Function}, continuityController?: CodexContinuityController, automaticTakeoverController?: AutomaticTakeoverController, maximumUtilizationController?: any, maximumUtilizationCapabilities?: Record<string, Function>, maximumUtilizationJournal?: MaximumUtilizationJournal}} [dependencies] Injectable dependencies.
+   * @param {{logger?: Logger, registry?: ProviderRegistry, sessions?: SessionStore, accountStore?: AccountStore, actionItemStore?: ActionItemStore, actionItemDeliveryAdapter?: Function|{deliver: Function}, continuityController?: CodexContinuityController, automaticTakeoverController?: AutomaticTakeoverController, maximumUtilizationController?: any, maximumUtilizationCapabilities?: Record<string, {adapterId: string, execute: Function}>, maximumUtilizationJournal?: MaximumUtilizationJournal}} [dependencies] Injectable dependencies.
    */
   constructor(config, dependencies = {}) {
     this.config = config;
@@ -1904,6 +1904,8 @@ async function sanitizedMaximumUtilizationReadModel(controller) {
     statuses: {
       pendingActions: nonNegativeIntegerOrNull(outbox.pending) ?? 0,
       unsupportedActions: nonNegativeIntegerOrNull(outbox.unsupported) ?? 0,
+      claimedActions: nonNegativeIntegerOrNull(outbox.claimed) ?? 0,
+      indeterminateActions: nonNegativeIntegerOrNull(outbox.indeterminate) ?? 0,
       executedActions: nonNegativeIntegerOrNull(outbox.executed) ?? 0,
       manifest: ["not-requested", "requested"].includes(statuses.manifest) ? statuses.manifest : "not-requested",
       fastCanary: ["not-requested", "requested"].includes(statuses.fastCanary) ? statuses.fastCanary : "not-requested",

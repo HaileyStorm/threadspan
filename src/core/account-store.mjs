@@ -135,6 +135,33 @@ export class AccountStore {
     });
   }
 
+  /** Capture a privacy-safe generation binding for one exact active provider account. */
+  createSelectionBinding(providerId, expectedAccountId) {
+    this.#refresh();
+    const provider = dimension(providerId, "providerId");
+    const account = this.resolve(provider, expectedAccountId);
+    if (this.state.activeByProvider[provider] !== account.id) {
+      throw new RequestError(`Account '${account.id}' is not the active account for provider '${provider}'`);
+    }
+    return selectionBinding(account);
+  }
+
+  /** Hold the account-store generation while an exact read-only bound operation commits. */
+  withSelectionBinding(binding, operation) {
+    if (typeof operation !== "function") throw new TypeError("Account selection binding operation is required");
+    const expected = normalizeSelectionBinding(binding);
+    return this.#enqueue(() => withAccountStoreLock(this.path, this, async () => {
+      const candidate = loadState(this.path);
+      const activeId = candidate.activeByProvider[expected.providerId];
+      const account = candidate.accounts.find((item) => item.id === activeId);
+      if (!account || selectionBinding(account).digest !== expected.digest) {
+        throw new RequestError(`Active account binding changed for provider '${expected.providerId}'`);
+      }
+      this.state = candidate;
+      return operation(structuredClone(expected));
+    }));
+  }
+
   /** Remove one descriptor and deterministically advance or clear its provider selection. */
   remove(accountId) {
     return this.#enqueue(async () => {
@@ -502,6 +529,41 @@ function delay(milliseconds) {
 
 function emptyState() {
   return { schemaVersion: ACCOUNT_STORE_SCHEMA_VERSION, accounts: [], activeByProvider: {} };
+}
+
+function selectionBinding(account) {
+  const value = {
+    kind: "account-selection-binding",
+    providerId: account.providerId,
+    accountId: account.id,
+    authKind: account.authKind,
+    authSourceRef: account.authSourceRef ?? null,
+    profileRef: account.profileRef ?? null,
+  };
+  return { ...value, digest: createHash("sha256").update(stableStringify(value)).digest("hex") };
+}
+
+function normalizeSelectionBinding(value) {
+  if (!isObject(value) || value.kind !== "account-selection-binding"
+    || typeof value.providerId !== "string" || typeof value.accountId !== "string"
+    || typeof value.authKind !== "string" || !/^[a-f0-9]{64}$/.test(value.digest ?? "")) {
+    throw new TypeError("Malformed account selection binding");
+  }
+  const expected = selectionBinding({
+    providerId: value.providerId,
+    id: value.accountId,
+    authKind: value.authKind,
+    authSourceRef: value.authSourceRef ?? undefined,
+    profileRef: value.profileRef ?? undefined,
+  });
+  if (expected.digest !== value.digest) throw new TypeError("Malformed account selection binding digest");
+  return expected;
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  return JSON.stringify(value) ?? "undefined";
 }
 
 function accountLabel(value, ErrorType = RequestError) {
