@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">Threadspan build usage from the GPT-5.6 Sol handoff</title>
+  <desc id="desc">A chart showing 560.6 million Codex tokens, mostly cached input, plus routed provider events and build activity.</desc>
+  <rect width="1200" height="720" rx="28" fill="#f4efe5"/>
+  <path d="M0 112H1200M0 594H1200" stroke="#d8cdbc" stroke-width="2"/>
+  <g font-family="Georgia, 'Times New Roman', serif" fill="#1f2928">
+    <text x="64" y="67" font-size="34" font-weight="700">Threadspan built Threadspan</text>
+    <text x="64" y="99" font-size="18" fill="#53605c">Observed from the GPT-5.6 Sol handoff · local ledgers · 2026-08-17/18</text>
+  </g>
+
+  <g transform="translate(64 150)" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">
+    <text x="0" y="0" font-size="18" font-weight="700" fill="#1f2928">CODEX TOKEN MIX</text>
+    <rect x="0" y="34" width="680" height="58" rx="12" fill="#d8cdbc"/>
+    <rect x="0" y="34" width="672" height="58" rx="12" fill="#17636b"/>
+    <rect x="672" y="34" width="7" height="58" fill="#b6532f"/>
+    <rect x="679" y="34" width="1" height="58" rx="1" fill="#d39a2c"/>
+    <text x="18" y="70" font-size="18" fill="#fff">553.4M cached input</text>
+    <text x="0" y="124" font-size="16" fill="#53605c">6.19M uncached input · 1.06M output · 405.6K reasoning (output subset)</text>
+    <text x="0" y="157" font-size="28" font-weight="700" fill="#1f2928">560.63M total tokens</text>
+  </g>
+
+  <g transform="translate(790 150)" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">
+    <text x="0" y="0" font-size="18" font-weight="700" fill="#1f2928">BUILD ACTIVITY</text>
+    <text x="0" y="55" font-size="42" font-weight="700" fill="#b6532f">420</text>
+    <text x="118" y="55" font-size="16" fill="#53605c">user steering messages</text>
+    <text x="0" y="110" font-size="42" font-weight="700" fill="#17636b">4,187</text>
+    <text x="142" y="110" font-size="16" fill="#53605c">tool calls</text>
+    <text x="0" y="165" font-size="42" font-weight="700" fill="#d39a2c">11.1h</text>
+    <text x="142" y="165" font-size="16" fill="#53605c">observed active work</text>
+    <text x="0" y="205" font-size="15" fill="#53605c">16.5h wall clock at this checkpoint</text>
+  </g>
+
+  <g transform="translate(64 398)" font-family="ui-monospace, SFMono-Regular, Consolas, monospace">
+    <text x="0" y="0" font-size="18" font-weight="700" fill="#1f2928">ROUTED PROVIDER EVENTS</text>
+    <g font-size="15" fill="#1f2928">
+      <text x="0" y="43">Nous</text><rect x="150" y="26" width="391" height="24" rx="6" fill="#17636b"/><text x="552" y="43">23</text>
+      <text x="0" y="79">Grok Build</text><rect x="150" y="62" width="221" height="24" rx="6" fill="#b6532f"/><text x="382" y="79">13</text>
+      <text x="0" y="115">Nous worker</text><rect x="150" y="98" width="119" height="24" rx="6" fill="#3e7771"/><text x="280" y="115">7</text>
+      <text x="0" y="151">Cursor</text><rect x="150" y="134" width="119" height="24" rx="6" fill="#d39a2c"/><text x="280" y="151">7</text>
+      <text x="650" y="43">OpenRouter</text><rect x="800" y="26" width="85" height="24" rx="6" fill="#6c806d"/><text x="896" y="43">5</text>
+      <text x="650" y="79">Claude gateway</text><rect x="800" y="62" width="85" height="24" rx="6" fill="#8b654d"/><text x="896" y="79">5</text>
+      <text x="650" y="115">Cursor SDK</text><rect x="800" y="98" width="34" height="24" rx="6" fill="#c58b2c"/><text x="845" y="115">2</text>
+    </g>
+  </g>
+
+  <g transform="translate(64 636)" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" fill="#53605c" font-size="14">
+    <text x="0" y="0">Measured locally. Provider events include successful and failed acceptance probes.</text>
+    <text x="0" y="25">Provider token reports are not directly comparable; cached fields can overlap input totals. No prompts or account details included.</text>
+  </g>
+</svg>

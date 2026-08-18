@@ -149,6 +149,33 @@ Deterministic planning, writes, service setup, and the GUI use **zero model toke
 
 These are planning ranges, not billing promises. Provider CLIs account differently, and some subscription quota has no public API. Unknown remaining quota is shown as unknown, never invented.
 
+## How this release was built
+
+Threadspan did not begin in this release session. Its foundations came from the earlier local orchestration system and a methodically collected set of ideas about provider routing, Continuity, recovery, parallel work, and user controls. A 0.2.0/0.2.1 bridge package produced by GPT-5.6 Sol Pro in roughly three or four long model turns, about 8-12 hours of model work, turned part of that groundwork into an implementation package. This session merged it into the live Linux/Windows setup and expanded it while early Threadspan builds were already routing provider checks, source-grounded reviews, and bounded specialist work.
+
+That recursive loop is the useful part: Threadspan should keep a real task moving while the best available provider changes. This release was coordinated in Codex and exercised through Grok Build, Cursor, Nous/DeepSeek, OpenRouter, and a Claude Code gateway, using the same account routing, shared daemon, usage evidence, Compatibility Watch, and Continuity boundaries it ships. No account tiers, account counts, identities, prompts, or private task content are part of this report.
+
+![Threadspan build usage](docs/media/build-usage.svg)
+
+The measured build snapshot records **420 user steering messages**, **16.5 hours elapsed**, about **11.1 hours of observed active work**, and **560.6M Codex tokens**. Of those tokens, **553.4M were cached input**; uncached input was 6.19M and output was 1.06M. See the [build report](docs/BUILD-REPORT.md) for separate input/output/cache/reasoning tables, routed provider events, methodology, and caveats.
+
+<details>
+<summary>A few directions that shaped it</summary>
+
+Selected from the long, frequently compacted build thread and lightly edited for length and spelling:
+
+> "Whatever you do, we want it to be compatible and portable: a solution that can work on other machines."
+
+> "I want Consult, Integrated, and Delegate to all work with Nous."
+
+> "Make sure the model picker is not overwhelming. It should be configurable, intuitive, and let hidden models be found again."
+
+> "The point of all this parallelization and multi-provider, multi-account work is maximum effective forward progress, not maximum token or usage-limit burn."
+
+> "If a task is active and a usage limit is hit, other models and providers should take over automatically and the task should continue."
+
+</details>
+
 ## Voice profiles
 
 Threadspan includes five presentation-only Voice profiles: Technical partner (the local default), Concise operator, Teaching explainer, Diagnostic reviewer, and Calm guide. Setup provides preset cards plus advanced customization, live preview, reset, and digest-bound managed configuration with rollback.
