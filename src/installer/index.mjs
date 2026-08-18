@@ -6,5 +6,23 @@ export {
   renderContextProfile,
   validateContextProfile,
 } from "./components.mjs";
-export { applyInstallerPlan, boundedPath, previewInstallerPlan } from "./apply.mjs";
-export { createDaemonServicePlan } from "./service.mjs";
+export {
+  applyDaemonServicePlan,
+  applyDaemonServiceUninstallPlan,
+  applyInstallerPlan,
+  boundedPath,
+  createDaemonServiceUninstallPlan,
+  previewDaemonServicePlan,
+  previewDaemonServiceUninstallPlan,
+  previewInstallerPlan,
+  readDaemonServiceLifecycleClaim,
+  resolveDaemonServiceClaimRoot,
+} from "./apply.mjs";
+export {
+  DAEMON_SERVICE_LIFECYCLE_API_VERSION,
+  DAEMON_SERVICE_PLAN_SCHEMA_VERSION,
+  computeServicePlanDigest,
+  createDaemonServicePlan,
+  validateDaemonLifecycleCommands,
+  validateDaemonServicePlan,
+} from "./service.mjs";

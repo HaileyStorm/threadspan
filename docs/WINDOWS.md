@@ -105,14 +105,38 @@ node .\src\cli.mjs delegate `
 
 The provider can enforce a linked worktree, clean start, and denied `main`/`master`/`trunk` branch. It does not create or integrate the worktree. Check the CLI account's Build entitlement and Settings → Usage before automatic batches; the local ledger cannot reconstruct the weighted weekly percentage.
 
-## Recommended per-user scheduled startup
+## Canonical per-user scheduled startup
 
-The source package does not install a machine-wide Windows service. For a personal workstation, the reviewed installer plan creates a per-user scheduled task that launches:
+The source package does not install a machine-wide Windows service and no longer
+uses the Startup folder. The reviewed, digest-bound lifecycle plan creates these
+per-user Task Scheduler entries under the current interactive identity:
+
+- `Threadspan Daemon` — launches `threadspan serve`.
+- `Threadspan Desktop Host` — launches `threadspan desktop attach` without
+  launching or restarting the Desktop app.
+
+Both tasks use generated PowerShell wrappers owned by the same lifecycle
+fingerprint and exact source revision. The plan also binds the CLI SHA-256 so an
+in-place source change requires a fresh preview.
+
+Task Scheduler settings mark both tasks `Hidden`; the PowerShell action also uses
+`-WindowStyle Hidden`. Before planning and again before apply, Threadspan checks
+the published Startup-folder `Threadspan.cmd` predecessor. Detection is a visible
+manual-recovery blocker: the installer neither deletes nor migrates it.
 
 ```text
-Program: <absolute path to node.exe>
-Arguments: <absolute path to src\cli.mjs> serve --config <absolute path to config.jsonc>
-Start in: <package directory>
+Program: powershell.exe
+Arguments: -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File <reviewed wrapper path>
 ```
 
-Make sure the task receives required environment variables through a secure mechanism. Do not put provider keys directly in the task arguments. Confirm the task survives the installing shell or SSH session ending, and reject a restart that leaves the previous detached `serve` process on the listener.
+The wrapper retains only the reviewed runtime/environment names and never embeds
+provider values. Registration refuses an existing task; cleanup refuses a task
+whose description does not match the approved owner/revision marker. Confirm both
+tasks survive the installing shell or SSH session ending, and reject a restart
+that leaves the previous detached `serve` process on the listener. A native
+Windows run is still required; Linux synthetic tests do not certify Task
+Scheduler, PowerShell, Desktop attachment, or restart durability.
+
+Task state plus loopback `/health` is registration/availability evidence only;
+it does not source-bind the listener. The installer therefore reports
+`applied-pending-runtime-ownership` until native ownership proof is available.

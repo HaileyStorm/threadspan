@@ -4,7 +4,56 @@ The deterministic installer is wired into the CLI and source-run setup window.
 
 Use `threadspan install gui` for the guided flow. Use `threadspan install plan` and `threadspan install apply` for automation. Both use the same component registry, digest, backups, atomic writes, and rollback manifest.
 
+Daemon/Desktop-host lifecycle is a separate approval boundary because it writes
+user service definitions and executes activation commands. Use:
+
+```text
+threadspan install service-plan --root PATH --output service-plan.json --source-revision REVISION --lifecycle-owner OPAQUE_ID
+threadspan install service-apply --plan service-plan.json --approve-digest SHA256
+threadspan install service-uninstall-plan --manifest PATH --output uninstall-plan.json
+threadspan install service-uninstall --plan uninstall-plan.json --approve-digest SHA256
+threadspan install service-claim
+```
+
+`--lifecycle-owner` is an opaque local lifecycle identifier; only its SHA-256
+fingerprint enters the plan or receipts. Planning hashes the exact CLI file and
+requires an exact hexadecimal source revision. Service apply/uninstall recheck
+their digests, source/preimage bindings, ownership, activation status, and exact
+rollback material. Windows uses Task Scheduler; the older Startup-folder
+launcher is manual-recovery provenance only and is not installed.
+
+The current service lifecycle is clean-install-only. It rejects any existing
+canonical task/unit, including matching ownership, rather than guessing at an
+in-place migration. The revision is supplied from reviewed release provenance;
+the installer independently binds the CLI bytes, while transitive artifact/source
+attestation remains part of the release process.
+
+Lifecycle API version `1` uses service-plan schema `2`. Apply/uninstall serialize
+through one current-user canonical claim namespace regardless of plan/state root
+and resume exact durable transitional states. A
+claim collision is not automatically stale. After reviewing the sanitized
+`service-claim` result, rerun apply/uninstall with
+`--recover-claim-digest SHA256`; the previous claim remains in local history.
+Synthetic or cross-host Windows planning must pass `--legacy-startup-path` so
+the published Startup predecessor check is bound into the digest.
+
+API v1 explicitly rejects the earlier unversioned prototype instead of adapting
+its unsafe lock namespace or runtime-success semantics. Successful deterministic
+activation returns `applied-pending-runtime-ownership`, not `applied`: stable
+service/task state and loopback health do not prove that the listener belongs to
+the reviewed source/owner. Uninstall receipts bind the separately approved
+uninstall plan ID/digest and list verified deactivation, absence, and finalization
+command IDs.
+An `uninstalled` manifest retains that sanitized terminal receipt, so retrying
+the same approved uninstall plan is an exact read-only replay rather than a
+second uninstall.
+
 The GUI is loopback-only and uses a short-lived installer session created through the authenticated daemon. It never receives provider credentials.
+
+The source-run GUI currently covers component-file installation only. Service
+lifecycle plan/apply/uninstall remains CLI-only until the GUI can compose both
+transactions under one atomic approval and recovery contract; the GUI does not
+silently activate services or restart Desktop/provider apps.
 
 Host-specific MCP/plugin writes are generated from neutral descriptors and merged with existing configuration. Do not replace unrelated MCP servers. Back up the exact host file before mutation and keep credentials in environment/provider-native state.
 

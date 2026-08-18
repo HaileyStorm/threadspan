@@ -2,6 +2,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { realpathSync, statSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { BridgeService } from "./bridge/service.mjs";
@@ -14,7 +15,19 @@ import { createExampleConfig, loadConfig, resolveConfigPath, writeInitialConfig 
 import { asBridgeError } from "./core/errors.mjs";
 import { resolveExecutablePath } from "./core/executable.mjs";
 import { Logger } from "./core/logger.mjs";
-import { applyInstallerPlan, createInstallerPlan, previewInstallerPlan } from "./installer/index.mjs";
+import {
+  applyDaemonServicePlan,
+  applyDaemonServiceUninstallPlan,
+  applyInstallerPlan,
+  createDaemonServicePlan,
+  createDaemonServiceUninstallPlan,
+  createInstallerPlan,
+  previewDaemonServicePlan,
+  previewDaemonServiceUninstallPlan,
+  previewInstallerPlan,
+  readDaemonServiceLifecycleClaim,
+  resolveDaemonServiceClaimRoot,
+} from "./installer/index.mjs";
 import { runMcpHttpProxy, runMcpServer } from "./mcp/server.mjs";
 import { inspectGrokBuildInstallation } from "./providers/grok-build.mjs";
 import { DesktopCompatibilityWatch } from "./maintenance/desktop-update.mjs";
@@ -74,10 +87,75 @@ export async function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${JSON.stringify(await applyInstallerPlan(plan, { approvedDigest }), null, 2)}\n`);
       return;
     }
+    if (command === "install" && subcommand === "service-apply") {
+      const planPath = valueOption(parsed.options.plan);
+      const approvedDigest = valueOption(parsed.options.approveDigest);
+      if (!planPath || !approvedDigest) throw new Error("install service-apply requires --plan PLAN.json and --approve-digest SHA256");
+      const plan = JSON.parse(await readFile(resolve(planPath), "utf8"));
+      process.stdout.write(`${JSON.stringify(await applyDaemonServicePlan(plan, { approvedDigest, recoverClaimDigest: valueOption(parsed.options.recoverClaimDigest) }), null, 2)}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "service-uninstall-plan") {
+      const manifestPath = valueOption(parsed.options.manifest);
+      const outputPath = valueOption(parsed.options.output);
+      if (!manifestPath || !outputPath) throw new Error("install service-uninstall-plan requires --manifest PATH and --output PLAN.json");
+      const plan = await createDaemonServiceUninstallPlan(manifestPath, { planId: valueOption(parsed.options.planId) });
+      const destination = await writePlanDocument(outputPath, plan);
+      process.stdout.write(previewDaemonServiceUninstallPlan(plan).text);
+      process.stdout.write(`Plan file: ${destination}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "service-uninstall") {
+      const planPath = valueOption(parsed.options.plan);
+      const approvedDigest = valueOption(parsed.options.approveDigest);
+      if (!planPath || !approvedDigest) throw new Error("install service-uninstall requires --plan PLAN.json and --approve-digest SHA256");
+      const plan = JSON.parse(await readFile(resolve(planPath), "utf8"));
+      process.stdout.write(`${JSON.stringify(await applyDaemonServiceUninstallPlan(plan, { approvedDigest, recoverClaimDigest: valueOption(parsed.options.recoverClaimDigest) }), null, 2)}\n`);
+      return;
+    }
+    if (command === "install" && subcommand === "service-claim") {
+      const stateRoot = resolveDaemonServiceClaimRoot();
+      process.stdout.write(`${JSON.stringify(await readDaemonServiceLifecycleClaim(stateRoot), null, 2)}\n`);
+      return;
+    }
 
     const configPath = resolveConfigPath(valueOption(parsed.options.config));
     const config = loadConfig(configPath);
     const logger = new Logger({ level: valueOption(parsed.options.logLevel) ?? config.logging?.level ?? "info" });
+
+    if (command === "install" && subcommand === "service-plan") {
+      const installRoot = valueOption(parsed.options.root);
+      const outputPath = valueOption(parsed.options.output);
+      const sourceRevision = valueOption(parsed.options.sourceRevision);
+      const lifecycleOwner = valueOption(parsed.options.lifecycleOwner);
+      if (!installRoot || !outputPath || !sourceRevision || !lifecycleOwner) {
+        throw new Error("install service-plan requires --root PATH, --output PLAN.json, --source-revision REVISION, and --lifecycle-owner OPAQUE_ID");
+      }
+      const platform = valueOption(parsed.options.platform) ?? process.platform;
+      if (!["linux", "win32"].includes(platform)) throw new Error("install service-plan --platform must be linux or win32");
+      const home = homedir();
+      const serviceDirectory = valueOption(parsed.options.serviceDirectory)
+        ?? (platform === "linux" ? resolve(process.env.XDG_CONFIG_HOME ?? resolve(home, ".config"), "systemd", "user") : undefined);
+      const plan = createDaemonServicePlan({
+        platform,
+        nodePath: process.execPath,
+        cliPath: fileURLToPath(import.meta.url),
+        configPath,
+        config,
+        sourceRevision,
+        lifecycleOwner,
+        home,
+        stateRoot: valueOption(parsed.options.stateRoot) ?? resolve(installRoot, "service"),
+        environment: process.env,
+        ...(valueOption(parsed.options.legacyStartupPath) ? { legacyStartupPath: valueOption(parsed.options.legacyStartupPath) } : {}),
+        ...(serviceDirectory ? { serviceDirectory } : {}),
+        planId: valueOption(parsed.options.planId),
+      });
+      const destination = await writePlanDocument(outputPath, plan);
+      process.stdout.write(previewDaemonServicePlan(plan).text);
+      process.stdout.write(`Plan file: ${destination}\n`);
+      return;
+    }
 
     if (command === "install" && subcommand === "gui") {
       await runInstallerGui(parsed.options, config);
@@ -659,6 +737,15 @@ function secretValuesEqual(left, right) {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
+async function writePlanDocument(outputPath, plan) {
+  const destination = resolve(outputPath);
+  await mkdir(dirname(destination), { recursive: true });
+  const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(temporary, `${JSON.stringify(plan, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporary, destination);
+  return destination;
+}
+
 /** Make a generated embedded Codex MCP launch immune to ambient remote-MCP variables. */
 function forceEmbeddedMcpArgument(block) {
   const marker = '"mcp", "--config"';
@@ -675,6 +762,11 @@ Usage:
   threadspan install gui [--root PATH] [--origin codex|grok|cursor|hermes|direct] [--origin-id ID] [--origin-project PATH] [--browser PATH]
   threadspan install plan --root PATH --output PLAN.json [--all|--component ID ...] [--long-context all|NAME ...]
   threadspan install apply --plan PLAN.json --approve-digest SHA256
+  threadspan install service-plan --root PATH --output PLAN.json --source-revision REVISION --lifecycle-owner OPAQUE_ID [--service-directory PATH] [--state-root PATH] [--legacy-startup-path PATH]
+  threadspan install service-apply --plan PLAN.json --approve-digest SHA256 [--recover-claim-digest SHA256]
+  threadspan install service-uninstall-plan --manifest PATH --output PLAN.json
+  threadspan install service-uninstall --plan PLAN.json --approve-digest SHA256 [--recover-claim-digest SHA256]
+  threadspan install service-claim
   threadspan config init [--config PATH] [--force]
   threadspan serve [--config PATH]
   threadspan desktop launch [--config PATH] [--app PATH] [--inspect-port N]
