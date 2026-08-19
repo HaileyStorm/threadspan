@@ -5,6 +5,6 @@ description: Inspect Threadspan or request a bounded secondary Consult from Herm
 
 # Threadspan from Hermes
 
-This integration is Preview tier. Start with `bridge_status`, `bridge_models`, and `consult`. Keep Delegate disabled until the local Hermes installation, workspace policy, approval flow, cancellation, and independent acceptance have passed native host checks.
+This integration is Preview tier. Its staged reverse connector allowlists `bridge_status`, `bridge_models`, `bridge_accounts`, `consult`, and `integrated`. Keep Delegate unavailable: current Hermes ACP source does not provide verifiable source-bound tool isolation or exact exclusion of enabled native MCP servers.
 
-Hermes session recovery is planned but not implemented in this Preview integration. Never resume a Hermes-origin session through Codex.
+Hermes session recovery is unavailable in this Preview integration. Never resume a Hermes-origin session through Codex or describe bridge transcript context as Hermes-native recovery.

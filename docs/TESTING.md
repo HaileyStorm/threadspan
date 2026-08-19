@@ -10,12 +10,12 @@ npm run verify
 
 This executes source syntax checks and Node's built-in test runner over `test/*.test.mjs`.
 
-Current 0.5.0 Linux release-candidate result:
+Current 0.6.0 Linux release-source result:
 
 ```text
 npm run check: passed
-748 tests
-748 passed
+752 tests
+752 passed
 0 failed
 0 skipped
 ```
@@ -39,6 +39,7 @@ The suite uses local fakes, local HTTP servers, and isolated temporary paths. It
 | MCP | Version negotiation, initialization/list/call, tool-error results, concurrent dispatch, and in-flight cancellation. |
 | Threads/queues | Same-thread ordering, unrelated concurrency, abort-safe queue behavior. |
 | Cursor adapter | Integrated rejection, simultaneous Delegate creation dedupe, queued Delegate cancellation/overtake prevention. |
+| Hermes blocker/reverse | Raw Nous remains Consult/Integrated and distinct; no full-agent provider route exists; host metadata records the source-bound-tool/configured-MCP blocker; reverse YAML allowlists status/models/accounts/Consult/Integrated only; installer remains staged and does not start, sign in, or merge native config. |
 | Snapshots | Copy/exclusions, canonical symlink confinement and snapshot-local rewriting, byte limit, cleanup after failed copy, and pattern behavior. |
 | Grok Build | Non-consuming executable/version/hash preflight, model/usage/error parsing, finite safety argv, profiles/overrides, snapshot Consult, quota failure/no retry, Integrated rejection, and opt-in Delegate exploration classification with trusted top-level fields, exact session echo, workspace-keyed serialization, and one same-session patch/test recovery. |
 | Managed workers | Weighted FIFO admission and expected/actual turn reconciliation, private run ledger/evidence, Git linked-worktree/branch/clean gates, and multi-skill installation. |
@@ -127,6 +128,13 @@ Use disposable repositories and low cost limits.
 - [ ] Streaming reasoning/text/tool chunks parse correctly.
 - [ ] V4 Pro and Flash model IDs accepted.
 - [ ] Rate-limit/5xx error maps cleanly.
+
+### Hermes Agent forward recheck
+
+- [ ] Confirm exact upstream source provides source-bound/narrowable ACP tool selection and exact exclusion of enabled native MCP servers from each session.
+- [ ] Reconcile the official Host Integration and ACP Internals claims about process-restoration behavior for the exact Hermes version.
+- [ ] Only after both gates pass, design adversarial offline coverage for authority, model/cwd/session binding, permissions, cancellation, malformed protocol, bounded lifecycle, and no-replay behavior.
+- [ ] Repeat every runtime/process/path/permission gate independently on Linux and Windows. Success on one host does not certify the other.
 
 ### Grok Build
 

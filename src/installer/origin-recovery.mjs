@@ -9,6 +9,7 @@ export async function notifyNativeOrigin(origin, options = {}) {
   const kind = origin?.kind ?? "direct";
   if (kind === "direct" || !origin?.id) return { notified: false, kind, reason: "no-resumable-origin" };
   const contract = nativeRecoveryContract(kind);
+  if (contract.available === false) return { notified: false, kind, contract, reason: "native-recovery-contract-unavailable" };
   const message = options.message ?? RECOVERY_MESSAGE;
   if (kind === "codex") {
     return runCliRecovery(options.codexCommand ?? "codex", ["exec", "resume", "--json", origin.id, message], kind, contract, options);

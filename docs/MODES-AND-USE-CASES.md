@@ -147,7 +147,7 @@ Run `hermes proxy start`, configure the `nous` adapter, and use Consult. No Herm
 
 ### “Use the full Hermes agent as a delegated worker”
 
-Not built in. Configure a command provider around a stable Hermes CLI/API invocation or add a dedicated adapter. Do not label the raw subscription proxy as Delegate.
+This is unavailable. Current Hermes ACP sessions include a non-narrowable built-in agent toolset plus enabled native MCP servers, so Threadspan cannot enforce bounded Delegate authority or advisory Consult. Use raw `nous` only for Consult/Integrated inference; never emulate full-agent Delegate through that route or label it Hermes-native recovery.
 
 ### “Have two consultants argue”
 

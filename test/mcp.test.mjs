@@ -23,7 +23,7 @@ test("MCP server initializes, lists tools, and executes Consult", async () => {
   await service.close();
   const responses = text.trim().split("\n").map((line) => JSON.parse(line));
   const byId = new Map(responses.map((response) => [response.id, response]));
-  assert.deepEqual(byId.get(1).result.serverInfo, { name: "threadspan", version: "0.5.0" });
+  assert.deepEqual(byId.get(1).result.serverInfo, { name: "threadspan", version: "0.6.0" });
   assert.equal(byId.get(1).result.protocolVersion, "2025-06-18");
   assert.match(byId.get(1).result.instructions, /brainstorming-worthy/);
   assert.match(byId.get(1).result.instructions, /ImageGen/);

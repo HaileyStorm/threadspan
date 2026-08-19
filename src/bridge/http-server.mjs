@@ -121,7 +121,7 @@ export function createHttpServer(service, config, options = {}) {
           release = await gate.acquire(mcpController.signal);
           const result = await dispatchMcpRequest(service, body.method, body.params ?? {}, mcpController.signal, {
             serverName: "threadspan",
-            serverVersion: "0.5.0",
+            serverVersion: "0.6.0",
             allowedTools: CONNECTOR_TOOL_NAMES,
           });
           writeMcpJson(response, { jsonrpc: "2.0", id: body.id ?? null, result }, mcpSessionId);

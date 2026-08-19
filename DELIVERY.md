@@ -1,46 +1,35 @@
 # Implementation package delivery report
 
-**Package:** `threadspan` 0.5.0 release candidate
+**Package:** `threadspan` 0.6.0 release source
 
 **Snapshot:** 2026-08-18
 
-**State:** 0.4.2 remains the signed public release. The 0.5.0 candidate is source-verified on Linux and ready for a clean commit/publication pass; it is not yet described as signed or native-Windows/live-provider accepted.
+**State:** Prepared for one exact signed 0.6.0 publication. The immutable 0.5.0 release remains historical; its tag/assets are not replaced. Public release metadata, the signed checksum manifest, archive digest, and source-commit record are the publication authority.
 
-## Current 0.5.0 delta
+## 0.6.0 delivery
 
-- One bounded same-session Grok exploration recovery behind a default-off Delegate policy, with canonical physical-worktree execution and terminal provider/account failures.
-- Durable owner-private action items plus a compact owner-only global/per-project Needs-you surface and exact-owner completion delivery.
-- Deterministic route scoring and a frozen catalog/health snapshot shared by auto routing, the route map, and canonical picker entries.
-- Streaming Command/Claude descendant reaping, Continuity post-control read-back, Compatibility Watch publication hardening, and refreshed hash-bound synthetic media.
-
-## Current 0.4.2 hotfix
-
-- Preserve `CURSOR_API_KEY` authentication for the starter Cursor CLI without restoring broad process-environment inheritance.
-
-## Current 0.4.1 delta
-
-- Owner-only Continuity tree, native naming, and guarded promotion/rollover requests; native Goal transfer remains owned by the certified supervisor.
-- Optional bridge-routed account-first takeover with same-daemon disconnect survival, visible recovery state, exact-reset shutdown, and fail-closed host-launcher boundaries.
-- Transcript, media-reference, upstream-error, and release-preflight privacy hardening.
-
-## Delivered in 0.4.0
-
-- Provider-neutral Consult, Integrated, and Delegate semantics over Responses HTTP/SSE, MCP stdio, and connector-only Streamable HTTP MCP.
-- Cursor snapshot Consult and retained Delegate; finite Grok Build, Codex, and Claude Code workers; direct xAI, DeepSeek, Nous, OpenRouter, generic OpenAI-compatible, and command adapters.
-- Account-scoped routing, privacy-minimized quota/usage state, connector/main-token separation, durable ledgers, worktree/scope gates, installer/recovery surfaces, and offline compatibility checks.
-- Opt-in account fallback with no cross-provider failover: native Codex exact pre-output usage-limit failures and OpenAI-compatible pre-output HTTP 429 failures may each try at most one validated alternate for the same provider, model, and mode.
-- Explicit `--embedded-mcp` plus shared-daemon routing for centralized provider pools, retained agents, admission, and usage state.
-- Explicit-only AgentRouter through Claude Code with strict gateway env isolation, dated Linux/Windows evidence, and no-spend installer boundaries.
-- Disabled check-first discovery candidates for Mistral API, GroqCloud, Cloudflare Workers AI, and Gemini API; OpenRouter remains the existing live route and is not duplicated.
+- Clean-machine fresh-install and canonical per-user service transactions now share versioned plans, exact owner/source binding, process-shared claims, crash recovery, terminal replay, exact uninstall, and fail-closed predecessor/migration handling.
+- Provider activation is a separate one-provider transaction with exact route/account/model prerequisites, one bounded no-retry request, recovery, rollback, and fresh-uninstall composition.
+- Compatibility Watch, maximum-utilization, and Continuity now use stronger source-bound evidence, process-shared serialization, non-replayable uncertainty, closed public projections, and explicit recovery states.
+- The Desktop HUD now uses a one-time source-bound Electron bootstrap and a per-generation authenticated supervisor rather than a persistent unauthenticated inspector.
+- Hermes reverse Preview stages status/models/accounts/Consult/raw Integrated only. Forward Hermes and native recovery remain unavailable until upstream provides verifiable source-bound ACP tool isolation and configured-MCP exclusion.
+- Signed release manifests bind the exact source commit consumed by the clean-machine updater.
 
 ## Verification evidence
 
-On Linux, the complete 0.5.0 candidate source gate reports **610 tests, 610 passed, 0 failed, and 0 skipped**. The focused release-bundle gate passes **23/23**, and the npm dry-run package boundary includes the intended source and refreshed media. Synthetic loopback browser smoke covers the desktop drawer, picker, route map, and narrow Needs-you/Continuity ordering without invoking providers or Desktop applications. The earlier 0.4.1 source passed **43 focused native Windows tests** and the configured two-host live matrix; those results are retained as provenance, not promoted to 0.5.0 acceptance.
+On Linux, `npm run verify` passes **752/752** with zero failures or skips. The focused release-bundle gate passes **23/23**. The npm dry-run package boundary includes the intended source/media and excludes `.working`, credentials, secrets, owner-local state, rollback evidence, and generated release artifacts. The signed public bundle must be rebuilt from the exact clean release commit and independently checked before publication.
 
-AgentRouter's dated two-host success does not establish a permanent free offer. Generic Claude remains Preview, and the four additional provider entries are setup candidates pending fresh account/card/model/region checks. Threadspan is not partnered with, sponsored by, or endorsed by any listed provider. Signup, credentials, installs, billing, probes, and route enablement remain explicit reviewed user actions.
+A local loopback browser smoke exercised Continuity Rename/Promote/recovery and the 390px layout without native identifiers or console warnings. That is browser interaction evidence, not installed-host App Server/Desktop acceptance. No paid inference, live provider request, Desktop/provider restart, service mutation, or Maestro change was performed for this release pass.
 
-## Honest limits
+## Host-specific limits
 
-Nine outer workers are an operator preset, not a universal provider limit; nested calls may not be perfectly exposed in terminal accounting. Grok weekly usage still needs provider-meter reconciliation. Cursor persistence means retained SDK agents, not certified Cursor Cloud Agent jobs. Live results bind only the tested accounts, versions, routes, and hosts. Desktop picker/visual behavior, Claude Code, Hermes full-agent mode, sustained fleets, and provider entitlement drift remain uncertified.
+- **Linux:** source, fake/synthetic cross-platform, and local browser gates are current. Exact installed systemd lifecycle, provider activation, App Server/Continuity, authenticated Desktop bootstrap/update/reconnect, and Hermes host acceptance remain unrun for 0.6.0.
+- **Windows:** earlier native evidence is retained as provenance only. Exact Task Scheduler/PowerShell/ACL/reparse behavior, clean install/uninstall, provider activation, Continuity, Desktop bootstrap/update/reconnect, and Hermes host acceptance remain independently unrun for 0.6.0.
 
-See `README.md`, `docs/GROK-REPORT-MERGE.md`, `docs/MULTI-COORDINATOR-FLEET.md`, `docs/TESTING.md`, and `STATUS.md`.
+## Product limits
+
+Nine outer workers remain an operator preset, not a provider guarantee. Grok weekly usage still needs provider-meter reconciliation. Cursor persistence is daemon-retained SDK state, not certified Cloud Agent pooling. Hermes full-agent forward execution remains blocked, not emulated. Provider availability, entitlement, pricing, and account state remain volatile and require fresh provider-native evidence.
+
+Threadspan is not partnered with, sponsored by, or endorsed by listed providers. It does not copy credentials, account details, owner-local telemetry, prompts, or task content into public release source/assets.
+
+See `README.md`, `CHANGELOG.md`, `STATUS.md`, `docs/TESTING.md`, and `docs/INSTALLER-GUI.md`.

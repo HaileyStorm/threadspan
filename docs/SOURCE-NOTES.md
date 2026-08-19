@@ -1,6 +1,6 @@
 # External source notes
 
-Accessed 2026-08-16. These sources informed compatibility decisions; this package is an independent implementation.
+Accessed through 2026-08-18. These sources informed compatibility decisions; this package is an independent implementation.
 
 ## Cursor
 
@@ -40,8 +40,14 @@ Key interpretation: thinking-mode tool turns require `reasoning_content` replay;
 
 - Hermes Agent subscription proxy  
   https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/subscription-proxy.md
+- Hermes Agent programmatic integration: https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md
+- Hermes Agent ACP host integration and process-local session behavior: https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/acp.md
+- Hermes Agent ACP internals: https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/acp-internals.md
+- Hermes ACP session construction: https://github.com/NousResearch/hermes-agent/blob/main/acp_adapter/session.py
+- Hermes ACP entry point and background-MCP skip marker: https://github.com/NousResearch/hermes-agent/blob/main/acp_adapter/entry.py
+- Official ACP TypeScript SDK: https://github.com/agentclientprotocol/typescript-sdk
 
-Key interpretation: the proxy listens on `127.0.0.1:8645/v1` by default, accepts any bearer, attaches the real OAuth credential, preserves Chat Completions/SSE, and intentionally does not run the Hermes agent tool/memory loop.
+Key interpretation: the proxy listens on `127.0.0.1:8645/v1` by default, accepts any bearer, attaches the real OAuth credential, preserves Chat Completions/SSE, and intentionally does not run the Hermes agent tool/memory loop. Full Hermes Agent exposes `hermes acp` as JSON-RPC over stdio, but current source constructs each session with the non-narrowable `hermes-acp` toolset and every enabled native MCP server. `HERMES_ACP_SKIP_CONFIGURED_MCP=1` skips background discovery only; it does not remove configured MCPs from `_make_agent`. Threadspan therefore cannot prove advisory Consult or task-bounded Delegate authority and ships no forward adapter. The official Host Integration page also says load/resume/fork is process-scoped while ACP Internals says SessionDB restores sessions across restarts, so no native recovery contract is claimed. Recheck only when upstream offers verifiable source-bound/narrowable tools, exact configured-MCP exclusion, and consistent process-restoration semantics.
 
 ## Model Context Protocol
 

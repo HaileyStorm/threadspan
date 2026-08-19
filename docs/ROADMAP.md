@@ -45,7 +45,7 @@ Priorities are ordered by risk reduction and usefulness. This roadmap starts aft
 ## P1 — provider completeness
 
 1. Grok ACP adapter only where resumable steering materially improves the Desktop experience; keep one-shot headless mode as the default.
-2. Dedicated Hermes full-agent Delegate adapter.
+2. Reconsider Hermes full-agent forward support only after upstream provides verifiable source-bound/narrowable ACP tools and exact configured-MCP exclusion; then rebuild adversarial offline coverage and native-certify independently on Linux and Windows, including exact process-restoration semantics.
 3. Cursor cloud runtime adapter with lifecycle, reconnect, archive/delete, branch/PR reporting, and cancellation.
 4. Generic upstream OpenAI Responses adapter, distinct from Chat Completions.
 5. Anthropic Messages and other raw-provider adapters when a reviewed auth/billing path is intentionally supported.

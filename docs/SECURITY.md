@@ -188,6 +188,14 @@ Use disposable branches/worktrees, backups, or a clean clone. Review `git diff`,
 
 Never point Delegate at a directory that contains broader secrets or unrelated writable projects merely for convenience.
 
+## Hermes ACP forward blocker
+
+Hermes ACP is a provider-owned execution surface whose built-in `hermes-acp` toolset includes filesystem, terminal, web, browser, memory, skill, execution, and delegation capabilities. Current official source also adds every enabled Hermes-native MCP server when it constructs a session. The documented `HERMES_ACP_SKIP_CONFIGURED_MCP=1` marker skips background discovery only; it does not exclude those servers from the session.
+
+Those tools are not source-bound or narrowable through the documented ACP host configuration. A disposable Consult copy protects the original tree from ordinary path-local writes but cannot prove that external tools have no side effects. Rejecting permission requests does not disable tools that run without an ACP permission round trip. A clean Delegate worktree likewise cannot constrain opaque MCP authority to the task.
+
+Threadspan therefore ships no full-agent Hermes forward adapter, provider configuration, or native recovery route. The staged reverse connector remains read-only and contains no credential values; it references the connector-token file instead. Reconsideration requires verifiable source-bound tool selection, exact configured-MCP exclusion, reconciled process-restoration behavior, adversarial offline coverage, and separate native Linux/Windows acceptance.
+
 ## Grok Build managed worker
 
 The dedicated adapter adds a safety envelope around the official CLI, but the CLI remains a powerful local coding agent.

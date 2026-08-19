@@ -24,7 +24,9 @@ Forward Claude Code is a separate `claude-code` provider adapter for plan/read-o
 
 ## Hermes Preview
 
-Hermes is a separate full-agent runtime, not another name for raw Nous inference. The preview reverse path allowlists status/model/Consult MCP tools. Full forward support must target Hermes sessions/runs, approvals, cancellation, SSE, and usage. Do not install Hermes merely to claim support.
+Hermes is a separate full-agent runtime, not another name for raw Nous inference. The staged reverse path allowlists read-only status, model, account, Consult, and Integrated MCP tools; reverse Delegate and owner-only controls remain unavailable. It preserves Hermes' native authentication and model picker and does not merge into native config automatically.
+
+Forward full-agent execution is unavailable. Current Hermes ACP source adds a non-narrowable built-in agent toolset and every enabled native MCP server to each session, so Threadspan cannot enforce advisory Consult or task-bounded Delegate authority. No `hermes-agent` route is registered. Recheck only after upstream offers verifiable source-bound tool isolation and exact configured-MCP exclusion.
 
 ## Native recovery
 
@@ -32,6 +34,6 @@ Hermes is a separate full-agent runtime, not another name for raw Nous inference
 - Grok: ACP or `grok --resume`.
 - Cursor: Cursor SDK `Agent.resume()` or current `agent` CLI.
 - Claude Code: local `claude --resume <session-id>` only; do not copy transcripts between hosts.
-- Hermes: Hermes run/session API or Hermes CLI.
+- Hermes: unavailable. The staged reverse connector does not establish a native forward session, and conflicting upstream process-restoration documentation is not a recovery contract.
 
 No origin may silently fall back through another provider's executable.

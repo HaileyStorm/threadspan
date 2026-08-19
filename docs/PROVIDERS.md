@@ -119,6 +119,16 @@ Behavior:
 
 Exclusions match path segments and relative nested patterns. Symlinks are skipped by default. Enabling `copyInternalSymlinks` copies only links that resolve within the source root; external links remain skipped. Limits apply before a successful snapshot is returned, and failed destinations are removed.
 
+## Hermes Agent forward blocker
+
+Threadspan does not ship a full-agent Hermes forward adapter or route. Current official source constructs every ACP session with the built-in `hermes-acp` toolset and every enabled Hermes-native MCP server. The built-in toolset includes agent-owned filesystem, terminal, web, browser, memory, skill, execution, and delegation capabilities and is not source-bound or narrowable through the documented ACP host configuration. The documented configured-MCP skip marker gates background startup only; it does not exclude those MCPs while constructing a session.
+
+Consequently, a copied Consult workspace and rejected ACP permission requests cannot prove an advisory/no-side-effect boundary, and a Delegate worktree cannot constrain opaque native MCP authority to the supplied task. Both forward modes fail closed. Threadspan also makes no Hermes-native recovery claim because official Hermes pages currently conflict on whether ACP sessions restore across process restarts.
+
+The staged reverse connector remains Preview and exposes only read-only status/models/accounts plus Consult/Integrated, never Delegate or owner-only controls. The raw `nous` adapter remains the separate Consult/Integrated inference path and must not be described as full Hermes Agent execution.
+
+Reconsider a forward adapter only after upstream provides verifiable source-bound/narrowable tool selection and exact configured-MCP exclusion. The removal gate also requires reconciling process-restoration behavior, restoring adversarial offline coverage, and running separate native Linux and Windows acceptance without activating unrelated user tooling.
+
 ## Claude Code Preview
 
 The dedicated `claude-code` adapter wraps the official local Claude Code CLI for Consult and bounded Delegate. Integrated is unsupported because Claude Code owns its tool loop. The adapter uses shell-free structured argv, stream-json NDJSON, explicit models, local session-ID binding/resume, disposable plan/read-only Consult snapshots, and finite Delegate turns without bypass permissions.

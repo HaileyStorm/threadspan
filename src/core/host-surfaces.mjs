@@ -3,7 +3,7 @@ export const HOST_SURFACE_TIERS = Object.freeze({
   grok: Object.freeze({ id: "grok", label: "Grok Build / Grok Bot", tier: "enhanced", forward: true, reverse: true, hud: "native-dashboard-plus-companion" }),
   cursor: Object.freeze({ id: "cursor", label: "Cursor", tier: "standard", forward: true, reverse: true, hud: "extension-webview-plus-companion" }),
   "claude-code": Object.freeze({ id: "claude-code", label: "Claude Code", tier: "preview", forward: true, reverse: true, hud: "native-status-line-plus-companion", status: "preview", liveTested: false, nativePickerReplaceable: false }),
-  hermes: Object.freeze({ id: "hermes", label: "Hermes Agent", tier: "preview", forward: false, plannedForwardCapability: "model-only-unless-agent-api-enabled", reverse: true, hud: "native-dashboard-plus-companion" }),
+  hermes: Object.freeze({ id: "hermes", label: "Hermes Agent", tier: "preview", forward: false, plannedForwardCapability: "source-bound-agent-tool-isolation", forwardReason: "Hermes ACP combines a non-narrowable built-in agent toolset with enabled native MCP servers, so Threadspan cannot enforce advisory Consult or bounded Delegate authority", reverse: true, hud: "native-dashboard-plus-companion", status: "preview", liveTested: false, liveEvidence: "unrun", nativePickerReplaceable: false, nativePickerPreserved: true }),
 });
 
 export function listHostSurfaces() {
@@ -23,6 +23,6 @@ export function nativeRecoveryContract(id) {
     grok: { transport: "acp-stdio", fallback: "grok-resume" },
     cursor: { transport: "cursor-sdk", fallback: "agent-resume" },
     "claude-code": { transport: "claude-session-id", fallback: "claude --resume", crossHostTranscriptCopy: false },
-    hermes: { transport: "planned-hermes-runs-api", fallback: null, available: false },
+    hermes: { transport: "hermes-acp-session", fallback: null, available: false, availability: "blocked-until-source-bound-tool-isolation", liveTested: false, liveEvidence: "unrun", crossProcessResume: false, crossHostTranscriptCopy: false, codexFallback: false },
   }[id]);
 }

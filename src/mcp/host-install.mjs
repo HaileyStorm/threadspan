@@ -57,7 +57,19 @@ export async function installHostSurface(host, options) {
     if (options.allowPreview !== true) throw new Error("Hermes Preview install requires --allow-preview");
     const path = resolve(options.targetPath ?? resolve(home, ".hermes", "threadspan-mcp.yaml"));
     const result = await atomicInstall(path, renderHermesMcpYaml(common));
-    return { ...result, stagedOnly: true, nextAction: "Merge the reviewed snippet into the current Hermes MCP config and run its native doctor." };
+    return {
+      ...result,
+      stagedOnly: true,
+      status: "preview",
+      liveTested: false,
+      nativePickerPreserved: true,
+      reverseDelegateAvailable: false,
+      nextActions: [
+        "Revalidate the current official Hermes configuration documentation and preserve native authentication/model selection.",
+        "Merge the reviewed read-only connector snippet; do not replace the native config or enable reverse Delegate.",
+        "Keep full-agent forward execution disabled until upstream provides verifiable source-bound tool isolation and configured-MCP exclusion.",
+      ],
+    };
   }
   throw new TypeError(`Unsupported host surface '${host}'`);
 }

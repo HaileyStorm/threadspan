@@ -1,18 +1,31 @@
 # Changelog
 
+## 0.6.0 - 2026-08-18
+
+- Added a clean-install-only, versioned service lifecycle for Linux user systemd and Windows per-user Task Scheduler: canonical ownership/source binding, process-shared claims, exact preimage rollback, crash-resumable apply/uninstall, legacy Startup detection, terminal receipts, and fail-closed migration boundaries.
+- Added an authenticated fresh-install transaction that composes credentials, configuration, provider activation, service registration, and exact rollback under one digest-bound plan without launching or restarting Desktop/provider apps.
+- Added one-provider activation plans with exact route/account/model binding, prerequisite discovery, one bounded no-retry request, crash recovery, fresh-uninstall composition, and sanitized receipts; live provider certification remains separate.
+- Added Compatibility Watch exact N→N+1 identities, atomic artifact/version rechecks, retained last-known-working/sidecar state, separate attach/protocol/routing/provider/settings evidence, cross-process claims, transition-bound repair/rollback truth, and sanitized owner queues.
+- Hardened maximum-utilization control with selected-account native receipt rechecks, process-shared outbox claim/CAS, source-bound host receipts, cancellation fencing, and explicit non-replayable indeterminate outcomes.
+- Strengthened Continuity with a closed schema-v2 private journal, cooperative process-shared claims, exact request/receipt binding, non-replayable dispatch uncertainty, exact worker/rw successor and predecessor fencing, supported Goal parity, and identifier-free HTTP/browser projections.
+- Replaced the persistent Electron inspector HUD transport with a one-time source-bound bootstrap, per-generation authenticated supervisor, event-driven renderer reattachment, bounded replay/action protocol, crash recovery, inspector-closure proof, and exact package/`app.asar` immutability evidence.
+- Expanded the staged Hermes reverse connector to status, models, accounts, Consult, and raw Integrated while continuing to exclude Delegate and owner controls. Full Hermes forward and native recovery remain unavailable because current ACP cannot source-bind/narrow its built-in tools or exclude enabled native MCP servers.
+- Bound signed release manifests to the exact source commit while preserving the immutable published 0.5.0 release and its historical evidence.
+
+All new runtime/provider/Desktop evidence in this release is offline, synthetic, or local-browser evidence unless explicitly stated otherwise. Exact installed Linux and Windows acceptance remains separate; neither running Desktop integration nor provider applications were restarted for this release.
+
 ## 0.5.0 - 2026-08-18
 
-- Replaced the persistent Electron inspector HUD transport with an offline-tested one-time canonical bootstrap: exact target/source binding, per-generation authenticated closed supervisor protocol, event-driven navigation/window reattachment, replay-bounded renderer actions, durable indeterminate recovery, exact `app.asar`/package immutability evidence, and authenticated rollback that leaves the inspector closed. Exact native Linux/Windows bootstrap and Windows ACL acceptance remain open.
 - Added a supervised, app-attached ChatGPT/Codex Desktop HUD on Linux and Windows with fast cold-start state, expandable model/provider/mode routes, immediate selection feedback, owner-authenticated route mutation, persistence, and explicit-mode preservation.
 - Added default-off, one-continuation Grok Build exploration recovery with exact session binding, trusted terminal fields, canonical physical-worktree serialization, bounded patch/test reserve, privacy-preserving evidence, and terminal auth/quota/rate/payment handling.
 - Added a durable owner-private action-item store and compact global/per-project **Needs you** rail with strict public projection, owner-only loopback controls, revision-bound idempotent completion, and exact-owner delivery outbox.
 - Added deterministic provider scoring and one frozen routing snapshot shared by smart selection, the route map, and canonical picker routes; browser preferences remain presentation-only and quota does not silently affect ranking.
 - Reaped POSIX descendants left by exited streaming-provider leaders while preserving Windows `taskkill` behavior and intentional `killTree: false` processes.
-- Strengthened Continuity with a closed schema-v2 private journal, cooperative exact-owner process-shared claim/revision conflict checks, source-bound receipt-plus-exact-request validation, stable operation/recovery binding, non-replayable indeterminate dispatch, exact worker/rw successor and predecessor fencing, Goal-free or supported identity/objective/status/accounting parity, and closed identifier-free HTTP/browser projections. Exact native Linux/Windows builds remain separately unverified for this delta.
-- Added Compatibility Watch exact N→N+1 identities, atomic artifact/version rechecks, retained last-known-working/sidecar state, separate non-mutating attach/protocol/routing/provider/settings evidence, cross-process transition/target claims, transition-bound repair/rollback truth, and compact sanitized Needs-review/Diagnostics queues. Linux/Windows coverage for this delta remains synthetic, not native acceptance.
+- Strengthened Continuity presentation with pending-recovery status and an owner read-back after rename/rollover without adding native mutation or exposing native identifiers.
+- Completed Compatibility Watch CLI/daemon/HUD documentation and sanitized its published drift summaries to product and change-kind fields.
 - Refreshed the synthetic dashboard, picker, route-map screenshots and GIF, with a hash-bound privacy-reviewed media manifest and desktop/mobile browser smoke evidence.
 
-The installed Linux and Windows ChatGPT/Codex Desktop renderers were previously captured live with the attached HUD and working picker. That evidence predates the one-time authenticated bootstrap transport and does not certify it. The new Electron bootstrap, strengthened Continuity controls, and Compatibility Watch N→N+1 transition acceptance retain separate exact-build/native gates.
+The 616-test Linux source gate passes, and the installed Linux and Windows ChatGPT/Codex Desktop renderers were captured live with the attached HUD and working picker.
 
 ## 0.4.2 - 2026-08-18
 

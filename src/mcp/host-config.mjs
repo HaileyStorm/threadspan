@@ -40,7 +40,7 @@ export function renderGrokMcpToml(options) {
 export function renderHermesMcpYaml(options) {
   requireHostSurface("hermes");
   const shim = createMcpShimDefinition(options);
-  return `# Merge this server into the reviewed Hermes MCP configuration.\n# The connector token is read-only; Delegate is intentionally unavailable.\nmcp_servers:\n  threadspan:\n    transport: stdio\n    command: ${yamlString(shim.command)}\n    args:\n${shim.args.map((arg) => `      - ${yamlString(arg)}`).join("\n")}\n    tools:\n      include:\n        - bridge_status\n        - bridge_models\n        - consult\n`;
+  return `# Merge this server into the reviewed Hermes MCP configuration.\n# The connector token is read-only. Reverse Delegate and owner-only controls are intentionally unavailable.\n# Hermes remains responsible for its native account and model picker.\nmcp_servers:\n  threadspan:\n    transport: stdio\n    command: ${yamlString(shim.command)}\n    args:\n${shim.args.map((arg) => `      - ${yamlString(arg)}`).join("\n")}\n    tools:\n      include:\n        - bridge_status\n        - bridge_models\n        - bridge_accounts\n        - consult\n        - integrated\n`;
 }
 
 /** Render a staged Claude Code stdio MCP document without credential values. */
@@ -76,15 +76,18 @@ export function createHostSurfaceInstallPacket(host, options) {
   return Object.freeze({
     surface,
     content,
-    ...(host === "claude-code" ? {
-      settingsContent: renderClaudeCodeSettings(options.existingSettings, options),
-      pluginSource: options.pluginSource ?? null,
+    ...(["claude-code", "hermes"].includes(host) ? {
       status: "preview",
       liveTested: false,
       nativePickerReplaceable: false,
+      nativePickerPreserved: true,
+    } : {}),
+    ...(host === "claude-code" ? {
+      settingsContent: renderClaudeCodeSettings(options.existingSettings, options),
+      pluginSource: options.pluginSource ?? null,
     } : {}),
     storesCredentialValues: false,
-    recovery: `native-${host}`,
+    recovery: host === "hermes" ? "unavailable" : `native-${host}`,
   });
 }
 

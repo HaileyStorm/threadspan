@@ -136,6 +136,18 @@ test("registry rejects unknown providers and unsupported modes", () => {
   assert.throws(() => registry.resolveRoute({ providerId: "mock", mode: "delegate", model: "m" }), CapabilityError);
 });
 
+test("raw Nous remains Consult and Integrated while full Hermes forward is unavailable", () => {
+  const registry = new ProviderRegistry(createTestConfig({
+    defaults: { provider: "nous", mode: "consult", model: "raw/model" },
+    providers: { nous: { adapter: "nous", model: "raw/model", models: ["raw/model"], capabilities: ["consult", "integrated"] } },
+  }), { logger: silentLogger() });
+  const modes = registry.get("nous").capabilities().modes;
+  assert.equal(modes.consult.supported, true);
+  assert.equal(modes.integrated.supported, true);
+  assert.equal(modes.delegate.supported, false);
+  assert.throws(() => registry.get("hermes-agent"), /Unknown or disabled provider/);
+});
+
 test("enabled provider-native Codex describes setup-required while routes fail closed", async (t) => {
   const nativeProvider = {
     adapter: "codex-native-worker",

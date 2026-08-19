@@ -94,7 +94,7 @@ A host surface is the app/CLI that owns the user's current conversation. Reverse
 | Codex | Primary | MCP + Responses profiles + App Server | App-attached HUD, route picker, and App Server state | App Server / `codex exec resume` |
 | Grok Build / Bot | Enhanced | MCP, plugin/skill, optional HTTPS connector | Grok dashboard/usage/tasks + companion | ACP / `grok --resume` |
 | Cursor | Standard | MCP + source webview extension | Cursor webview + companion | Cursor SDK `Agent.resume()` / `agent` |
-| Hermes Agent | Preview | Status, models, and conservative MCP Consult | Companion HUD | Planned; not implemented or live-certified |
+| Hermes Agent | Preview | Read-only status/models/accounts plus Consult/Integrated MCP | Companion HUD | Forward execution and native recovery are unavailable until ACP tools can be source-bound and configured MCPs can be excluded |
 
 Recovery always uses the originating host's equivalent. A Grok, Cursor, or Hermes session is never resumed through Codex merely because Codex is installed.
 
@@ -110,7 +110,7 @@ Grok Bot has no documented arbitrary HUD injection API. Its supported path is an
 | Cursor CLI/SDK | Yes | No | Yes | SDK/CLI choice is host-specific; models are discovered live. |
 | Nous Portal | Yes | Yes | Yes | Delegate uses the bounded Codex-worker adapter. |
 | OpenRouter | Yes | Yes | No | Free-model discovery is optional and live. |
-| Hermes Agent | Preview | No | No | Status/models/Consult only; full-agent support is planned. |
+| Hermes Agent full agent | No | No | No | Forward execution is unavailable until ACP provides verifiable source-bound tool isolation and configured-MCP exclusion. Raw Nous remains separate. |
 | Claude Code | Community preview | No | Preview | Optional and not live-certified here. |
 | AgentRouter via Claude Code | Conditional | No | Conditional | Explicit-only, hard-capped host token, dated two-host evidence; recheck after 7 days. |
 | Mistral / Groq / Cloudflare / Gemini candidates | Check first | Check first | No | Disabled generic setup candidates; current free/cardless/model eligibility must be rechecked. |

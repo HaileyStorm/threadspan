@@ -34,7 +34,11 @@ A policy prompt or `plan` label is not a hard security boundary. The practical s
 
 ### Nous Portal already had the right raw-inference auth bridge
 
-Hermes Agent's subscription proxy performs OAuth credential attachment and exposes an OpenAI-compatible local endpoint. Reimplementing Portal auth would add fragility and risk. The built-in Nous adapter simply targets that proxy. Full Hermes agent execution remains a separate Delegate integration.
+Hermes Agent's subscription proxy performs OAuth credential attachment and exposes an OpenAI-compatible local endpoint. Reimplementing Portal auth would add fragility and risk. The built-in Nous adapter simply targets that proxy and remains raw Consult/Integrated inference, never full Hermes agent execution.
+
+### Hermes ACP forward failed the authority audit
+
+Official Hermes source constructs each ACP agent with the broad `hermes-acp` toolset and every enabled native MCP server. The documented skip marker affects background discovery, not per-session inclusion, and the built-in toolset is not source-bound or narrowable. Snapshotting, rejecting permission requests, or omitting client filesystem methods cannot constrain tools that Hermes owns internally. The forward adapter was therefore removed instead of shipping a disabled but unsafe Preview path. Official pages also conflict on process restoration, so native recovery is unavailable. Revisit only after upstream provides verifiable tool isolation, exact configured-MCP exclusion, and consistent recovery semantics.
 
 ### DeepSeek V4 could not be treated as generic OpenAI Chat
 
