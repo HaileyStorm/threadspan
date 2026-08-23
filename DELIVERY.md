@@ -17,9 +17,9 @@
 
 ## Verification evidence
 
-On Linux, `npm run verify` passes **752/752** with zero failures or skips. The focused release-bundle gate passes **23/23**. The npm dry-run package boundary includes the intended source/media and excludes `.working`, credentials, secrets, owner-local state, rollback evidence, and generated release artifacts. The signed public bundle must be rebuilt from the exact clean release commit and independently checked before publication.
+On Linux, `npm run verify` passes **753/753** with zero failures or skips. The focused release-bundle gate passes **23/23**. A separate disposable live acceptance on 2026-08-23 proved direct dirty-primary Grok write plus same-task continuation and Nous Flash/Pro Integrated file-tool turns; it did not use private project content. The npm dry-run package boundary includes the intended source/media and excludes `.working`, credentials, secrets, owner-local state, rollback evidence, and generated release artifacts. The signed public bundle must be rebuilt from the exact clean release commit and independently checked before publication.
 
-A local loopback browser smoke exercised Continuity Rename/Promote/recovery and the 390px layout without native identifiers or console warnings. That is browser interaction evidence, not installed-host App Server/Desktop acceptance. No paid inference, live provider request, Desktop/provider restart, service mutation, or Maestro change was performed for this release pass.
+A local loopback browser smoke exercised Continuity Rename/Promote/recovery and the 390px layout without native identifiers or console warnings. That is browser interaction evidence, not installed-host App Server/Desktop acceptance. The direct-tools delta separately restarted the Linux Threadspan user service and made the bounded provider calls described above; it did not change Desktop, Maestro, or Windows state.
 
 ## Host-specific limits
 
@@ -29,6 +29,8 @@ A local loopback browser smoke exercised Continuity Rename/Promote/recovery and 
 ## Product limits
 
 Nine outer workers remain an operator preset, not a provider guarantee. Grok weekly usage still needs provider-meter reconciliation. Cursor persistence is daemon-retained SDK state, not certified Cloud Agent pooling. Hermes full-agent forward execution remains blocked, not emulated. Provider availability, entitlement, pricing, and account state remain volatile and require fresh provider-native evidence.
+
+The owner-authorized Grok Delegate default accepts the supplied direct workspace, including primary, dirty, or non-Git directories. Linked-worktree and clean-start enforcement remain configurable options. The bridge never grants commit, reset, branch-switch, push, merge, release, or integration authority.
 
 Threadspan is not partnered with, sponsored by, or endorsed by listed providers. It does not copy credentials, account details, owner-local telemetry, prompts, or task content into public release source/assets.
 

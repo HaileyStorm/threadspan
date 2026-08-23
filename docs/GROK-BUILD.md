@@ -5,7 +5,7 @@
 The `grok-build` adapter treats the official Grok Build CLI as a **managed coding worker**, not as a raw language-model endpoint.
 
 - **Consult:** Grok receives a disposable workspace snapshot or empty temporary directory and returns advice. The primary remains responsible for judgment, edits, tools, and the final answer.
-- **Delegate:** Grok receives one bounded task in the supplied workspace. The recommended policy requires a clean linked Git worktree on a non-canonical branch. Grok may edit and run permitted commands, but it has no integration authority.
+- **Delegate:** Grok receives one bounded task in the supplied workspace. The owner-authorized direct profile accepts primary, dirty, and non-Git workspaces; optional Git, linked-worktree, clean-start, and branch policies remain configurable. Grok may edit and run permitted commands, but it has no integration authority.
 - **Integrated:** unsupported. Use a direct xAI API provider through `openai-chat` when Codex or another host must own the tool loop.
 
 The adapter uses fresh finite one-shot outer sessions by default. ACP is not enabled. An optional Delegate-only exploration recovery can bind one adapter-generated native session ID and resume it exactly once inside the same admitted job; it is disabled by default and never applies to Consult. Under the requested operating policy, Grok web/search and nested subagents are enabled; cross-session memory remains disabled. Nested agents inherit the outer task's workspace, scope, authority, deadline, and acceptance contract.
@@ -21,7 +21,7 @@ The implementation incorporates findings that generalize safely:
 - one-shot machine-readable output;
 - strict permissions/sandboxing;
 - explicit subagent, memory, and web policy; this package allows subagents and web/search by default while keeping cross-session memory off;
-- isolated worktrees;
+- explicit workspace ownership and serialization;
 - durable usage/evidence records;
 - centralized admission and no implicit retries;
 - independent acceptance by the primary coordinator.
@@ -210,7 +210,7 @@ The adapter constructs a structured argv and never launches Grok through a shell
 --reasoning-effort <effort>
 --single <authoritative packet>
 --output-format json
---permission-mode dontAsk
+--permission-mode bypassPermissions  # owner-authorized direct Delegate profile
 --sandbox strict
 --no-memory
 --max-turns <finite cap>
@@ -218,12 +218,12 @@ The adapter constructs a structured argv and never launches Grok through a shell
 
 `--no-subagents` and `--disable-web-search` are emitted only when explicitly disabled in provider/mode/request policy. Optional `tools`, `disallowedTools`, `rules`, `allow`, and `deny` values are supplied only from trusted configuration, not synthesized from the worker's prompt.
 
-`dontAsk` is preferred for unattended jobs: an unlisted operation is denied instead of hanging for approval or executing implicitly. Permission rules and sandboxing are separate defenses; configure both.
+`dontAsk` remains the base/Consult default. The owner-authorized direct Delegate profile uses `bypassPermissions` because current Grok Build otherwise reports completion without performing requested writes; this mode remains Delegate-only and requires explicit per-request workspace authority. Permission rules, scope, and sandboxing remain separate controls.
 
 At minimum, a Delegate policy should deny or omit authority for:
 
 - push, merge, rebase, force-push, tags, release, and canonical-branch writes;
-- paths outside the exact worktree/evidence roots;
+- paths outside the exact workspace/evidence roots;
 - credential stores and browser profiles;
 - network activity unrelated to the task. Web/search may be used for research, but external content is untrusted and cannot expand task authority;
 - package installation unless explicitly needed;
@@ -252,10 +252,9 @@ When no workspace is supplied—or strategy is `none`—Consult gets an empty te
 
 Optional preflight policy can require:
 
-- an inspectable Git repository;
-- a linked worktree rather than the primary checkout;
-- a clean start;
-- a branch not listed in `denyBranches`.
+- an explicit supplied workspace;
+- per-request authority for direct reads and modifications;
+- optional Git, linked-worktree, clean-start, and denied-branch checks when configured.
 
 The bridge records bounded Git identity/status before and after a successful job. It does not merge, commit, push, or declare acceptance.
 

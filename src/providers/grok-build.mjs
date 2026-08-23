@@ -93,7 +93,7 @@ export class GrokBuildProvider extends ProviderAdapter {
         delegate: {
           supported: configured.has("delegate"),
           reason: configured.has("delegate") ? undefined : "not enabled in provider configuration",
-          mutationBoundary: "supplied-isolated-worktree",
+          mutationBoundary: "supplied-direct-workspace",
         },
       },
       streaming: false,
@@ -737,7 +737,7 @@ export function buildGrokBuildArguments(config, request, profile, workspace, pro
   const executionPolicy = resolvedPolicy ?? resolveGrokExecutionPolicy(config, request);
   const permissionMode = modeConfig.permissionMode ?? config.permissionMode ?? "dontAsk";
   if (permissionMode === "bypassPermissions" && request.mode !== "delegate") {
-    throw new RequestError("Grok Build bypassPermissions is permitted only for Delegate in a clean linked worktree");
+    throw new RequestError("Grok Build bypassPermissions is permitted only for explicitly authorized Delegate workspaces");
   }
   const args = [...(config.commandArgs ?? [])];
   if (config.noAutoUpdate !== false) args.push("--no-auto-update");
@@ -958,22 +958,21 @@ async function physicalGitWorkspaceKey(state) {
   return `${normalize(physicalTopLevel)}\0${normalize(physicalCommonDir)}`;
 }
 
-/** Prepare the disposable Consult workspace or enforce the live Delegate worktree policy. */
+/** Prepare the disposable Consult workspace or bind the supplied Delegate workspace policy. */
 async function prepareGrokWorkspace(config, request, logger) {
   const modeConfig = config[request.mode] ?? {};
   const permissionMode = modeConfig.permissionMode ?? config.permissionMode ?? "dontAsk";
   if (permissionMode === "bypassPermissions" && request.mode !== "delegate") {
-    throw new RequestError("Grok Build bypassPermissions is permitted only for Delegate in a clean linked worktree");
+    throw new RequestError("Grok Build bypassPermissions is permitted only for explicitly authorized Delegate workspaces");
   }
   if (request.mode === "delegate") {
     if (!request.workspace) throw new RequestError("Grok Build Delegate requires a workspace");
     let workspace = resolve(request.workspace);
-    const bypassPermissions = permissionMode === "bypassPermissions";
     const explorationRecovery = modeConfig.explorationLoop?.enabled === true;
     const gitBefore = await enforceGitWorkspacePolicy(workspace, {
-      requireGit: explorationRecovery || bypassPermissions || modeConfig.requireGit,
-      requireLinkedWorktree: bypassPermissions || modeConfig.requireLinkedWorktree,
-      requireCleanStart: bypassPermissions || modeConfig.requireCleanStart,
+      requireGit: explorationRecovery || modeConfig.requireGit,
+      requireLinkedWorktree: modeConfig.requireLinkedWorktree,
+      requireCleanStart: modeConfig.requireCleanStart,
       denyBranches: modeConfig.denyBranches,
     });
     if (explorationRecovery) workspace = await realpath(gitBefore.topLevel);
@@ -1006,7 +1005,7 @@ async function prepareGrokWorkspace(config, request, logger) {
 function renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitBefore, acceptanceCommands, fleet, renderOptions) {
   const boundary = request.mode === "consult"
     ? `EXECUTION BOUNDARY\nYou are an advisory worker inside another agent's active thread. The workspace is disposable. Inspect it, but do not intentionally edit it. Return findings, evidence, uncertainty, disagreements, and a compact recommendation. The primary agent retains judgment, tool use, edits, and final-answer authority.`
-    : `EXECUTION BOUNDARY\nYou own only this bounded worker task. Stay inside the assigned worktree and scope. You have no merge, push, rebase, tag, release, or integration authority. Do not broaden the task. Report changed files, exact validation performed, terminal results, and unresolved risks. A separate coordinator will inspect the diff and independently accept or reject the work.`;
+    : `EXECUTION BOUNDARY\nYou own only this bounded worker task. Stay inside the assigned workspace and scope. The workspace may be a primary checkout, may already contain uncommitted work, or may not use Git. Preserve unrelated work. You have no commit, reset, checkout, merge, push, rebase, tag, release, or integration authority. Do not broaden the task. Report changed files, exact validation performed, terminal results, and unresolved risks. A separate coordinator will inspect the result and independently accept or reject the work.`;
   const nestedAgentPolicy = executionPolicy.allowSubagents
     ? `NESTED AGENTS\nProvider-native subagents are allowed when they materially help. They inherit this exact task scope, workspace boundary, authority limits, deadline, and validation contract. Do not use them to evade tool restrictions or integration limits. Track their assignments and summarize their evidence and unresolved disagreements in the final report.`
     : `NESTED AGENTS\nDo not spawn provider-native subagents for this job.`;

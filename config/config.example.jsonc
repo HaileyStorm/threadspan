@@ -375,7 +375,7 @@
       },
       "delegate": {
         "profile": "balanced",
-        "reasoningEffort": "medium",
+        "reasoningEffort": "high",
         "maxTurns": 16,
         "expectedTurns": 4,
         "noPlan": true,
@@ -388,14 +388,10 @@
           "minimumRepeatedKindCount": 2
         },
         "permissionMode": "bypassPermissions",
-        "requireGit": true,
-        "requireLinkedWorktree": true,
-        "requireCleanStart": true,
-        "denyBranches": [
-          "main",
-          "master",
-          "trunk"
-        ],
+        "requireGit": false,
+        "requireLinkedWorktree": false,
+        "requireCleanStart": false,
+        "denyBranches": [],
         "useJsonSchema": false,
         "allow": [],
         "deny": []

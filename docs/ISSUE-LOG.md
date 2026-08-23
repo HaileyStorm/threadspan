@@ -31,7 +31,7 @@
 |---|---|---|
 | Wrong working directory made Node miss `src/cli.mjs`. | Lifecycle files use absolute installed paths. | Moving a source install requires regeneration. |
 | Cursor SDK sandbox startup failed under AppArmor. | Disabled only the SDK local sandbox for the reviewed adapter; Delegate still requires a linked worktree. | Recheck after upstream sandbox changes. |
-| Grok `dontAsk` denied Delegate writes. | Use documented bypass mode only for Delegate in a linked worktree. | Independent acceptance remains mandatory. |
+| Grok `dontAsk` completed without performing requested Delegate writes. | Current owner-authorized direct profile uses Delegate-only `bypassPermissions` in the explicitly supplied workspace without forcing linked/clean Git; optional Git isolation remains configurable. | Re-run a disposable direct-write canary after Grok CLI updates; independent acceptance remains mandatory. |
 | Two pre-fix Grok descendant zombies remain under the user manager. | New jobs are reaped; avoided disrupting unrelated services. | Clear at logout/reboot. |
 | The systemd user service did not carry an explicit `CODEX_HOME`, so native Continuity discovery depended on launcher state. | Added a reviewed service drop-in with the resolved Linux Codex home and restarted the user service. | Regenerate the drop-in if the account's Codex home moves. |
 | A Linux host overlay selected stale Grok model `grok-4.6-build`. | Live CLI validation selected `grok-4.6`; the overlay was corrected. | Recheck the live catalog after CLI or entitlement changes. |

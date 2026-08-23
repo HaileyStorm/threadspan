@@ -152,7 +152,7 @@ const COMPONENTS = Object.freeze({
     },
     [
       manualAuth("Install and sign in with Grok Build before live use"),
-      permission("Approve Grok Delegate's bypassPermissions mode only inside isolated linked worktrees; Consult remains non-mutating"),
+      permission("Approve Grok Delegate's bypassPermissions mode only for an explicitly selected direct workspace; linked/clean Git isolation is optional, and Consult remains non-mutating"),
     ],
   ),
   "claude-code": component(

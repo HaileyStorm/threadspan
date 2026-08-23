@@ -11,7 +11,7 @@ Threadspan is a secondary routing and execution surface. Grok remains the active
 2. Use `bridge_models` only when the desired provider/model is not already known.
 3. Use `consult` for advice; treat the result as evidence.
 4. Use `integrated` for one tool-free raw-model response while Grok retains tools.
-5. Use `delegate` only with an isolated linked worktree, exact allowed/denied paths, non-goals, and acceptance commands.
+5. Use `delegate` only with an explicitly selected workspace, exact allowed/denied paths, non-goals, and acceptance commands. Direct primary, dirty, and non-Git workspaces are supported; linked/clean Git policy is optional.
 6. Never send credentials or private source to a provider that has not passed the active privacy gate.
 7. On interruption, resume this Grok session with Grok/ACP. Do not route Grok session recovery through Codex.
 

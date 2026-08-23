@@ -92,7 +92,7 @@ flowchart LR
 
 - A provider-owned agent receives a bounded task.
 - Cursor Delegate works on the supplied live workspace.
-- Grok Build Delegate uses one fresh finite CLI job and can require a clean linked worktree, denied-branch policy, strict permissions/sandbox, and exact turn/profile limits.
+- Grok Build Delegate uses one fresh finite CLI job in the supplied workspace; direct primary/dirty/non-Git operation is supported, while optional Git/linked/clean/branch policy, strict permissions/sandbox, and exact turn/profile limits remain configurable.
 - One retained SDK agent is keyed by `threadId + model + resolved workspace`.
 - Sends to the same agent are serial; unrelated agents/threads can run concurrently.
 - Idle and count limits bound retained Cursor agents. Grok Build remains fresh-session by design and is bounded by provider-local admission plus wall/turn limits.

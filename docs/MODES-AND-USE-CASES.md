@@ -167,7 +167,7 @@ Use **Consult**. Supply a compact thread packet and optional workspace. The brid
 
 ### “Give Grok Build a small implementation task”
 
-Use **Delegate** only after creating a dedicated clean linked worktree. Supply exact scope, non-goals, constraints, finite profile/effort/turn/time budget, and acceptance commands. The worker may edit/test in that worktree but cannot accept, merge, push, or release its own work.
+Use **Delegate** with an explicitly selected workspace and direct-workspace authority. The Grok direct profile accepts primary, dirty, and non-Git workspaces; optional linked/clean Git policy remains available. Supply exact scope, non-goals, constraints, finite profile/effort/turn/time budget, and acceptance commands. The worker may edit/test there but cannot commit, reset, switch branches, accept, merge, push, or release its own work.
 
 ### “Use Grok as Codex's active model while Codex owns tools”
 

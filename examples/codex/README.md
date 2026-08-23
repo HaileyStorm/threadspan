@@ -17,4 +17,4 @@ The default generated MCP entry proxies to the same HTTP daemon as the model-pro
 node src/cli.mjs serve
 ```
 
-The installed skills keep advisory Consult separate from bounded managed-worker Delegate. Multiple Desktop coordinators may each launch a tiny stdio shim, but all should target the same daemon. Use stable coordinator/worker-group IDs, one clean linked worktree per writable outer worker, and independently reproduce acceptance commands.
+The installed skills keep advisory Consult separate from bounded managed-worker Delegate. Multiple Desktop coordinators may each launch a tiny stdio shim, but all should target the same daemon. Use stable coordinator/worker-group IDs, serialize each writable workspace, and independently reproduce acceptance commands. Grok direct mode supports primary, dirty, and non-Git workspaces; linked/clean isolation remains optional.

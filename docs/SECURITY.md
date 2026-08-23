@@ -206,7 +206,7 @@ Implemented controls:
 - non-consuming version/SHA-256 inspection and optional strict pinning;
 - structured argv with `shell: false`;
 - finite one-shot jobs and turn/time/output ceilings;
-- `dontAsk` and strict sandbox defaults;
+- `dontAsk` base behavior plus an explicit Delegate-only `bypassPermissions` direct-workspace profile, both under strict sandbox and caller authority;
 - no cross-session memory or auto-update by default; Grok subagents and web/search are enabled by the current operator policy, with explicit opt-outs and inherited authority boundaries;
 - optional environment allowlist;
 - provider-local admission and no implicit retries;
@@ -241,7 +241,7 @@ Implemented controls:
 - optional absolute executable requirement, version constraint, and SHA-256 pin;
 - no auto-update during jobs;
 - finite one-shot sessions and turn/wall/output limits;
-- default `dontAsk`, strict sandbox, no cross-session memory, and explicit web/subagent policy (currently allowed by default, never authority-expanding);
+- base `dontAsk` plus explicit Delegate-only `bypassPermissions` for owner-authorized direct writes, strict sandbox, no cross-session memory, and explicit web/subagent policy (currently allowed by default, never authority-expanding);
 - optional reduced environment allowlist;
 - process-tree termination;
 - snapshot Consult and optional linked-worktree/clean-start/denied-branch Delegate gates;
@@ -258,7 +258,7 @@ Residual risks:
 - a worker can produce a plausible but wrong patch or false success report;
 - the consumer subscription meter cannot be reproduced exactly from local telemetry.
 
-Use one clean isolated worktree per worker, exact allow/deny policy, and independent acceptance. The worker must not receive push, merge, rebase, tag, release, canonical-branch, or completion authority.
+Use one explicitly owned workspace per active worker, exact allow/deny policy, and independent acceptance. Direct mode may target a primary, dirty, or non-Git workspace after caller authority; optional linked/clean Git checks remain available. The worker must not receive commit, reset, branch-switch, push, merge, rebase, tag, release, or completion authority.
 
 Raw prompt/stdout/stderr ledger evidence is opt-in because it may contain proprietary code or secrets. Default hashes prove evidence identity without storing its content in the ledger. Ledger directories/files are created with private modes where supported, but OS backups and administrator access remain outside the application's control.
 
@@ -402,7 +402,7 @@ An allowlisted origin can make bearerless browser calls only if the server's bro
 - [ ] Reasoning/body logging disabled unless a reviewed diagnostic session explicitly requires it.
 - [ ] Public release preflight passes, and issue/PR evidence excludes signed or callback URLs, screenshots, media, audio, and transcripts.
 - [ ] Grok/managed workers use an explicit reviewed executable path/version/hash policy.
-- [ ] Every Delegate worker has a unique clean linked worktree and non-canonical branch.
+- [ ] Every Delegate worker has one explicitly owned workspace; direct primary/dirty/non-Git use has caller authority, or configured linked/clean Git checks pass.
 - [ ] Worker permissions, sandbox, tools, memory, web, subagents, turn cap, and timeout are explicit.
 - [ ] Raw worker evidence is disabled unless its confidentiality impact is accepted.
 - [ ] Worker output is independently reviewed and acceptance commands are rerun.

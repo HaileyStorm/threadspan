@@ -90,7 +90,7 @@ Provider-owned coding CLIs such as Grok Build are Delegate/Consult surfaces, not
 - Use one-shot, finite runs by default. Add ACP or persistent sessions only when the user experience genuinely requires mid-job steering or resumability.
 - Use structured argv with `shell: false`; never splice untrusted task text into shell command strings or permission patterns.
 - Keep model, reasoning effort, turn cap, tool scope, permission mode, sandbox, memory, web access, and subagent policy explicit. Current Grok defaults allow web/search and nested subagents while keeping cross-session memory off.
-- Require an isolated linked worktree and clean start when configured. Never permit two workers to share a writable checkout.
+- Honor the configured Delegate workspace policy. Direct-workspace mode may use a primary, dirty, or non-Git workspace only with explicit caller authority; never silently add Git mutations or integration authority.
 - Reserve admission budget before launch and reconcile expected turns to terminal `model_calls`/`turns` when available.
 - Treat empirical concurrency/rate observations as configurable canary values, never service guarantees.
 - Do not automatically retry quota, rate-limit, entitlement, malformed-output, or worker failures.
@@ -105,7 +105,7 @@ Provider-owned coding CLIs such as Grok Build are Delegate/Consult surfaces, not
 `src/providers/grok-build.mjs` must preserve these boundaries:
 
 - Consult uses a disposable snapshot or empty temporary directory and remains advisory.
-- Delegate uses the supplied isolated worktree and enforces configured Git policy before launch.
+- Delegate uses the supplied workspace and enforces any configured Git policy before launch. The owner-authorized direct-workspace profile does not require Git, cleanliness, or a linked worktree.
 - Integrated is unsupported; use a direct xAI API `openai-chat` provider when the host should own tools.
 - The executable path, version constraint, and SHA-256 pin are non-consuming preflight checks. Never hard-code another person's observed binary hash as a universal expected value.
 - Consumer weekly usage is not reconstructible from local token telemetry alone. Keep admission/ledger controls local and document the remaining manual entitlement/usage check.

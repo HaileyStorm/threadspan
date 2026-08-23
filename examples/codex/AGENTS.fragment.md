@@ -15,7 +15,7 @@ Never silently substitute one mode for another. In particular, Cursor's SDK agen
 ## Managed worker Delegate
 
 - Use the `managed-worker` skill only for a narrow provider-owned execution task with explicit scope, non-goals, finite budget, and exact acceptance commands.
-- Give every writable worker its own clean linked worktree on a non-canonical branch. Never share a writable checkout.
+- Give every writable worker one explicitly selected, serialized workspace. Grok direct mode may use primary, dirty, or non-Git workspaces; optional linked/clean Git policy remains available.
 - The worker has no push, merge, release, acceptance, or final-answer authority.
 - Inspect the full diff/repository state and independently rerun acceptance commands before integration.
 - Do not automatically retry quota, rate-limit, entitlement, malformed-output, or failed-worker results.

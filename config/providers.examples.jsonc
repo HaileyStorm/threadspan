@@ -41,12 +41,14 @@
       },
       "delegate": {
         "profile": "balanced",
+        "reasoningEffort": "high",
         "maxTurns": 16,
         "expectedTurns": 4,
-        "requireGit": true,
-        "requireLinkedWorktree": true,
-        "requireCleanStart": true,
-        "denyBranches": ["main", "master", "trunk"],
+        "permissionMode": "bypassPermissions",
+        "requireGit": false,
+        "requireLinkedWorktree": false,
+        "requireCleanStart": false,
+        "denyBranches": [],
         "allow": [],
         "deny": []
       }

@@ -14,8 +14,8 @@ Current 0.6.0 Linux release-source result:
 
 ```text
 npm run check: passed
-752 tests
-752 passed
+753 tests
+753 passed
 0 failed
 0 skipped
 ```
@@ -42,7 +42,7 @@ The suite uses local fakes, local HTTP servers, and isolated temporary paths. It
 | Hermes blocker/reverse | Raw Nous remains Consult/Integrated and distinct; no full-agent provider route exists; host metadata records the source-bound-tool/configured-MCP blocker; reverse YAML allowlists status/models/accounts/Consult/Integrated only; installer remains staged and does not start, sign in, or merge native config. |
 | Snapshots | Copy/exclusions, canonical symlink confinement and snapshot-local rewriting, byte limit, cleanup after failed copy, and pattern behavior. |
 | Grok Build | Non-consuming executable/version/hash preflight, model/usage/error parsing, finite safety argv, profiles/overrides, snapshot Consult, quota failure/no retry, Integrated rejection, and opt-in Delegate exploration classification with trusted top-level fields, exact session echo, workspace-keyed serialization, and one same-session patch/test recovery. |
-| Managed workers | Weighted FIFO admission and expected/actual turn reconciliation, private run ledger/evidence, Git linked-worktree/branch/clean gates, and multi-skill installation. |
+| Managed workers | Weighted FIFO admission and expected/actual turn reconciliation, private run ledger/evidence, direct primary/dirty/non-Git workspaces, optional Git linked-worktree/branch/clean gates, and multi-skill installation. |
 | xAI-compatible accounting | Reasoning usage plus exact `cost_in_usd_ticks` preservation as provider metadata. |
 | Compatibility Watch | Exact N→N+1 artifact/version identities, retained N acceptance, separate attach/protocol/routing/provider/settings outcomes, manual/passive evidence rules, process-shared transition and repair-target claims, transition-bound preimages, truthful retry/rollback states, and sanitized actionable/diagnostic HUD projection. Linux/Windows plans are synthetic unless run natively. |
 | Electron HUD bootstrap | Exact single-target discovery, source-bound acknowledgement, per-generation capability privacy, session-HMAC/sequence/action replay rejection, bounded pre-auth connections/frame queues/results/backpressure, process-shared whole-host admission, cooperative transaction/CAS phases, indeterminate no-replay, exact persisted-port refusal/reappearance, transactional injection failure cleanup, multi-window/navigation HUD cleanup, resumable teardown, route-action schema, launch-vs-attach non-disturbance, dead-generation recovery, exact package/`app.asar` immutability, rollback→relaunch, and synthetic Linux/Windows endpoint semantics. Native app/ACL evidence remains separate. |
@@ -145,8 +145,8 @@ Keep this phase intentionally small and account-aware:
 - [ ] Settings → Usage confirms the expected Build entitlement and weekly reset/remaining percentage.
 - [ ] Tiny low/medium/high effort canaries establish which values the installed model accepts; no silent fallback occurs.
 - [ ] One tiny Consult runs over a disposable snapshot and leaves the source tree unchanged.
-- [ ] One mechanical Delegate runs in a clean linked worktree on a non-canonical branch.
-- [ ] `dontAsk` plus exact permission/sandbox policy denies an unapproved command without hanging.
+- [ ] One mechanical Delegate mutates a disposable dirty primary workspace under the direct profile; optional linked/clean policy has a separate canary.
+- [ ] Direct Delegate `bypassPermissions` performs the exact disposable write without requiring linked/clean Git, while Consult still rejects bypass mode.
 - [ ] Default invocation keeps web/search and subagents enabled, still emits `--no-memory`, finite `--max-turns`, and no-auto-update; explicit opt-out calls add `--no-subagents` and/or `--disable-web-search`.
 - [ ] Terminal JSON contains the expected text and available usage/model-call/cost fields.
 - [ ] Quota/rate/entitlement error produces one terminal failure and no retry.

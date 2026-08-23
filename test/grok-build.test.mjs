@@ -277,7 +277,7 @@ test("Grok rejects protected execution-policy flags from every arbitrary argumen
   }
 });
 
-test("Grok bypassPermissions is Delegate-only and forces a clean linked worktree", async (t) => {
+test("Grok bypassPermissions is Delegate-only while Git isolation remains configurable", async (t) => {
   try { await execFileAsync("git", ["--version"]); } catch { t.skip("git is unavailable"); return; }
   const root = await mkdtemp(join(tmpdir(), "threadspan-grok-bypass-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -303,22 +303,89 @@ test("Grok bypassPermissions is Delegate-only and forces a clean linked worktree
     () => buildGrokBuildArguments(createProviderConfig({ consult: { permissionMode: "bypassPermissions" } }), { mode: "consult", model: "grok-4.6", metadata: {} }, {
       reasoningEffort: "medium", maxTurns: 4, expectedTurns: 1, noPlan: false,
     }, repository, "task"),
-    /only for Delegate in a clean linked worktree/,
+    /only for explicitly authorized Delegate workspaces/,
   );
 
   const provider = new GrokBuildProvider("grok", config, { logger: silentLogger() });
   const request = { mode: "delegate", model: "grok-4.6", messages: [{ role: "user", content: "bounded task" }] };
   try {
-    await assert.rejects(async () => {
-      for await (const _event of provider.run({ ...request, workspace: repository })) {}
-    }, /linked Git worktree/);
-    const events = [];
-    for await (const event of provider.run({ ...request, workspace: worktree })) events.push(event);
+    const primaryEvents = await collectRun(provider, { ...request, workspace: repository });
+    assert.equal(primaryEvents.at(-1).message.content, "worker-ok");
+    await writeFile(join(repository, "tracked.txt"), "dirty\n");
+    const dirtyEvents = await collectRun(provider, { ...request, workspace: repository });
+    assert.equal(dirtyEvents.at(-1).message.content, "worker-ok");
+  } finally {
+    await provider.close();
+  }
+
+  const strictProvider = new GrokBuildProvider("grok", createProviderConfig({
+    delegate: {
+      permissionMode: "bypassPermissions",
+      requireGit: true,
+      requireLinkedWorktree: true,
+      requireCleanStart: true,
+    },
+  }), { logger: silentLogger() });
+  try {
+    await assert.rejects(
+      collectRun(strictProvider, { ...request, workspace: repository }),
+      /linked Git worktree/,
+    );
+    const events = await collectRun(strictProvider, { ...request, workspace: worktree });
     assert.equal(events.at(-1).message.content, "worker-ok");
     await writeFile(join(worktree, "tracked.txt"), "dirty\n");
-    await assert.rejects(async () => {
-      for await (const _event of provider.run({ ...request, workspace: worktree })) {}
-    }, /must be clean/);
+    await assert.rejects(
+      collectRun(strictProvider, { ...request, workspace: worktree }),
+      /must be clean/,
+    );
+  } finally {
+    await strictProvider.close();
+  }
+});
+
+test("Grok Delegate direct-workspace policy accepts dirty primary and non-Git workspaces", async (t) => {
+  try { await execFileAsync("git", ["--version"]); } catch { t.skip("git is unavailable"); return; }
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-direct-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repository = await createGitRepository(root);
+  await writeFile(join(repository, "owner-dirty.txt"), "pre-existing owner work\n");
+  const statusBefore = (await execFileAsync(
+    "git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: repository },
+  )).stdout;
+  const plain = join(root, "plain");
+  await mkdir(plain);
+
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    delegate: {
+      profile: "balanced",
+      maxTurns: 16,
+      expectedTurns: 4,
+      permissionMode: "bypassPermissions",
+      requireGit: false,
+      requireLinkedWorktree: false,
+      requireCleanStart: false,
+      denyBranches: [],
+    },
+  }), { logger: silentLogger() });
+  try {
+    const primaryEvents = await collectRun(provider, {
+      mode: "delegate",
+      model: "grok-4.6",
+      workspace: repository,
+      messages: [{ role: "user", content: "bounded direct task" }],
+    });
+    assert.equal(primaryEvents.at(-1).message.content, "worker-ok");
+    assert.equal((await execFileAsync(
+      "git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: repository },
+    )).stdout, statusBefore);
+
+    const plainEvents = await collectRun(provider, {
+      mode: "delegate",
+      model: "grok-4.6",
+      workspace: plain,
+      messages: [{ role: "user", content: "bounded non-git task" }],
+    });
+    assert.equal(plainEvents.at(-1).message.content, "worker-ok");
   } finally {
     await provider.close();
   }

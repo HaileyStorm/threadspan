@@ -39,7 +39,7 @@ The setup window is source-run in an app-style Vivaldi/Chrome/Edge window, not a
 - Live provider/model discovery with a compact picker instead of a wall of models.
 - `Consult`: a secondary opinion; the current host stays responsible.
 - `Integrated`: a raw secondary response; the current host owns tools.
-- `Delegate`: a bounded provider-owned worker in an isolated linked worktree.
+- `Delegate`: a bounded provider-owned worker in the explicitly supplied workspace; Grok direct mode supports primary, dirty, and non-Git workspaces.
 - Grok fleet admission, turn, cost, process, cancellation, and evidence accounting.
 - Cursor CLI/SDK agents with discovered models and retained-agent accounting.
 - Direct Nous Portal Consult/Integrated routes and a bounded Codex-worker Delegate path.
@@ -263,7 +263,7 @@ node src/cli.mjs install gui --config "$HOME/.threadspan/config.jsonc"
 
 ## Security boundary
 
-Threadspan is a trusted-local-user tool. Loopback APIs require a bearer by default. The optional public MCP connector has a separate scoped bearer and exposes only MCP. Delegate requires an explicit linked Git worktree and scope/acceptance contract. Workers have no merge, push, release, or integration authority.
+Threadspan is a trusted-local-user tool. Loopback APIs require a bearer by default. The optional public MCP connector has a separate scoped bearer and exposes only MCP. Grok Delegate requires an explicitly selected workspace and scope/acceptance contract; primary, dirty, and non-Git direct workspaces are supported, while linked/clean Git isolation remains optional. Workers have no commit, reset, branch-switch, merge, push, release, or integration authority.
 
 Read [Security](docs/SECURITY.md), [Setup window](docs/INSTALLER-GUI.md), [Host surfaces](docs/HOST-SURFACES.md), and the [issue log](docs/ISSUE-LOG.md) before broad rollout.
 

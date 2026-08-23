@@ -21,7 +21,7 @@ Do not make a worker the sole authority for broad architecture, security-critica
 Every Delegate request should define:
 
 1. one concrete outcome;
-2. exact base commit, branch, and isolated worktree;
+2. exact supplied workspace and any available base commit/branch evidence;
 3. allowed files/components and explicit non-goals;
 4. compatibility, dependency, security, performance, and style constraints;
 5. exact acceptance commands;
@@ -32,8 +32,8 @@ The packaged `skills/managed-worker/references/task-packet.md` contains a compac
 
 ## Safety envelope
 
-- Never give two workers the same writable checkout.
-- Prefer a clean linked Git worktree on a non-canonical branch.
+- Serialize workers targeting the same writable workspace.
+- Direct Grok mode may use a primary, dirty, or non-Git workspace with explicit caller authority; prefer optional linked/clean policy when isolation matters.
 - Use structured argv with no shell.
 - Deny unneeded tools, network, credentials, browser profiles, package installation, integration commands, and external paths.
 - Keep cross-session memory disabled by default. This package allows Grok nested subagents and web/search by default under the operator's policy; nested work inherits the parent boundary, and web content is treated as untrusted evidence. Explicitly disable either when it adds no value.
@@ -69,4 +69,4 @@ Every ChatGPT/Codex coordinator and its subagents should use an MCP shim that fo
 
 The included fleet preset permits nine outer Grok jobs while retaining one 18-unit rolling admission budget and 1.4-second launch spacing. Nested Grok subagents live inside an admitted outer job; they must not be counted as independent authority or used to evade outer-job admission. Provider terminal accounting is reconciled when available.
 
-Set `coordinator_id` and `worker_group` on calls. Give every writable outer job its own linked worktree. Nested agents may share only their parent's worktree and exact assignment boundary.
+Set `coordinator_id` and `worker_group` on calls. Serialize writable outer jobs by their supplied workspace. Nested agents may share only their parent's workspace and exact assignment boundary.

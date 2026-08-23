@@ -14,4 +14,4 @@ cursor-bridge serve
 
 In each Desktop/Codex installation, run `cursor-bridge codex install`. The generated MCP shim forwards to the same daemon by default. The static Cursor example also uses `--remote http://127.0.0.1:8743`.
 
-Set `coordinator_id`, `worker_group`, and stable `thread_id` values on requests. Give every writable outer Grok Delegate job a unique linked worktree. Canary one, three, and six jobs before enabling all nine slots; the values are local policy, not provider guarantees.
+Set `coordinator_id`, `worker_group`, and stable `thread_id` values on requests. The nine-worker fleet preset recommends a unique linked worktree per writable outer Grok job for isolation; direct primary, dirty, and non-Git workspaces are supported for explicitly authorized serialized jobs. Canary one, three, and six jobs before enabling all nine slots; the values are local policy, not provider guarantees.
