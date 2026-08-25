@@ -8,6 +8,13 @@ import { CapabilityError, ProviderError, RequestError } from "../core/errors.mjs
 import { classifyExplorationLoop } from "../core/exploration-loop.mjs";
 import { createId } from "../core/ids.mjs";
 import { KeyedSerialQueue } from "../core/keyed-serial-queue.mjs";
+import {
+  GROK_HOST_GATE_MODEL,
+  GROK_HOST_GATE_REPORTED_MODEL,
+  GROK_HOST_GATE_TEST_OPTIONS,
+  GrokHostGate,
+  GrokHostGateError,
+} from "../core/grok-host-gate.mjs";
 import { ManagedProcessError, normalizeManagedCommand, runCapturedProcess } from "../core/managed-process.mjs";
 import { renderMessagesForAgent } from "../core/policies.mjs";
 import { RunLedger, sha256Text, workspacePathFingerprint } from "../core/run-ledger.mjs";
@@ -74,6 +81,11 @@ export class GrokBuildProvider extends ProviderAdapter {
     this.preflightPromise = undefined;
     this.modelDiscovery = undefined;
     this.closed = false;
+    this.hostGate = new GrokHostGate({
+      ...(config.grokHostGate ?? {}),
+      ...(config[GROK_HOST_GATE_TEST_OPTIONS] ?? {}),
+      ownerIdentity: `${id}\0${process.cwd()}\0${process.pid}`,
+    });
   }
 
   /** Return Grok Build's actual execution boundaries. */
@@ -120,12 +132,13 @@ export class GrokBuildProvider extends ProviderAdapter {
   async listModels() {
     if (Array.isArray(this.config.models)) return super.listModels();
     if (this.config.discoverModels !== true) return [{ id: this.config.model ?? "grok-4.6" }];
+    assertNoGrokSecretEnvironment(this.config, process.env);
     const now = Date.now();
     if (this.modelDiscovery && this.modelDiscovery.expiresAt > now) return this.modelDiscovery.models;
 
     try {
       const installation = await this.#preflight();
-      const result = await runCapturedProcess({
+      const result = await this.#runGatedProcess({
         command: installation.executable,
         args: [...(this.config.commandArgs ?? []), ...(this.config.modelListArgs ?? ["models"])],
         expectedExecutableSha256: installation.sha256,
@@ -134,13 +147,24 @@ export class GrokBuildProvider extends ProviderAdapter {
         maxStderrBytes: 64 * 1024,
         env: buildGrokEnvironment(this.config, {}),
       });
-      if (result.exitCode !== 0) throw new Error(result.stderr || `grok models exited with code ${result.exitCode}`);
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr || `grok models exited with code ${result.exitCode}`);
+      }
       const models = parseGrokModelList(result.stdout);
-      const resolvedModels = models.length > 0 ? models : [{ id: this.config.model ?? "grok-4.6" }];
+      const resolvedModels = models.filter((entry) => entry.id === GROK_HOST_GATE_MODEL);
+      if (resolvedModels.length !== 1) {
+        throw new Error(`grok models did not advertise the exact saved-session model '${GROK_HOST_GATE_MODEL}'`);
+      }
       this.modelDiscovery = { models: resolvedModels, expiresAt: now + (this.config.modelCacheTtlMs ?? 300_000) };
       return resolvedModels;
     } catch (error) {
-      throw new ProviderError(this.id, `Grok Build model discovery failed: ${error instanceof Error ? error.message : String(error)}`, { retryable: true, cause: error });
+      const gateFailure = error instanceof GrokHostGateError
+        || error instanceof ManagedProcessError && typeof error.details?.gateCode === "string";
+      throw new ProviderError(this.id, `Grok Build model discovery failed: ${error instanceof Error ? error.message : String(error)}`, {
+        retryable: !gateFailure,
+        details: gateFailure ? { retryPolicy: "no-fallback-saved-session-gate" } : undefined,
+        cause: error,
+      });
     }
   }
 
@@ -174,6 +198,11 @@ export class GrokBuildProvider extends ProviderAdapter {
   /** Execute one bounded Grok Build Consult or Delegate job after any workspace serialization. */
   async *#runJob(request, expectedWorkspaceKey) {
     if (this.closed) throw new ProviderError(this.id, "Grok Build provider is closed", { status: 503 });
+    assertNoGrokSecretEnvironment(this.config, process.env);
+    if (!this.hostGate.disabled) assertGrokSavedSessionRequest(request);
+    if (request.model !== GROK_HOST_GATE_MODEL) {
+      throw new RequestError(`Grok saved-session route requires exact model '${GROK_HOST_GATE_MODEL}'`);
+    }
     this.assertMode(request.mode);
     if (request.mode === "integrated") {
       throw new CapabilityError(this.id, "integrated", this.capabilities().modes.integrated.reason);
@@ -487,7 +516,7 @@ export class GrokBuildProvider extends ProviderAdapter {
       const promptFile = await createPrivateGrokPromptFile(prompt);
       promptDirectory = promptFile.directory;
       const args = buildGrokBuildArguments(this.config, request, profile, workspace, promptFile.path, executionPolicy, nativeSession);
-      result = await runCapturedProcess({
+      result = await this.#runGatedProcess({
         command: installation.executable,
         args,
         expectedExecutableSha256: installation.sha256,
@@ -527,7 +556,7 @@ export class GrokBuildProvider extends ProviderAdapter {
           version: installation.version,
           ...(installation.sha256 ? { executableSha256: installation.sha256 } : {}),
         }),
-      });
+      }, { requireTerminalModelBinding: true });
     } catch (error) {
       attemptError = error;
       const evidence = await this.ledger.captureEvidence(evidenceId, {
@@ -639,6 +668,69 @@ export class GrokBuildProvider extends ProviderAdapter {
       ...evidence,
     });
     return { attempt, ordinal, profile, result, parsed, evidence, evidenceId, nativeSession, recoverableNonzeroExit };
+  }
+
+  /** Acquire, spawn under the final synchronous barrier, and release only proven terminal contact. */
+  async #runGatedProcess(options, gateOptions = {}) {
+    const timeoutMs = positiveProcessTimeout(options.timeoutMs);
+    const deadlineAt = Date.now() + timeoutMs;
+    let slot;
+    let terminalProven = false;
+    let forceReconcile = false;
+    let processError;
+    const persistRevocation = (reason) => {
+      try {
+        this.hostGate.revoke(reason);
+      } catch (error) {
+        forceReconcile = true;
+        throw error;
+      }
+    };
+    try {
+      slot = this.hostGate.acquire({ timeoutMs, deadlineAt });
+      const remainingMs = remainingProcessTimeout(deadlineAt);
+      const result = await runCapturedProcess({
+        ...options,
+        timeoutMs: remainingMs,
+        deadlineAt,
+        spawnGuard: this.hostGate.spawnGuard(slot, { deadlineAt }),
+      });
+      terminalProven = true;
+      const parsed = tryParseGrokPayload(result, this.id);
+      if (gateOptions.requireTerminalModelBinding === true && !this.hostGate.disabled
+        && (parsed?.reportedModels.length !== 1 || parsed.reportedModels[0] !== GROK_HOST_GATE_REPORTED_MODEL)) {
+        persistRevocation("Grok terminal modelUsage did not prove the exact grok-4.6-build binding");
+        throw new ProviderError(this.id, `Grok Build terminal modelUsage must report only '${GROK_HOST_GATE_REPORTED_MODEL}'`, {
+          retryable: false,
+          details: { retryPolicy: "no-fallback-exact-model-binding" },
+        });
+      }
+      const revocation = classifyGrokGateRevocation(result, parsed);
+      if (revocation) persistRevocation(revocation);
+      return result;
+    } catch (error) {
+      processError = error;
+      forceReconcile ||= error?.reconcileRequired === true || error?.details?.reconcileRequired === true;
+      terminalProven ||= managedProcessTerminalIsProven(error);
+      const result = { stderr: error?.details?.stderr ?? "" };
+      const revocation = classifyGrokGateRevocation(result, tryParseGrokPayload(result, this.id));
+      if (revocation) persistRevocation(revocation);
+      throw error;
+    } finally {
+      try {
+        const settlement = this.hostGate.settle(slot, { terminalProven, reconcileRequired: forceReconcile });
+        if (settlement.reconcileRequired) {
+          this.logger?.warn?.("Grok host slot remains reconcile-required until TTL because terminal cleanup was not proven", {
+            gateEpoch: slot?.gateEpoch,
+          });
+        }
+      } catch (settlementError) {
+        if (!processError) throw settlementError;
+        this.logger?.warn?.("Could not settle Grok host slot after process failure", {
+          message: settlementError instanceof Error ? settlementError.message : String(settlementError),
+        });
+      }
+    }
   }
 
   /** Reject unadvertised models when strict model-list policy is enabled. */
@@ -978,6 +1070,7 @@ export function parseGrokBuildPayload(stdout, stderr = "", providerId = "grok-bu
     modelCalls: findTopLevelNumber(payload, ["model_calls", "modelCalls", "request_count", "requestCount"]),
     estimatedCostUsd: findMoney(payload, ["estimated_cost", "estimatedCost", "estimated_cost_usd", "cost", "cost_usd"]),
     reportedModel: findString(payload, ["model", "model_id", "modelId"]),
+    reportedModels: topLevelModelUsageKeys(payload),
     finishReason: findTopLevelString(payload, ["finish_reason", "finishReason", "stop_reason", "stopReason"]),
     errorCode: findStructuredErrorField(payload, ["error_code", "errorCode", "code"]),
     errorMessage: findStructuredErrorField(payload, ["error_message", "errorMessage", "message"]),
@@ -1099,6 +1192,118 @@ function buildGrokEnvironment(config, bridgeEnvironment, baseEnvironment = proce
   return buildChildEnvironment(config, config.env ?? {}, bridgeEnvironment, baseEnvironment);
 }
 
+/** Enforce the public-data disclosure boundary before a production saved-session contact. */
+export function assertGrokSavedSessionRequest(request) {
+  const classification = request?.metadata?.bridge_payload_classification;
+  if (!["public_synthetic", "public_repo"].includes(classification)) {
+    throw new RequestError("Grok saved-session route requires bridge_payload_classification=public_synthetic or public_repo");
+  }
+  if (request?.metadata?.bridge_payload_disclosed !== true) {
+    throw new RequestError("Grok saved-session route requires explicit bridge_payload_disclosed=true");
+  }
+  assertGrokTextOnlyMessages(request?.messages);
+}
+
+/** Reject API-key/token/secret environment presence instead of silently switching auth modes. */
+export function assertNoGrokSecretEnvironment(config, environment = process.env) {
+  const names = new Set([...Object.keys(environment ?? {}), ...Object.keys(config?.env ?? {})]);
+  const forbidden = [...names].filter(grokSecretEnvironmentName).sort();
+  if (forbidden.length > 0) {
+    throw new RequestError(`Grok saved-session route rejects Grok/xAI secret environment presence (${forbidden.join(", ")})`);
+  }
+}
+
+function grokSecretEnvironmentName(name) {
+  return /^(?:XAI|GROK)(?:_|$)/i.test(String(name))
+    && /(?:API|AUTH|BASE|BILL|CREDENTIAL|CREDIT|EXTRA.?USE|KEY|MODEL|PASSWORD|PAY|PROVIDER|SECRET|SESSION|TOKEN|TOP.?UP|URL)/i.test(String(name));
+}
+
+function assertGrokTextOnlyMessages(messages) {
+  if (!Array.isArray(messages)) throw new RequestError("Grok saved-session route requires standard text-only messages");
+  for (const [messageIndex, message] of messages.entries()) {
+    const content = message?.content;
+    if (typeof content === "string") continue;
+    if (!Array.isArray(content)) throw new RequestError(`Grok saved-session message ${messageIndex} must contain standard text only`);
+    for (const [partIndex, part] of content.entries()) {
+      if (typeof part === "string") continue;
+      if (!part || typeof part !== "object" || Array.isArray(part)
+        || !["text", "input_text", "output_text"].includes(part.type)
+        || typeof part.text !== "string") {
+        throw new RequestError(`Grok saved-session message ${messageIndex} part ${partIndex} must be an explicit text block; audio, files, attachments, images, binary, media, and unknown blocks are disabled`);
+      }
+    }
+  }
+}
+
+/** Return a bounded revocation reason only from provider-owned terminal billing/allowance fields. */
+export function classifyGrokGateRevocation(result, parsed) {
+  const signals = classifyGrokErrorSignals(result, parsed ?? {});
+  if (signals.quota) return "Grok saved-session allowance or quota is exhausted";
+  if (signals.paymentRequired) return "Grok reported payment, top-up, or extra-use billing required";
+  const payload = parsed?.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const usage = payload.modelUsage?.[GROK_HOST_GATE_REPORTED_MODEL];
+  const top = Object.fromEntries(Object.entries(payload).filter(([key]) => !["structuredOutput", "modelUsage"].includes(key)));
+  const flags = new Set(["allowanceexhausted", "weeklyallowanceexhausted", "extrausageenabled", "extrausage", "billedroute", "credittopup", "topup", "paidroute"]);
+  const safeModes = new Map([
+    ["billingmode", new Set(["subscription", "included", "weeklyallowance", "includedweeklyallowance", "subscriptionincluded"])],
+    ["accountclass", new Set(["subscription"])],
+    ["authscheme", new Set(["session"])],
+  ]);
+  for (const [key, value] of [...grokBillingSignalValues(top), ...grokBillingSignalValues(usage)]) {
+    if (flags.has(key) && value !== false) return "Grok terminal envelope reports exhausted allowance, top-up, extra-use, or a paid route";
+    if (safeModes.has(key) && (typeof value !== "string" || !safeModes.get(key).has(normalizedGrokBillingKey(value)))) {
+      return "Grok terminal billing, account, or auth mode is billed or unknown";
+    }
+    if (key === "allowancestate" && value !== "available") {
+      return "Grok terminal allowance state is not available";
+    }
+  }
+  return undefined;
+}
+
+function grokBillingSignalValues(value, depth = 0) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 2) return [];
+  const result = [];
+  const containers = new Set(["billing", "usagestate", "usage", "account", "error", "details"]);
+  for (const [key, child] of Object.entries(value)) {
+    const normalized = normalizedGrokBillingKey(key);
+    result.push([normalized, child]);
+    if (containers.has(normalized) && child && typeof child === "object" && !Array.isArray(child)) {
+      result.push(...grokBillingSignalValues(child, depth + 1));
+    }
+  }
+  return result;
+}
+
+function normalizedGrokBillingKey(value) {
+  return String(value).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function tryParseGrokPayload(result, providerId) {
+  try { return parseGrokBuildPayload(result.stdout, result.stderr, providerId); } catch { return undefined; }
+}
+
+function managedProcessTerminalIsProven(error) {
+  return error instanceof ManagedProcessError
+    && (Number.isInteger(error.details?.exitCode) || typeof error.details?.exitSignal === "string");
+}
+
+function positiveProcessTimeout(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : 30 * 60 * 1000;
+}
+
+function remainingProcessTimeout(deadlineAt) {
+  const remaining = Math.floor(deadlineAt - Date.now());
+  if (remaining <= 0) {
+    throw new ManagedProcessError("Grok request timeout elapsed before provider process start", {
+      kind: "timeout",
+      details: { contacted: false, reconcileRequired: false },
+    });
+  }
+  return remaining;
+}
+
 /** Return executable candidates in trust-preference order. */
 function grokExecutableCandidates(config, environment, platform) {
   const candidates = [
@@ -1155,7 +1360,7 @@ function createGrokExitError(providerId, result, parsed) {
 function classifyGrokErrorSignals(result, parsed) {
   const combined = `code ${parsed.errorCode ?? ""}\nmessage ${parsed.errorMessage ?? ""}\nstatus ${parsed.errorStatus ?? ""}\ndiagnostic ${parsed.errorDiagnostic ?? ""}\n${result.stderr ?? ""}`;
   return {
-    quota: /subscription:free-usage-exhausted|(?:usage|quota)[-_ ]?(?:exhausted|exceeded)|usage[-_ ]?limit[-_ ]?exceeded|insufficient[-_ ]?quota|resource[-_ ]?exhausted/i.test(combined),
+    quota: /subscription:free-usage-exhausted|(?:weekly[-_ ]?)?allowance[-_ ]?(?:exhausted|exceeded)|(?:usage|quota)[-_ ]?(?:exhausted|exceeded)|usage[-_ ]?limit[-_ ]?exceeded|insufficient[-_ ]?quota|resource[-_ ]?exhausted/i.test(combined),
     rateLimited: /rate[-_ ]?(?:limit(?:ed)?|exceeded)|too many requests|(?:http(?:\/\d(?:\.\d)?)?|status|code)\s*[:=]?\s*429\b/i.test(combined),
     paymentRequired: /payment[-_ ]?(?:required|declined|failed)|billing[-_ ]?required|insufficient[-_ ]?(?:funds|credits?)|exhausted[-_ ]?credits?|(?:http(?:\/\d(?:\.\d)?)?|status|code)\s*[:=]?\s*402\b/i.test(combined),
     authenticationOrEntitlement: /auth(?:entication)?[-_ ]?(?:failed|failure|required|rejected)|invalid[-_ ]?(?:credentials?|api[-_ ]?key|token)|(?:token|api[-_ ]?key)[-_ ]?expired|access[-_ ]?denied|unauthenticated|unauthorized|forbidden|login[-_ ]?required|(?:http(?:\/\d(?:\.\d)?)?|status|code)\s*[:=]?\s*(?:401|403)\b|(?:subscription|entitlement)[-_ ]?(?:inactive|expired|required|rejected|missing|invalid|not[-_ ]?recognized)/i.test(combined),
@@ -1324,6 +1529,14 @@ function findTopLevelNumber(payload, keys) {
     if (number !== undefined) return number;
   }
   return undefined;
+}
+
+/** Read exact provider-owned modelUsage keys without traversing assistant-authored output. */
+function topLevelModelUsageKeys(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
+  const usage = payload.modelUsage;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return [];
+  return Object.keys(usage).sort();
 }
 
 /** Render common assistant content shapes without converting arbitrary metadata objects to text. */

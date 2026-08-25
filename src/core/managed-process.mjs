@@ -268,6 +268,8 @@ export class ManagedProcessError extends Error {
  *   windowsHide?: boolean,
  *   killTree?: boolean,
  *   expectedExecutableSha256?: string,
+ *   deadlineAt?: number,
+ *   spawnGuard?: (spawnChild: () => import("node:child_process").ChildProcessWithoutNullStreams) => import("node:child_process").ChildProcessWithoutNullStreams|{child: import("node:child_process").ChildProcessWithoutNullStreams, ready: Promise<void>},
  *   onSpawn?: (state: {pid?: number, startedAt: number}) => void|Promise<void>,
  * }} options Process options.
  * @returns {Promise<{stdout: string, stderr: string, exitCode: number|null, exitSignal: NodeJS.Signals|null, pid?: number, startedAt: number, durationMs: number}>}
@@ -275,9 +277,32 @@ export class ManagedProcessError extends Error {
 export async function runCapturedProcess(options) {
   options.signal?.throwIfAborted();
   const startedAt = Date.now();
+  const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
+  const deadlineAt = Number.isFinite(options.deadlineAt) ? Number(options.deadlineAt) : startedAt + timeoutMs;
   let child;
+  let spawnReady = Promise.resolve();
+  let timedOut = false;
+  let streamFailure;
+  let terminationTask;
+  let terminationRequested = false;
+  const requestTermination = () => {
+    if (!child) {
+      terminationRequested = true;
+      return Promise.resolve();
+    }
+    terminationTask ??= terminateProcessTree(child, { killTree: options.killTree !== false });
+    terminationTask.catch(() => undefined);
+    return terminationTask;
+  };
+  const abort = () => { void requestTermination(); };
+  options.signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void requestTermination();
+  }, Math.max(1, deadlineAt - Date.now()));
+  timer.unref?.();
   try {
-    child = spawnManagedChild(options.command, options.args ?? [], {
+    const spawnChild = () => spawnManagedChild(options.command, options.args ?? [], {
       cwd: options.cwd,
       env: options.env,
       shell: options.shell === true,
@@ -285,9 +310,31 @@ export async function runCapturedProcess(options) {
       killTree: options.killTree !== false,
       expectedExecutableSha256: options.expectedExecutableSha256,
     });
+    const guarded = options.spawnGuard
+      ? options.spawnGuard(spawnChild, { deadlineAt, remainingMs: Math.max(0, deadlineAt - Date.now()) })
+      : spawnChild();
+    if (guarded?.child && guarded?.ready) {
+      child = guarded.child;
+      spawnReady = Promise.resolve(guarded.ready);
+    } else {
+      child = guarded;
+    }
+    if (!child || typeof child.once !== "function") throw new TypeError("spawnGuard must synchronously return the spawned child process");
+    if (terminationRequested || Date.now() >= deadlineAt) {
+      timedOut = true;
+      void requestTermination();
+    }
   } catch (error) {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
+    const kind = typeof error?.code === "string" && error.code.includes("timeout") ? "timeout" : "spawn";
     throw new ManagedProcessError(`Could not start '${options.command}': ${error instanceof Error ? error.message : String(error)}`, {
-      kind: "spawn",
+      kind,
+      details: {
+        contacted: error?.contacted === true,
+        reconcileRequired: error?.reconcileRequired === true,
+        gateCode: typeof error?.code === "string" ? error.code : undefined,
+      },
       cause: error,
     });
   }
@@ -297,23 +344,6 @@ export async function runCapturedProcess(options) {
     child.once("exit", (exitCode, exitSignal) => resolve({ exitCode, exitSignal }));
   });
   exitPromise.catch(() => undefined);
-
-  let timedOut = false;
-  let streamFailure;
-  let terminationTask;
-  const requestTermination = () => {
-    terminationTask ??= terminateProcessTree(child, { killTree: options.killTree !== false });
-    terminationTask.catch(() => undefined);
-    return terminationTask;
-  };
-  const abort = () => { void requestTermination(); };
-  options.signal?.addEventListener("abort", abort, { once: true });
-  const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    void requestTermination();
-  }, timeoutMs);
-  timer.unref?.();
 
   const stdoutTask = readBoundedStream(child.stdout, options.maxStdoutBytes ?? 16 * 1024 * 1024, "error")
     .catch((error) => {
@@ -328,10 +358,23 @@ export async function runCapturedProcess(options) {
       return "";
     });
 
-  if (options.stdin !== undefined) child.stdin.end(options.stdin);
-  else child.stdin.end();
-
   try {
+    try {
+      await spawnReady;
+    } catch (error) {
+      const kind = typeof error?.code === "string" && error.code.includes("timeout") ? "timeout" : "spawn";
+      throw new ManagedProcessError(`Could not start '${options.command}': ${error instanceof Error ? error.message : String(error)}`, {
+        kind,
+        details: {
+          contacted: error?.contacted === true,
+          reconcileRequired: error?.reconcileRequired === true,
+          gateCode: typeof error?.code === "string" ? error.code : undefined,
+        },
+        cause: error,
+      });
+    }
+    if (options.stdin !== undefined) child.stdin.end(options.stdin);
+    else child.stdin.end();
     await options.onSpawn?.({ pid: child.pid, startedAt });
     let terminal;
     try {

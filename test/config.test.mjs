@@ -349,6 +349,7 @@ test("Grok Build configuration enforces agent-mode and finite-run boundaries", (
     command: "grok",
     model: "grok-4.6",
     models: ["grok-4.6"],
+    strictModelList: true,
     capabilities: ["consult", "delegate"],
     allowedEfforts: ["low", "medium", "high"],
     maxTurnsCeiling: 24,
@@ -362,6 +363,22 @@ test("Grok Build configuration enforces agent-mode and finite-run boundaries", (
     providers: { grok: provider },
   });
   assert.equal(configured.providers.grok.adapter, "grok-build");
+  if (process.platform === "linux") {
+    for (const nodeTestContext of [undefined, "0", "1"]) {
+      for (const grokHostGate of [{ disabled: true }, { path: "/tmp/not-the-canonical-grok-gate.sqlite3" }]) {
+        assert.throws(() => validateConfig({
+          ...valid,
+          defaults: { provider: "grok", mode: "consult", model: "grok-4.6" },
+          providers: { grok: { ...provider, grokHostGate } },
+        }, "production", { environment: nodeTestContext === undefined ? {} : { NODE_TEST_CONTEXT: nodeTestContext } }), /cannot disable the canonical Grok host gate|requires canonical Grok host gate path/);
+      }
+    }
+  }
+  assert.throws(() => validateConfig({
+    ...valid,
+    defaults: { provider: "grok", mode: "consult", model: "grok-4.6" },
+    providers: { grok: { ...provider, env: { XAI_API_KEY: "forbidden" } } },
+  }), /secret environment/);
   assert.throws(() => validateConfig({
     ...valid,
     defaults: { provider: "grok", mode: "integrated", model: "grok-4.6" },

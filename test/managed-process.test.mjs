@@ -108,3 +108,20 @@ test("captured POSIX jobs reap descendants left by an exited group leader", { sk
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.throws(() => process.kill(pid, 0));
 });
+
+test("captured process spawnGuard synchronously wraps actual child creation", async () => {
+  const order = [];
+  const result = await runCapturedProcess({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('guarded')"],
+    spawnGuard(spawnChild) {
+      order.push("before");
+      const child = spawnChild();
+      order.push(child.pid ? "spawned" : "missing-pid");
+      return child;
+    },
+    onSpawn() { order.push("telemetry"); },
+  });
+  assert.equal(result.stdout, "guarded");
+  assert.deepEqual(order, ["before", "spawned", "telemetry"]);
+});

@@ -359,7 +359,7 @@ The dedicated `grok-build` adapter treats the official CLI as a provider-owned c
 Behavior:
 
 - non-consuming executable/version/hash preflight;
-- fresh finite `--single` job with machine-readable JSON output;
+- fresh finite `--prompt-file <private absolute path>` job with machine-readable JSON output;
 - explicit model, effort, turn cap, permissions, sandbox, tools, memory, web, and subagent policy;
 - structured argv with no shell;
 - snapshot-isolated Consult and optional linked-worktree gates for Delegate;

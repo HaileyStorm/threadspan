@@ -10,6 +10,12 @@ The `grok-build` adapter treats the official Grok Build CLI as a **managed codin
 
 The adapter uses fresh finite one-shot outer sessions by default. ACP is not enabled. An optional Delegate-only exploration recovery can bind one adapter-generated native session ID and resume it exactly once inside the same admitted job; it is disabled by default and never applies to Consult. Under the requested operating policy, Grok web/search and nested subagents are enabled; cross-session memory remains disabled. Nested agents inherit the outer task's workspace, scope, authority, deadline, and acceptance contract.
 
+On Linux, this is a saved-session-only route subordinate to the canonical owner-armed SQLite gate at `~/.codex/state/model-work-queue-grok-host.sqlite3`. Threadspan never creates or arms that database. Every inference attempt and any `grok models` discovery contact acquires an epoch-fenced shared slot and rechecks authorization under `BEGIN IMMEDIATE` across the actual child spawn. The gate binds exact `grok-4.6` → `grok-4.6-build` subscription-included use. Expired authorization, exhausted allowance, or explicit paid/top-up/extra-use/billed/unknown billing state revokes the gate transactionally; uncertain post-contact cleanup retains its slot until TTL.
+
+The Linux gate requires `node:sqlite` `DatabaseSync` (Node.js 22.5 or newer). It is loaded only when this route is instantiated; unrelated providers and Windows retain the package-wide Node 22 baseline. If the module is unavailable, Grok fails closed with no in-memory fallback.
+
+Production calls must classify outbound data as `public_synthetic` or `public_repo` and explicitly record disclosure. Grok/xAI API-key, token, or secret environment presence is rejected. Images and API, provider, model, or billed fallback remain disabled for this route.
+
 ## Research basis and account-specific observations
 
 `docs/research/GrokReport.md` is the user-supplied findings report that motivated this phase. It combines official documentation, local CLI inspection, and bounded authenticated probes.
@@ -46,6 +52,7 @@ The package does **not** hard-code the report's observed executable hash, subscr
       },
 
       "model": "grok-4.6",
+      "reportedModel": "grok-4.6-build",
       "models": ["grok-4.6"],
       "strictModelList": true,
       "capabilities": ["consult", "delegate"],
@@ -65,6 +72,10 @@ The package does **not** hard-code the report's observed executable hash, subscr
         "PATH", "PATHEXT", "SystemRoot", "ComSpec", "TEMP", "TMP"
       ],
 
+      "grokHostGate": {
+        "disabled": false
+      },
+
       "admission": {
         "maxActive": 6,
         "minStartIntervalMs": 1400,
@@ -82,6 +93,7 @@ The package does **not** hard-code the report's observed executable hash, subscr
       "consult": {
         "workspaceStrategy": "snapshot",
         "profile": "diagnose",
+        "reasoningEffort": "medium",
         "maxTurns": 8,
         "expectedTurns": 2,
         "noPlan": true,
@@ -152,17 +164,19 @@ Examples:
 ```bash
 cursor-bridge consult "Review the parser failure" \
   --provider grok-build --workspace . \
-  --profile diagnose --effort medium --max-turns 8 --expected-turns 2
+  --profile diagnose --effort medium --max-turns 8 --expected-turns 2 \
+  --payload-classification public_repo --disclosed
 ```
 
 ```bash
 cursor-bridge delegate "Add characterization tests only" \
   --provider grok-build --workspace /repo/worktrees/parser-tests \
   --profile mechanical --effort low --max-turns 8 --expected-turns 2 --no-plan \
+  --payload-classification public_repo --disclosed \
   --acceptance-command "npm test -- test/parser.test.mjs"
 ```
 
-Use low effort only when the task is genuinely mechanical. A failed low-effort pass plus correction can cost more than one medium-effort pass.
+Use low effort only when the task is genuinely mechanical. A failed low-effort pass plus correction can cost more than one medium-effort pass. Threadspan preserves the exact selected effort and never silently substitutes another.
 
 ## Optional exploration-loop recovery
 
@@ -208,7 +222,7 @@ The adapter constructs a structured argv and never launches Grok through a shell
 --cwd <exact workspace>
 --model <model>
 --reasoning-effort <effort>
---single <authoritative packet>
+--prompt-file <private absolute path containing the authoritative packet>
 --output-format json
 --permission-mode bypassPermissions  # owner-authorized direct Delegate profile
 --sandbox strict
@@ -262,7 +276,7 @@ Never assign two writable workers to the same checkout.
 
 ## Admission and concurrency
 
-The adapter owns one provider-local weighted admission controller. It can bound:
+The provider-local weighted controller remains a fairness, spacing, queue-depth, and rolling-turn-budget layer. It is not host concurrency authority. The canonical SQLite gate supplies the process-shared Linux cap (1 through 12) across Threadspan and the Coordination Python queue. Local controls can bound:
 
 - active processes (`maxActive`);
 - spacing between admitted starts (`minStartIntervalMs`);
@@ -272,7 +286,7 @@ The adapter owns one provider-local weighted admission controller. It can bound:
 
 Each job reserves `expectedTurns` before launch. At terminal output, the reservation is reconciled to reported `model_calls` or `turns`. If actual use exceeds the reservation, later jobs inherit immediate budget debt until the original rolling record expires.
 
-This is intentionally approximate. The CLI does not expose the precise timing of every internal model call, and the consumer weekly percentage uses product-specific compute weighting. The controller limits local dispatch pressure; it is not a reproduction of xAI's billing meter.
+This is intentionally approximate. The CLI does not expose the precise timing of every internal model call, and the consumer weekly percentage uses product-specific compute weighting. The controller limits local dispatch pressure; it is not a reproduction of xAI's billing meter. The shared gate proves only current explicit authorization and slot accounting; it never reconstructs usage or re-arms itself.
 
 The generic 6 / 1.4 seconds / 18-turn defaults come from one bounded report. They are not universal service guarantees. The fleet example raises `maxActive` to nine outer jobs while keeping one shared 18-turn rolling budget, matching an operator topology with resident/tool-working jobs without claiming nine simultaneous model turns. Start lower, canary the actual account, and remeasure after changes.
 
@@ -375,5 +389,6 @@ Not live-certified in this package:
 - native Windows process/permission behavior on the user's machine;
 - ACP interoperability and resumable sessions;
 - whether every current ChatGPT/Codex Desktop build presents the route in its stock picker.
+- live provider acceptance of the new canonical gate path; current gate evidence is offline and Python-shaped.
 
 The implementation fails explicitly around those boundaries rather than pretending they are settled.

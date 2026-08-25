@@ -130,6 +130,8 @@ test("MCP forwards fleet, subagent, and web controls to the shared service contr
         allow_web_search: true,
         coordinator_id: "cgpt-a",
         worker_group: "grok-nine",
+        payload_classification: "public_repo",
+        disclosed: true,
       },
     },
   })}\n`);
@@ -140,6 +142,8 @@ test("MCP forwards fleet, subagent, and web controls to the shared service contr
   assert.equal(received.allowWebSearch, true);
   assert.equal(received.coordinatorId, "cgpt-a");
   assert.equal(received.workerGroup, "grok-nine");
+  assert.equal(received.payloadClassification, "public_repo");
+  assert.equal(received.disclosed, true);
 });
 
 test("MCP forwards an explicit disjoint-write scope without changing native settings", async () => {

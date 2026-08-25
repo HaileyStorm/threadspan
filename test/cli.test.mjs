@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseArguments, writeConvenienceResult } from "../src/cli.mjs";
 
-test("CLI parser handles values, booleans, equals, and repeated options", () => {
-  const parsed = parseArguments(["consult", "question", "--provider", "a", "--model=b", "--json", "--tag", "x", "--tag", "y"]);
+test("CLI parser handles values, booleans, equals, repeated options, and saved-session disclosure", () => {
+  const parsed = parseArguments(["consult", "question", "--provider", "a", "--model=b", "--payload-classification", "public_repo", "--disclosed", "--json", "--tag", "x", "--tag", "y"]);
   assert.deepEqual(parsed.positionals, ["consult", "question"]);
   assert.equal(parsed.options.provider, "a");
   assert.equal(parsed.options.model, "b");
   assert.equal(parsed.options.json, true);
+  assert.equal(parsed.options.payloadClassification, "public_repo");
+  assert.equal(parsed.options.disclosed, true);
   assert.deepEqual(parsed.options.tag, ["x", "y"]);
 });
 

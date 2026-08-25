@@ -8,7 +8,10 @@ import test from "node:test";
 import { promisify } from "node:util";
 import {
   GrokBuildProvider,
+  assertGrokSavedSessionRequest,
+  assertNoGrokSecretEnvironment,
   buildGrokBuildArguments,
+  classifyGrokGateRevocation,
   inspectGrokBuildInstallation,
   parseGrokBuildPayload,
   resolveGrokExecutionPolicy,
@@ -53,6 +56,7 @@ function createProviderConfig(overrides = {}) {
     inheritEnv: false,
     envAllowlist: [],
     noAutoUpdate: true,
+    grokHostGate: { disabled: true, testContext: true },
     allowSubagents: true,
     noMemory: true,
     allowWebSearch: true,
@@ -81,7 +85,30 @@ test("Grok installation preflight rejects CLIs without prompt-file support", asy
   assert.match(result.errors.join("; "), /does not support --prompt-file; version 1\.0\.5 or newer is required/);
 });
 
-test("Grok Build keeps native profile auth paths but excludes unnamed provider and daemon credentials", async (t) => {
+test("Grok model discovery advertises only exact grok-4.6 and rejects secrets before contact", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-discovery-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = join(root, "grok-discovery.mjs");
+  await writeFile(script, `
+    if (process.argv.includes('--version')) process.stdout.write('grok 1.0.5');
+    else process.stdout.write(JSON.stringify({models:[{id:'grok-4.5'}]}));
+  `);
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    commandArgs: [script],
+    models: undefined,
+    discoverModels: true,
+  }), { logger: silentLogger() });
+  await assert.rejects(provider.listModels(), /did not advertise the exact saved-session model 'grok-4.6'/);
+  process.env.XAI_API_KEY = "forbidden";
+  try {
+    await assert.rejects(provider.listModels(), /rejects Grok\/xAI secret environment presence/);
+  } finally {
+    delete process.env.XAI_API_KEY;
+    await provider.close();
+  }
+});
+
+test("Grok Build rejects secret auth environment, then keeps only reviewed non-secret environment", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "threadspan-grok-env-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const script = join(root, "grok-env.mjs");
@@ -118,6 +145,12 @@ test("Grok Build keeps native profile auth paths but excludes unnamed provider a
     envAllowlist: ["THREADSPAN_GROK_NAMED"],
     env: { THREADSPAN_GROK_CONFIGURED: "configured-value" },
   }), { logger: silentLogger() });
+  await assert.rejects(collectRun(provider, {
+    mode: "consult",
+    model: "grok-4.6",
+    messages: [{ role: "user", content: "hello" }],
+  }), /rejects Grok\/xAI secret environment presence/);
+  delete process.env.XAI_API_KEY;
   const events = [];
   try {
     for await (const event of provider.run({
@@ -258,6 +291,43 @@ test("Grok task profiles honor bounded mode and request overrides", () => {
     mode: "delegate",
     metadata: { bridge_max_turns: "25" },
   }), /from 1 to 24/);
+});
+
+test("Grok saved-session privacy and terminal billing signals fail closed", () => {
+  assert.doesNotThrow(() => assertGrokSavedSessionRequest({
+    metadata: { bridge_payload_classification: "public_repo", bridge_payload_disclosed: true },
+    messages: [{ role: "user", content: "public repository task" }],
+  }));
+  assert.throws(() => assertGrokSavedSessionRequest({ metadata: {}, messages: [] }), /payload_classification/);
+  assert.throws(() => assertGrokSavedSessionRequest({
+    metadata: { bridge_payload_classification: "public_synthetic", bridge_payload_disclosed: true },
+    messages: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }] }],
+  }), /explicit text block/);
+  for (const part of [
+    { type: "input_audio", audio: "AA==" },
+    { type: "input_file", file_id: "file_1" },
+    { type: "attachment", data: "AA==" },
+    { type: "binary", data: new Uint8Array([1]) },
+    { type: "unknown_structured", value: { private: true } },
+  ]) assert.throws(() => assertGrokSavedSessionRequest({
+    metadata: { bridge_payload_classification: "public_synthetic", bridge_payload_disclosed: true },
+    messages: [{ role: "user", content: [part] }],
+  }), /explicit text block/);
+  assert.throws(() => assertNoGrokSecretEnvironment({}, { XAI_API_KEY: "present" }), /secret environment presence/);
+  assert.match(classifyGrokGateRevocation({ stderr: "quota exhausted" }, {}), /quota is exhausted/);
+  assert.match(classifyGrokGateRevocation({ stderr: "weekly allowance exhausted" }, {}), /quota is exhausted/);
+  assert.match(classifyGrokGateRevocation({ stderr: "" }, {
+    payload: { modelUsage: { "grok-4.6-build": { billing: { extraUsageEnabled: 1 } } } },
+  }), /top-up.*extra-use/);
+  for (const payload of [
+    { weeklyAllowanceExhausted: true },
+    { allowanceExhausted: 0 },
+    { billedRoute: true },
+    { paidRoute: "yes" },
+  ]) assert.match(classifyGrokGateRevocation({ stderr: "" }, { payload }), /exhausted allowance|paid route/);
+  assert.match(classifyGrokGateRevocation({ stderr: "" }, { payload: { billing_mode: "unknown" } }), /billed or unknown/);
+  assert.equal(classifyGrokGateRevocation({ stderr: "" }, { payload: { paidRoute: false, billingMode: "subscription_included" } }), undefined);
+  assert.deepEqual(parseGrokBuildPayload(JSON.stringify({ modelUsage: { "grok-4.6-build": {} }, output_text: "ok" })).reportedModels, ["grok-4.6-build"]);
 });
 
 test("Grok argument builder keeps subagents and web enabled by default while retaining finite controls", () => {
@@ -646,6 +716,111 @@ test("Grok Build classifies stderr quota JSON and does not retry", async (t) => 
   }
   const invocations = (await readFile(counterPath, "utf8")).trim().split("\n").map(JSON.parse);
   assert.equal(invocations.length, 2, "one version preflight plus one failed job; no retry");
+});
+
+test("terminal process proof survives a transactional revoke failure for slot settlement", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-revoke-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let settlement;
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    env: { FAKE_GROK_QUOTA: "1" },
+  }), { logger: silentLogger() });
+  provider.hostGate = {
+    disabled: false,
+    acquire() { return { token: "fixture", gateEpoch: 3 }; },
+    spawnGuard() { return undefined; },
+    revoke() { throw new Error("fixture revoke failure"); },
+    settle(currentSlot, options) {
+      if (currentSlot) settlement = options;
+      return { released: true, reconcileRequired: false };
+    },
+  };
+  try {
+    await assert.rejects(collectRun(provider, {
+      mode: "consult",
+      model: "grok-4.6",
+      messages: [{ role: "user", content: "public synthetic quota fixture" }],
+      metadata: { bridge_payload_classification: "public_synthetic", bridge_payload_disclosed: true, bridge_reasoning_effort: "high" },
+    }), /fixture revoke failure/);
+  } finally {
+    await provider.close();
+  }
+  assert.equal(settlement.terminalProven, true);
+  assert.equal(settlement.reconcileRequired, true);
+});
+
+test("post-spawn reconcile-required process failures are propagated to slot settlement", async (t) => {
+  let settlement;
+  const provider = new GrokBuildProvider("grok", createProviderConfig(), { logger: silentLogger() });
+  provider.hostGate = {
+    disabled: false,
+    acquire() { return { token: "fixture", gateEpoch: 3, ownerRootHash: "a".repeat(64) }; },
+    spawnGuard() {
+      return (spawnChild) => {
+        const child = spawnChild();
+        const error = Object.assign(new Error("fixture post-spawn persistence failure"), {
+          code: "grok_host_gate_reconcile_required",
+          contacted: true,
+          reconcileRequired: true,
+        });
+        return { child, ready: Promise.reject(error) };
+      };
+    },
+    revoke() {},
+    settle(_slot, options) { settlement = options; return { released: false, reconcileRequired: true }; },
+  };
+  try {
+    await assert.rejects(collectRun(provider, {
+      mode: "consult",
+      model: "grok-4.6",
+      messages: [{ role: "user", content: "public synthetic fixture" }],
+      metadata: { bridge_payload_classification: "public_synthetic", bridge_payload_disclosed: true },
+    }), /post-spawn persistence failure/);
+  } finally {
+    await provider.close();
+  }
+  assert.equal(settlement.reconcileRequired, true);
+  assert.equal(settlement.terminalProven, false);
+});
+
+test("wrong terminal modelUsage revokes before settlement and blocks the next gate acquisition", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-wrong-model-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = join(root, "wrong-model.mjs");
+  await writeFile(script, `
+    if (process.argv.includes('--version')) process.stdout.write('grok 1.0.5');
+    else process.stdout.write(JSON.stringify({output_text:'wrong',modelUsage:{'grok-4.5-build':{}},finish_reason:'stop'}));
+  `);
+  let revoked = false;
+  let settlement;
+  const provider = new GrokBuildProvider("grok", createProviderConfig({ commandArgs: [script] }), { logger: silentLogger() });
+  provider.hostGate = {
+    disabled: false,
+    acquire() {
+      if (revoked) throw new Error("fixture shared gate revoked");
+      return { token: "fixture", gateEpoch: 4, ownerRootHash: "b".repeat(64) };
+    },
+    spawnGuard() { return undefined; },
+    revoke(reason) { assert.match(reason, /modelUsage/); revoked = true; },
+    settle(currentSlot, options) {
+      if (currentSlot) settlement = options;
+      return { released: true, reconcileRequired: false };
+    },
+  };
+  const request = {
+    mode: "consult",
+    model: "grok-4.6",
+    messages: [{ role: "user", content: "public synthetic fixture" }],
+    metadata: { bridge_payload_classification: "public_synthetic", bridge_payload_disclosed: true },
+  };
+  try {
+    await assert.rejects(collectRun(provider, request), /terminal modelUsage/);
+    await assert.rejects(collectRun(provider, request), /shared gate revoked/);
+  } finally {
+    await provider.close();
+  }
+  assert.equal(revoked, true);
+  assert.equal(settlement.terminalProven, true);
 });
 
 test("Grok rejects unbounded acceptance commands before any ledger write", async (t) => {

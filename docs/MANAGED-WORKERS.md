@@ -38,6 +38,8 @@ The packaged `skills/managed-worker/references/task-packet.md` contains a compac
 - Deny unneeded tools, network, credentials, browser profiles, package installation, integration commands, and external paths.
 - Keep cross-session memory disabled by default. This package allows Grok nested subagents and web/search by default under the operator's policy; nested work inherits the parent boundary, and web content is treated as untrusted evidence. Explicitly disable either when it adds no value.
 - Bound active jobs, start rate, model-turn budget, output, and wall time.
+- On Linux Grok saved-session routes, require the canonical process-shared SQLite gate for every inference/discovery contact; local weighted admission remains fairness and turn-budget policy only.
+- Send only explicitly disclosed `public_synthetic` or `public_repo` payloads, reject Grok/xAI secret environment presence, and keep images plus API/provider/model/billed fallback disabled.
 - Terminate descendant processes on abort/timeout/shutdown.
 - Record durable lifecycle, usage, process, Git, and evidence data.
 - Do not automatically retry quota, entitlement, malformed-output, or worker failure.
@@ -65,7 +67,7 @@ The bridge's shared primitives—managed process trees, weighted admission, run 
 
 ## Shared-daemon fleet
 
-Every ChatGPT/Codex coordinator and its subagents should use an MCP shim that forwards to the same bridge daemon. The daemon—not the number of Desktop processes—is the owner of provider admission, queues, ledgers, thread state, and retained Cursor Delegate agents.
+Every ChatGPT/Codex coordinator and its subagents should normally use an MCP shim that forwards to the same bridge daemon for local fairness, ledgers, thread state, and retained Cursor Delegate agents. Linux Grok host concurrency is additionally enforced across processes by the canonical owner-armed SQLite gate shared with the Coordination Python queue.
 
 The included fleet preset permits nine outer Grok jobs while retaining one 18-unit rolling admission budget and 1.4-second launch spacing. Nested Grok subagents live inside an admitted outer job; they must not be counted as independent authority or used to evade outer-job admission. Provider terminal accounting is reconciled when available.
 

@@ -14,6 +14,7 @@ import { installBridgeSkills, resolveCodexSkillsRoot } from "./codex/skill-insta
 import { createExampleConfig, loadConfig, resolveConfigPath, writeInitialConfig } from "./core/config.mjs";
 import { asBridgeError } from "./core/errors.mjs";
 import { resolveExecutablePath } from "./core/executable.mjs";
+import { GrokHostGate } from "./core/grok-host-gate.mjs";
 import { Logger } from "./core/logger.mjs";
 import {
   applyDaemonServicePlan,
@@ -423,6 +424,8 @@ export async function main(argv = process.argv.slice(2)) {
           ...(parsed.options.noWebSearch === true || parsed.options.noWeb === true ? { allowWebSearch: false } : {}),
           ...(valueOption(parsed.options.coordinatorId) ? { coordinatorId: valueOption(parsed.options.coordinatorId) } : {}),
           ...(valueOption(parsed.options.workerGroup) ? { workerGroup: valueOption(parsed.options.workerGroup) } : {}),
+          ...(valueOption(parsed.options.payloadClassification) ? { payloadClassification: valueOption(parsed.options.payloadClassification) } : {}),
+          ...(parsed.options.disclosed === true ? { disclosed: true } : {}),
           ...(arrayOption(parsed.options.acceptanceCommand).length > 0 ? { acceptanceCommands: arrayOption(parsed.options.acceptanceCommand) } : {}),
           ...(arrayOption(parsed.options.allowPath).length > 0 ? { allowedPaths: arrayOption(parsed.options.allowPath), deniedPaths: arrayOption(parsed.options.denyPath), nonGoals: arrayOption(parsed.options.nonGoal) } : {}),
         };
@@ -663,6 +666,22 @@ async function runDoctor(config, options) {
         warning: true,
         detail: "Consumer Build entitlement and remaining weekly usage cannot be verified through a documented headless meter without an authenticated request; verify the CLI account and Settings → Usage before automatic batches",
       });
+      try {
+        const gate = new GrokHostGate(provider.grokHostGate ?? {}).inspect();
+        checks.push({
+          name: `provider:${id}:grok-host-gate`,
+          ok: gate.ready === true,
+          detail: gate.ready
+            ? `schema v${gate.schemaVersion}; ${gate.state}; cap ${gate.maxConcurrency}; ${gate.allowanceState}; ${gate.billingMode}; authorization expires ${gate.authorizationExpiresAt}`
+            : `not ready (${gate.state})`,
+        });
+      } catch (error) {
+        checks.push({
+          name: `provider:${id}:grok-host-gate`,
+          ok: false,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     if (provider.adapter === "claude-code") {
       const executablePath = await resolveExecutablePath(provider.command ?? "claude");
@@ -940,7 +959,7 @@ Usage:
   threadspan compatibility doctor [--config PATH] [--after-update]
   threadspan compatibility intake [--config PATH] [--repository OWNER/NAME] [--state PATH]
   threadspan catalog build --output PATH [--native PATH|--codex PATH] [--favorite ROUTE ...] [--show-free]
-  threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--json]
+  threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--payload-classification public_synthetic|public_repo --disclosed] [--json]
   threadspan delegate "task" --workspace PATH --allow-path PATH ... [--deny-path PATH ...] [--non-goal TEXT ...] [same routing options] [--acceptance-command CMD ...]
   threadspan codex snippet [--config PATH]
   threadspan codex install [--config PATH] [--codex-config PATH] [--embedded-mcp]

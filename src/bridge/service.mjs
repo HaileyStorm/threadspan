@@ -1305,6 +1305,8 @@ export class BridgeService {
           ...(effectiveInput.allowWebSearch !== undefined ? { bridge_allow_web_search: effectiveInput.allowWebSearch === true } : {}),
           ...(effectiveInput.coordinatorId ? { bridge_coordinator_id: String(effectiveInput.coordinatorId) } : {}),
           ...(effectiveInput.workerGroup ? { bridge_worker_group: String(effectiveInput.workerGroup) } : {}),
+          ...(effectiveInput.payloadClassification ? { bridge_payload_classification: String(effectiveInput.payloadClassification) } : {}),
+          ...(effectiveInput.disclosed !== undefined ? { bridge_payload_disclosed: effectiveInput.disclosed === true } : {}),
           ...(Array.isArray(effectiveInput.acceptanceCommands) && effectiveInput.acceptanceCommands.length > 0
             ? { bridge_acceptance_commands: effectiveInput.acceptanceCommands.map(String) }
             : {}),

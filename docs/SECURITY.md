@@ -209,7 +209,8 @@ Implemented controls:
 - `dontAsk` base behavior plus an explicit Delegate-only `bypassPermissions` direct-workspace profile, both under strict sandbox and caller authority;
 - no cross-session memory or auto-update by default; Grok subagents and web/search are enabled by the current operator policy, with explicit opt-outs and inherited authority boundaries;
 - optional environment allowlist;
-- provider-local admission and no implicit retries;
+- provider-local fairness/turn admission plus a canonical process-shared Linux SQLite Grok gate, and no implicit retries;
+- saved-session-only Grok authentication with secret/API environment rejection, explicit public payload classification/disclosure, and no API/provider/model/billed fallback;
 - private lifecycle/usage ledger with raw content disabled by default;
 - disposable Consult snapshot;
 - optional Git, linked-worktree, clean-start, and denied-branch checks for Delegate;
@@ -245,7 +246,7 @@ Implemented controls:
 - optional reduced environment allowlist;
 - process-tree termination;
 - snapshot Consult and optional linked-worktree/clean-start/denied-branch Delegate gates;
-- provider-local admission and no automatic retries;
+- provider-local fairness/turn admission plus a canonical process-shared Linux SQLite Grok gate, and no automatic retries;
 - bounded private lifecycle/usage/evidence records.
 
 Residual risks:

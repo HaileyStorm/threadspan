@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync, writeFileSync, mkdirS
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { ConfigError } from "./errors.mjs";
+import { DEFAULT_GROK_HOST_GATE_PATH, GROK_HOST_GATE_MODEL, GROK_HOST_GATE_REPORTED_MODEL, GROK_HOST_GATE_TEST_OPTIONS } from "./grok-host-gate.mjs";
 import { normalizeVoiceConfig } from "./voice-profiles.mjs";
 
 const GROK_BUILTIN_PROFILE_MAX_TURNS = Object.freeze({ mechanical: 8, balanced: 16, deep: 24, diagnose: 12 });
@@ -519,7 +520,14 @@ export function validateConfig(config, configPath = "<memory>", options = {}) {
       validateOpenAiCompatibleOptions(providerId, provider);
     }
     validateCursorStyleOptions(providerId, provider);
-    normalizedProviders.push([providerId, accountSources === undefined ? provider : { ...provider, accountSources }]);
+    const normalizedProvider = accountSources === undefined ? provider : { ...provider, accountSources };
+    if (configPath === "<test>" && provider.adapter === "grok-build") {
+      Object.defineProperty(normalizedProvider, GROK_HOST_GATE_TEST_OPTIONS, {
+        value: Object.freeze({ disabled: true, testContext: true }),
+        enumerable: false,
+      });
+    }
+    normalizedProviders.push([providerId, normalizedProvider]);
   }
   config = { ...config, providers: Object.fromEntries(normalizedProviders) };
 
@@ -886,6 +894,7 @@ function validateGrokBuildProvider(providerId, provider) {
   assertOptionalString(provider.permissionMode, `Provider '${providerId}'.permissionMode`);
   assertOptionalString(provider.sandbox, `Provider '${providerId}'.sandbox`);
   assertOptionalString(provider.executableSha256, `Provider '${providerId}'.executableSha256`);
+  assertOptionalString(provider.reportedModel, `Provider '${providerId}'.reportedModel`);
   if (provider.executableSha256 !== undefined) validateSha256(provider.executableSha256, `Provider '${providerId}'.executableSha256`);
   if (provider.versionPattern !== undefined) validateRegularExpression(provider.versionPattern, `Provider '${providerId}'.versionPattern`);
 
@@ -903,6 +912,38 @@ function validateGrokBuildProvider(providerId, provider) {
     }
   }
   if (provider.env !== undefined) validateCommandEnvironment(providerId, provider.env);
+
+  if (process.platform === "linux") {
+    if (provider.model !== GROK_HOST_GATE_MODEL) {
+      throw new ConfigError(`Provider '${providerId}' Linux saved-session route requires exact model '${GROK_HOST_GATE_MODEL}'`);
+    }
+    if ((provider.reportedModel ?? GROK_HOST_GATE_REPORTED_MODEL) !== GROK_HOST_GATE_REPORTED_MODEL) {
+      throw new ConfigError(`Provider '${providerId}' Linux saved-session route requires reportedModel '${GROK_HOST_GATE_REPORTED_MODEL}'`);
+    }
+    if (provider.strictModelList !== true) {
+      throw new ConfigError(`Provider '${providerId}' Linux saved-session route requires strictModelList:true; model fallback is forbidden`);
+    }
+    if (Array.isArray(provider.models)) {
+      const ids = provider.models.map((entry) => typeof entry === "string" ? entry : entry.id);
+      if (ids.length !== 1 || ids[0] !== GROK_HOST_GATE_MODEL) {
+        throw new ConfigError(`Provider '${providerId}'.models must contain only '${GROK_HOST_GATE_MODEL}' for the Linux saved-session route`);
+      }
+    }
+    const gate = provider.grokHostGate ?? {};
+    if (!isPlainObject(gate)) throw new ConfigError(`Provider '${providerId}'.grokHostGate must be an object`);
+    const unknownGateFields = Object.keys(gate).filter((key) => !["path", "disabled"].includes(key));
+    if (unknownGateFields.length > 0) throw new ConfigError(`Provider '${providerId}'.grokHostGate contains unsupported fields: ${unknownGateFields.join(", ")}`);
+    assertOptionalString(gate.path, `Provider '${providerId}'.grokHostGate.path`);
+    if (gate.disabled !== undefined && typeof gate.disabled !== "boolean") throw new ConfigError(`Provider '${providerId}'.grokHostGate.disabled must be boolean`);
+    const gatePath = resolve(gate.path ?? DEFAULT_GROK_HOST_GATE_PATH);
+    if (gate.disabled === true) throw new ConfigError(`Provider '${providerId}' config cannot disable the canonical Grok host gate`);
+    if (gatePath !== DEFAULT_GROK_HOST_GATE_PATH) throw new ConfigError(`Provider '${providerId}' requires canonical Grok host gate path '${DEFAULT_GROK_HOST_GATE_PATH}'`);
+  }
+  for (const key of ["apiKey", "apiKeyEnv", "apiKeyFile", "authToken", "authTokenEnv", "authTokenFile", "baseUrl", "gateway", "billingMode", "allowProviderFallback", "allowModelFallback"]) {
+    if (provider[key] !== undefined) throw new ConfigError(`Provider '${providerId}'.${key} is forbidden for the Grok saved-session route`);
+  }
+  const configuredSecret = Object.keys(provider.env ?? {}).find((name) => grokSecretEnvironmentName(name));
+  if (configuredSecret) throw new ConfigError(`Provider '${providerId}'.env cannot configure Grok/xAI secret environment '${configuredSecret}'`);
 
   if (provider.pin !== undefined) {
     if (!isPlainObject(provider.pin)) throw new ConfigError(`Provider '${providerId}'.pin must be an object`);
@@ -1330,6 +1371,12 @@ function defaultGrokEnvironmentAllowlist() {
     "LANG",
     "LC_ALL",
   ];
+}
+
+/** Identify secret/API authentication variables forbidden by the saved-session-only Grok route. */
+function grokSecretEnvironmentName(name) {
+  return /^(?:XAI|GROK)(?:_|$)/i.test(String(name))
+    && /(?:API|AUTH|BASE|BILL|CREDENTIAL|CREDIT|EXTRA.?USE|KEY|MODEL|PASSWORD|PAY|PROVIDER|SECRET|SESSION|TOKEN|TOP.?UP|URL)/i.test(String(name));
 }
 
 /** Return a ready-to-edit starter configuration. */
