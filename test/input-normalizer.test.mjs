@@ -70,3 +70,22 @@ test("unsafe or local attachment references collapse to opaque markers", () => {
   ].join("\n"));
   assert.doesNotMatch(messages[0].content, /user|password|127\.0\.0\.1|file_local|person|transcript/u);
 });
+
+test("opaque Responses compaction history fails closed instead of losing its prefix", () => {
+  const secret = "encrypted-native-compaction-payload";
+  for (const type of ["compaction", "context_compaction"]) {
+    assert.throws(
+      () => normalizeResponsesInput({
+        input: [
+          { type, encrypted_content: secret },
+          { type: "message", role: "user", content: "tail" },
+        ],
+      }),
+      (error) => {
+        assert.match(error.message, /Opaque Responses compaction history/);
+        assert.doesNotMatch(error.message, new RegExp(secret));
+        return true;
+      },
+    );
+  }
+});

@@ -89,6 +89,17 @@ function appendInputItems(messages, items) {
     }
     if (!item || typeof item !== "object") continue;
 
+    // Responses compaction summaries are opaque to the provider that created
+    // them. Passing an OpenAI-encrypted checkpoint to another provider would
+    // silently discard the compacted prefix, so fail before any provider work.
+    // Codex's local/token-budget compaction expands to ordinary history and is
+    // unaffected by this guard.
+    if (item.type === "compaction" || item.type === "context_compaction") {
+      throw new RequestError(
+        "Opaque Responses compaction history cannot be transferred across providers; create a fresh task or provider-neutral Continuity fork with an ordinary-text summary before switching",
+      );
+    }
+
     if (item.type === "message" || item.role) {
       flushAssistant();
       const message = {

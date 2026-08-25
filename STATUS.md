@@ -6,7 +6,7 @@
 
 ## What is complete
 
-- OpenAI Responses-style buffered/SSE HTTP and convenience Consult/Delegate endpoints.
+- OpenAI Responses-style buffered/SSE HTTP and convenience Consult/Delegate endpoints; opaque provider-encrypted compaction history fails closed before cross-provider dispatch.
 - MCP stdio tools plus connector-only `/mcp` remote-shim mode, so multiple Desktop processes can forward to one persistent daemon; explicit `--embedded-mcp` remains available.
 - Cursor snapshot Consult and retained Delegate agents keyed by thread/model/workspace, with TTL/count/serialization/cancellation controls.
 - Grok Build finite one-shot Consult/Delegate with executable/version/hash checks, profiles, strict argv, environment reduction, admission, process-tree cleanup, ledgering, and configurable direct-workspace or linked-worktree policy.

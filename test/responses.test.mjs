@@ -87,6 +87,26 @@ test("BridgeService executes mock Responses requests and links previous response
   }
 });
 
+test("opaque Responses compaction history is rejected before provider dispatch", async () => {
+  const service = new BridgeService(createTestConfig(), { logger: silentLogger() });
+  const requests = observeMockRequests(service);
+  try {
+    await assert.rejects(
+      () => service.executeResponse({
+        model: "consult/mock/mock-model",
+        input: [
+          { type: "compaction", encrypted_content: "opaque-provider-state" },
+          { type: "message", role: "user", content: "tail" },
+        ],
+      }),
+      /Opaque Responses compaction history/,
+    );
+    assert.equal(requests.length, 0);
+  } finally {
+    await service.close();
+  }
+});
+
 test("service and convenience modes preserve explicit workspace provenance without exposing cwd by default", async () => {
   const service = new BridgeService(createTestConfig(), { logger: silentLogger() });
   const requests = observeMockRequests(service);

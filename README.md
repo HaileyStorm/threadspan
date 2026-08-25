@@ -215,7 +215,7 @@ The separate [External copy check](docs/COPY-CHECK.md) policy is off by default 
 | `gpt-5.6-600k` | `gpt-5.6-sol` | 600,000 | 480,000 |
 | `gpt-5.6-1m` | `gpt-5.6-sol` | 1,000,000 | 800,000 |
 
-The first two are standard. Longer profiles are optional capability unlocks, not automatic answers to frequent compaction. Auto-compact is never generated above 90% of context. Switching to a model that cannot hold the current thread should create a Continuity task rather than truncate silently.
+The first two are standard. Longer profiles are optional capability unlocks, not automatic answers to frequent compaction. Auto-compact is never generated above 90% of context. Switching to a model that cannot hold the current thread should create a Continuity task rather than truncate silently. Provider-encrypted Responses `compaction` and `context_compaction` items are rejected before dispatch because another provider cannot interpret them; recovery requires a fresh task or provider-neutral Continuity fork carrying an ordinary-text summary. Local/token-budget compaction that expands to ordinary messages remains portable.
 
 ## Compatibility Watch
 
