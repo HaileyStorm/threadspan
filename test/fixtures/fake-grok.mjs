@@ -18,6 +18,14 @@ if (args[0] === "models") {
 if (process.env.FAKE_GROK_ARGS_PATH) {
   await writeFile(process.env.FAKE_GROK_ARGS_PATH, JSON.stringify(args), "utf8");
 }
+if (process.env.FAKE_GROK_REQUIRE_STDIN_EOF === "1") {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  if (chunks.reduce((total, chunk) => total + chunk.length, 0) !== 0) {
+    process.stderr.write(JSON.stringify({ error: { code: "interactive_stdin", message: "unexpected interactive input" } }));
+    process.exit(1);
+  }
+}
 if (process.env.FAKE_GROK_QUOTA === "1") {
   process.stderr.write(JSON.stringify({ error: { code: "subscription:free-usage-exhausted", message: "quota exhausted" } }));
   process.exit(1);

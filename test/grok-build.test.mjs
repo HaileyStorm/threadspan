@@ -343,6 +343,39 @@ test("Grok bypassPermissions is Delegate-only while Git isolation remains config
   }
 });
 
+test("Grok Delegate closes stdin and passes the explicit bypass permission mode", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-unattended-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const argsPath = join(root, "args.json");
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    env: {
+      FAKE_GROK_ARGS_PATH: argsPath,
+      FAKE_GROK_REQUIRE_STDIN_EOF: "1",
+    },
+    delegate: {
+      permissionMode: "bypassPermissions",
+      requireGit: false,
+      requireLinkedWorktree: false,
+      requireCleanStart: false,
+    },
+  }), { logger: silentLogger() });
+  try {
+    const events = await collectRun(provider, {
+      mode: "delegate",
+      model: "grok-4.6",
+      workspace: root,
+      timeoutMs: 5_000,
+      messages: [{ role: "user", content: "bounded unattended task" }],
+    });
+    assert.equal(events.at(-1).message.content, "worker-ok");
+  } finally {
+    await provider.close();
+  }
+  const args = JSON.parse(await readFile(argsPath, "utf8"));
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "bypassPermissions");
+  assert.ok(args.includes("--single"));
+});
+
 test("Grok Delegate direct-workspace policy accepts dirty primary and non-Git workspaces", async (t) => {
   try { await execFileAsync("git", ["--version"]); } catch { t.skip("git is unavailable"); return; }
   const root = await mkdtemp(join(tmpdir(), "threadspan-grok-direct-"));
