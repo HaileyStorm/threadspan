@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
@@ -17,10 +19,15 @@ import {
   resolveGrokExecutionPolicy,
   resolveGrokTaskProfile,
 } from "../src/providers/grok-build.mjs";
+import { GROK_HOST_GATE_TEST_OPTIONS, grokHostGateContract } from "../src/core/grok-host-gate.mjs";
 import { nativePath, silentLogger } from "./helpers.mjs";
 
 const fixture = nativePath(new URL("./fixtures/fake-grok.mjs", import.meta.url));
 const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
+let DatabaseSync;
+try { ({ DatabaseSync } = require("node:sqlite")); } catch {}
+const sqliteTest = DatabaseSync ? test : test.skip;
 
 async function createGitRepository(root) {
   const repository = join(root, "repository");
@@ -66,6 +73,37 @@ function createProviderConfig(overrides = {}) {
     delegate: { profile: "balanced", maxTurns: 16, expectedTurns: 4 },
     ...overrides,
   };
+}
+
+async function createImageHostGate(root, detail = `image-read-v1:${"a".repeat(64)}`) {
+  await chmod(root, 0o700);
+  const path = join(root, "grok-host.sqlite3");
+  const db = new DatabaseSync(path);
+  db.exec(`
+    PRAGMA journal_mode=WAL;
+    CREATE TABLE grok_host_gates (
+      provider TEXT NOT NULL, account_class TEXT NOT NULL, contract_hash TEXT NOT NULL,
+      max_concurrency INTEGER NOT NULL, state TEXT NOT NULL, detail TEXT, updated_at TEXT NOT NULL,
+      source_evidence_hash TEXT, authorization_expires_at TEXT NOT NULL DEFAULT '',
+      revocation_epoch INTEGER NOT NULL DEFAULT 0, allowance_state TEXT NOT NULL DEFAULT '',
+      billing_mode TEXT NOT NULL DEFAULT '', PRIMARY KEY(provider, account_class)
+    );
+    CREATE TABLE grok_host_slots (
+      token TEXT PRIMARY KEY, provider TEXT NOT NULL, account_class TEXT NOT NULL,
+      owner_root_hash TEXT NOT NULL, acquired_at TEXT NOT NULL, contact_started_at TEXT,
+      expires_at TEXT NOT NULL, gate_epoch INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_grok_host_slots_gate ON grok_host_slots(provider, account_class, expires_at);
+    PRAGMA user_version=2;
+  `);
+  db.prepare(`INSERT INTO grok_host_gates(
+    provider, account_class, contract_hash, max_concurrency, state, detail, updated_at,
+    source_evidence_hash, authorization_expires_at, revocation_epoch, allowance_state, billing_mode
+  ) VALUES ('xai_grok_build', 'subscription', ?, 1, 'healthy', ?, ?, ?, '2099-01-01T00:00:00+00:00', 7, 'available', 'subscription_included')`)
+    .run(grokHostGateContract(1).hash, detail, new Date().toISOString(), "1".repeat(64));
+  db.close();
+  await chmod(path, 0o600);
+  return path;
 }
 
 test("Grok installation preflight validates version without consuming inference", async () => {
@@ -299,6 +337,14 @@ test("Grok saved-session privacy and terminal billing signals fail closed", () =
     messages: [{ role: "user", content: "public repository task" }],
   }));
   assert.throws(() => assertGrokSavedSessionRequest({ metadata: {}, messages: [] }), /payload_classification/);
+  assert.doesNotThrow(() => assertGrokSavedSessionRequest({
+    metadata: { bridge_payload_classification: "public_image", bridge_payload_disclosed: true },
+    messages: [{ role: "user", content: "[image attachment omitted]\nDescribe it" }],
+  }, { imageRequest: true }));
+  assert.throws(() => assertGrokSavedSessionRequest({
+    metadata: { bridge_payload_classification: "public_repo", bridge_payload_disclosed: true },
+    messages: [{ role: "user", content: "[image attachment omitted]" }],
+  }, { imageRequest: true }), /public_synthetic_image or public_image/);
   assert.throws(() => assertGrokSavedSessionRequest({
     metadata: { bridge_payload_classification: "public_synthetic", bridge_payload_disclosed: true },
     messages: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }] }],
@@ -330,6 +376,28 @@ test("Grok saved-session privacy and terminal billing signals fail closed", () =
   assert.deepEqual(parseGrokBuildPayload(JSON.stringify({ modelUsage: { "grok-4.6-build": {} }, output_text: "ok" })).reportedModels, ["grok-4.6-build"]);
 });
 
+test("disabled or non-Linux image capability still enforces classification before reporting unavailability", async () => {
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const provider = new GrokBuildProvider("grok", createProviderConfig({ commandArgs: [] }), { logger: silentLogger() });
+  const request = {
+    mode: "consult",
+    model: "grok-4.6",
+    messages: [{ role: "user", content: "[image attachment omitted]" }],
+    images: [{ bytes, mime: "image/png", sha256: createHash("sha256").update(bytes).digest("hex") }],
+  };
+  try {
+    assert.equal(provider.capabilities().images, false);
+    assert.match(provider.capabilities().modes.consult.imageReason, /canonical Linux saved-session host gate/u);
+    await assert.rejects(collectRun(provider, request), /public_synthetic_image or public_image/u);
+    await assert.rejects(collectRun(provider, {
+      ...request,
+      metadata: { bridge_payload_classification: "public_image", bridge_payload_disclosed: true },
+    }), /canonical Linux saved-session host gate/u);
+  } finally {
+    await provider.close();
+  }
+});
+
 test("Grok argument builder keeps subagents and web enabled by default while retaining finite controls", () => {
   const promptFile = resolve("threadspan-test-prompt.txt");
   const args = buildGrokBuildArguments(createProviderConfig(), { mode: "delegate", model: "grok-4.6", metadata: {} }, {
@@ -341,6 +409,337 @@ test("Grok argument builder keeps subagents and web enabled by default while ret
   assert.equal(args.includes("--single"), false);
   assert.equal(args.includes("--no-subagents"), false);
   assert.equal(args.includes("--disable-web-search"), false);
+});
+
+test("Grok image arguments force the two-turn Read-only Consult boundary", () => {
+  const promptFile = resolve("threadspan-test-image-prompt.txt");
+  const imagePaths = [resolve("threadspan-test-1.png"), resolve("threadspan-test-2.jpg")];
+  const args = buildGrokBuildArguments(createProviderConfig({
+    commandArgs: [],
+    [GROK_HOST_GATE_TEST_OPTIONS]: { imageCommandArgs: [fixture], allowDisabledImageGate: true },
+  }), { mode: "consult", model: "grok-4.6", metadata: {} }, {
+    reasoningEffort: "high", maxTurns: 2, expectedTurns: 2, noPlan: true,
+  }, "/tmp/empty", promptFile, {
+    allowSubagents: false,
+    allowWebSearch: false,
+    noMemory: true,
+  }, undefined, imagePaths);
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "dontAsk");
+  assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
+  assert.equal(args[args.indexOf("--tools") + 1], "Read");
+  assert.equal(args[args.indexOf("--max-turns") + 1], "2");
+  for (const flag of ["--no-subagents", "--disable-web-search", "--no-memory", "--no-plan"]) assert.ok(args.includes(flag));
+  assert.deepEqual(args.flatMap((value, index) => value === "--allow" ? [args[index + 1]] : []), imagePaths.map((path) => `Read(${path})`));
+  assert.equal(args[0], fixture, "the internal test script path is the only non-production command prefix");
+});
+
+test("Grok image arguments reject every configurable command, MCP, directory, tool, and rule tail", () => {
+  const promptFile = resolve("threadspan-test-image-prompt.txt");
+  const imagePaths = [resolve("threadspan-test-1.png")];
+  const cases = [
+    { commandArgs: ["--mcp-config", "/private/mcp.json"] },
+    { preArgs: ["--add-dir", "/private"] },
+    { postArgs: ["Shell(*)"] },
+    { rules: ["use Shell"] },
+    { allow: ["Shell(*)"] },
+    { deny: ["Read(*)"] },
+    { grokTools: ["Read", "Shell"] },
+    { mcpServers: { private: { command: "private" } } },
+    { consult: { workspaceStrategy: "none", mcpServers: { private: {} } } },
+  ];
+  for (const value of cases) {
+    const config = createProviderConfig({
+      commandArgs: [],
+      [GROK_HOST_GATE_TEST_OPTIONS]: { imageCommandArgs: [fixture], allowDisabledImageGate: true },
+      ...value,
+    });
+    assert.throws(() => buildGrokBuildArguments(config, { mode: "consult", model: "grok-4.6", metadata: {} }, {
+      reasoningEffort: "high", maxTurns: 2, expectedTurns: 2, noPlan: true,
+    }, "/tmp/empty", promptFile, { allowSubagents: false, allowWebSearch: false, noMemory: true }, undefined, imagePaths), /rejects configurable launch tails/);
+  }
+});
+
+test("Grok image Consult stages owner-private files, exposes only hash metadata, and cleans every path", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-image-attempt-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = join(root, "image-grok.mjs");
+  const evidencePath = join(root, "image-evidence.json");
+  const ledgerPath = join(root, "ledger", "grok.jsonl");
+  const ledgerEvidenceDirectory = join(root, "ledger-evidence");
+  await writeFile(script, `
+    import { createHash } from 'node:crypto';
+    import { readFile, stat, writeFile } from 'node:fs/promises';
+    import { dirname, resolve } from 'node:path';
+    const args=process.argv.slice(2);
+    if(args.includes('--version')){process.stdout.write('grok 1.0.5 (image-test)');process.exit(0)}
+    const promptPath=args[args.indexOf('--prompt-file')+1];
+    const prompt=await readFile(promptPath,'utf8');
+    const imageNames=[...prompt.matchAll(/^- (image-[1-4]\\.(?:png|jpg)) \\(image\\/(?:png|jpeg); sha256=[0-9a-f]{64}\\)$/gmu)].map(match=>match[1]);
+    const imagePaths=imageNames.map(name=>resolve(name));
+    const files=[];
+    for(const path of imagePaths){const bytes=await readFile(path),entry=await stat(path);files.push({path,mode:entry.mode&0o777,sha256:createHash('sha256').update(bytes).digest('hex')})}
+    const [attemptDir,workspace]=await Promise.all([stat(dirname(promptPath)),stat(process.cwd())]);
+    await writeFile(process.env.IMAGE_EVIDENCE_PATH,JSON.stringify({args,promptPath,prompt,imageNames,imagePaths,files,attemptDirectoryMode:attemptDir.mode&0o777,workspace:process.cwd(),workspaceMode:workspace.mode&0o777}));
+    process.stdout.write(JSON.stringify({output_text:'image-ok',modelUsage:{'grok-4.6-build':{}},turns:2,model_calls:2,finish_reason:'stop'}));
+  `);
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    commandArgs: [],
+    [GROK_HOST_GATE_TEST_OPTIONS]: { imageCommandArgs: [script], allowDisabledImageGate: true },
+    env: { IMAGE_EVIDENCE_PATH: evidencePath },
+    ledger: { enabled: true, path: ledgerPath, includeOutput: true, evidenceDirectory: ledgerEvidenceDirectory },
+  }), { logger: silentLogger() });
+  let events;
+  try {
+    events = await collectRun(provider, {
+      mode: "consult",
+      model: "grok-4.6",
+      messages: [{ role: "user", content: "[image attachment omitted]\nDescribe the public synthetic image" }],
+      metadata: {
+        bridge_payload_classification: "public_synthetic_image",
+        bridge_payload_disclosed: true,
+        bridge_reasoning_effort: "high",
+        bridge_max_turns: "17",
+        bridge_expected_turns: "9",
+        bridge_allow_subagents: true,
+        bridge_allow_web_search: true,
+      },
+      images: [{ bytes, mime: "image/png", sha256 }],
+    });
+  } finally {
+    await provider.close();
+  }
+  assert.equal(events.at(-1).message.content, "image-ok");
+  assert.equal(events.at(-1).providerMetadata.grokBuild.reasoningEffort, "high");
+  assert.equal(events.at(-1).providerMetadata.grokBuild.maxTurns, 2);
+  assert.deepEqual(events.at(-1).providerMetadata.grokBuild.images, { count: 1, items: [{ mime: "image/png", sha256 }] });
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  assert.equal(evidence.args[evidence.args.indexOf("--reasoning-effort") + 1], "high");
+  assert.equal(evidence.args[evidence.args.indexOf("--max-turns") + 1], "2");
+  assert.equal(evidence.args[evidence.args.indexOf("--tools") + 1], "Read");
+  assert.equal(evidence.args[evidence.args.indexOf("--sandbox") + 1], "read-only");
+  for (const flag of ["--no-subagents", "--disable-web-search", "--no-memory", "--no-plan"]) assert.ok(evidence.args.includes(flag));
+  assert.deepEqual(evidence.files, [{ path: evidence.imagePaths[0], mode: 0o600, sha256 }]);
+  assert.equal(evidence.attemptDirectoryMode, 0o700);
+  assert.equal(evidence.workspaceMode, 0o700);
+  assert.deepEqual(evidence.imageNames, ["image-1.png"]);
+  assert.match(evidence.prompt, /- image-1\.png \(image\/png; sha256=/u);
+  assert.doesNotMatch(evidence.prompt, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(evidence.prompt, /data:image|iVBOR/u);
+  await assert.rejects(readFile(evidence.promptPath), { code: "ENOENT" });
+  await assert.rejects(readFile(evidence.imagePaths[0]), { code: "ENOENT" });
+  await assert.rejects(readFile(evidence.workspace), { code: "ENOENT" });
+  const ledger = await readFile(ledgerPath, "utf8");
+  assert.match(ledger, new RegExp(sha256));
+  const ledgerEvidence = await Promise.all((await readdir(ledgerEvidenceDirectory)).map((name) => readFile(join(ledgerEvidenceDirectory, name), "utf8")));
+  const persisted = `${ledger}\n${ledgerEvidence.join("\n")}`;
+  assert.doesNotMatch(persisted, /data:image|iVBOR|image-ok/u);
+  assert.match(ledger, /"stdoutSha256":"[0-9a-f]{64}"/u);
+});
+
+test("Grok image Consult rejects returned data images and long base64 before history, diagnostics, or private evidence", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-image-output-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  for (const [index, forbiddenOutput] of ["data:image/png;base64,private-image-output", "A".repeat(300)].entries()) {
+    const script = join(root, `image-output-grok-${index}.mjs`);
+    const ledgerPath = join(root, `ledger-${index}`, "grok.jsonl");
+    const evidenceDirectory = join(root, `evidence-${index}`);
+    await writeFile(script, `
+      if(process.argv.includes('--version')){process.stdout.write('grok 1.0.5 (image-output-test)');process.exit(0)}
+      process.stdout.write(JSON.stringify({output_text:${JSON.stringify(forbiddenOutput)},modelUsage:{'grok-4.6-build':{}},turns:2,model_calls:2,finish_reason:'stop'}));
+    `);
+    const provider = new GrokBuildProvider("grok", createProviderConfig({
+      commandArgs: [],
+      [GROK_HOST_GATE_TEST_OPTIONS]: { imageCommandArgs: [script], allowDisabledImageGate: true },
+      ledger: { enabled: true, path: ledgerPath, includeOutput: true, evidenceDirectory },
+    }), { logger: silentLogger() });
+    try {
+      await assert.rejects(collectRun(provider, {
+        mode: "consult",
+        model: "grok-4.6",
+        messages: [{ role: "user", content: "[image attachment omitted]" }],
+        metadata: { bridge_payload_classification: "public_image", bridge_payload_disclosed: true },
+        images: [{ bytes, mime: "image/png", sha256: createHash("sha256").update(bytes).digest("hex") }],
+      }), (error) => {
+        assert.match(error.message, /forbidden inline image or encoded binary payload/u);
+        assert.doesNotMatch(JSON.stringify(error), /data:image|private-image-output|A{256}/u);
+        return true;
+      });
+    } finally {
+      await provider.close();
+    }
+    const ledger = await readFile(ledgerPath, "utf8");
+    const evidence = (await readdir(evidenceDirectory)).map((name) => readFile(join(evidenceDirectory, name), "utf8"));
+    const persisted = `${ledger}\n${(await Promise.all(evidence)).join("\n")}`;
+    assert.doesNotMatch(persisted, /data:image|private-image-output|A{256}/u);
+    assert.match(ledger, /"stdoutSha256":"[0-9a-f]{64}"/u);
+  }
+});
+
+test("Grok image terminal envelope requires exact two-turn stop semantics", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-image-terminal-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const scenarios = [
+    { name: "wrong-turns", payload: { turns: 1, model_calls: 2, finish_reason: "stop" } },
+    { name: "missing-model-calls", payload: { turns: 2, finish_reason: "stop" } },
+    { name: "missing-finish", payload: { turns: 2, model_calls: 2 } },
+    { name: "wrong-finish", payload: { turns: 2, model_calls: 2, finish_reason: "length" } },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    const script = join(root, `terminal-${index}.mjs`);
+    await writeFile(script, `
+      if(process.argv.includes('--version')){process.stdout.write('grok 1.0.5 (image-terminal-test)');process.exit(0)}
+      process.stdout.write(JSON.stringify({output_text:'must-not-surface',modelUsage:{'grok-4.6-build':{}},${Object.entries(scenario.payload).map(([key, value]) => `${JSON.stringify(key)}:${JSON.stringify(value)}`).join(",")}}));
+    `);
+    const provider = new GrokBuildProvider("grok", createProviderConfig({
+      commandArgs: [],
+      [GROK_HOST_GATE_TEST_OPTIONS]: { imageCommandArgs: [script], allowDisabledImageGate: true },
+    }), { logger: silentLogger() });
+    try {
+      await assert.rejects(collectRun(provider, {
+        mode: "consult",
+        model: "grok-4.6",
+        messages: [{ role: "user", content: "[image attachment omitted]" }],
+        metadata: { bridge_payload_classification: "public_image", bridge_payload_disclosed: true },
+        images: [{ bytes, mime: "image/png", sha256: createHash("sha256").update(bytes).digest("hex") }],
+      }), (error) => {
+        assert.match(error.message, /must prove turns=2, model_calls=2/u, scenario.name);
+        assert.doesNotMatch(JSON.stringify(error), /must-not-surface/u);
+        return true;
+      });
+    } finally {
+      await provider.close();
+    }
+  }
+});
+
+sqliteTest("Grok image provider uses one receipt-bound slot, settles it, and blocks stale detail before contact", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-image-provider-gate-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const gatePath = await createImageHostGate(root);
+  const script = join(root, "gated-image.mjs");
+  const marker = join(root, "contacts.txt");
+  await writeFile(script, `
+    import { appendFile } from 'node:fs/promises';
+    if(process.argv.includes('--version')){process.stdout.write('grok 1.0.5 (gated-image-test)');process.exit(0)}
+    await appendFile(process.env.IMAGE_CONTACT_MARKER,'contact\\n');
+    process.stdout.write(JSON.stringify({output_text:'gated-image-ok',modelUsage:{'grok-4.6-build':{}},turns:2,model_calls:2,finish_reason:'end_turn'}));
+  `);
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const request = {
+    mode: "consult",
+    model: "grok-4.6",
+    messages: [{ role: "user", content: "[image attachment omitted]" }],
+    metadata: { bridge_payload_classification: "public_image", bridge_payload_disclosed: true },
+    images: [{ bytes, mime: "image/png", sha256: createHash("sha256").update(bytes).digest("hex") }],
+  };
+  const baseConfig = {
+    commandArgs: [],
+    env: { IMAGE_CONTACT_MARKER: marker },
+    grokHostGate: { path: gatePath, testContext: true },
+  };
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    ...baseConfig,
+    [GROK_HOST_GATE_TEST_OPTIONS]: { imageCommandArgs: [script] },
+  }), { logger: silentLogger() });
+  try {
+    const events = await collectRun(provider, request);
+    assert.equal(events.at(-1).message.content, "gated-image-ok");
+  } finally {
+    await provider.close();
+  }
+  assert.equal((await readFile(marker, "utf8")).trim(), "contact");
+  let db = new DatabaseSync(gatePath, { readOnly: true });
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM grok_host_slots").get().count, 0);
+  db.close();
+
+  const staleProvider = new GrokBuildProvider("grok", createProviderConfig({
+    ...baseConfig,
+    [GROK_HOST_GATE_TEST_OPTIONS]: {
+      imageCommandArgs: [script],
+      beforeImageSpawn() {
+        const mutation = new DatabaseSync(gatePath);
+        mutation.prepare("UPDATE grok_host_gates SET detail=?").run(`image-read-v1:${"b".repeat(64)}`);
+        mutation.close();
+      },
+    },
+  }), { logger: silentLogger() });
+  try {
+    await assert.rejects(collectRun(staleProvider, request), /receipt changed or is unavailable/u);
+  } finally {
+    await staleProvider.close();
+  }
+  assert.equal((await readFile(marker, "utf8")).trim(), "contact", "stale receipt must not launch another child");
+  db = new DatabaseSync(gatePath, { readOnly: true });
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM grok_host_slots").get().count, 0);
+  db.close();
+});
+
+test("Grok image spawn revalidates no-follow staged files and records cleanup-required durably", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-image-revalidation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = join(root, "revalidation-image.mjs");
+  const marker = join(root, "contact.txt");
+  await writeFile(script, `
+    import { writeFile } from 'node:fs/promises';
+    if(process.argv.includes('--version')){process.stdout.write('grok 1.0.5 (revalidation-image-test)');process.exit(0)}
+    await writeFile(process.env.IMAGE_CONTACT_MARKER,'contact');
+    process.stdout.write(JSON.stringify({output_text:'ok',modelUsage:{'grok-4.6-build':{}},turns:2,model_calls:2,finish_reason:'stop'}));
+  `);
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const request = {
+    mode: "consult", model: "grok-4.6", messages: [{ role: "user", content: "[image attachment omitted]" }],
+    metadata: { bridge_payload_classification: "public_image", bridge_payload_disclosed: true },
+    images: [{ bytes, mime: "image/png", sha256: createHash("sha256").update(bytes).digest("hex") }],
+  };
+  const target = join(root, "replacement.png");
+  await writeFile(target, bytes, { mode: 0o600 });
+  const revalidationProvider = new GrokBuildProvider("grok", createProviderConfig({
+    commandArgs: [],
+    env: { IMAGE_CONTACT_MARKER: marker },
+    [GROK_HOST_GATE_TEST_OPTIONS]: {
+      imageCommandArgs: [script],
+      allowDisabledImageGate: true,
+      beforeStagedFileRevalidation({ stagedFiles }) {
+        const image = stagedFiles.find((entry) => entry.label === "image-1");
+        rmSync(image.path);
+        symlinkSync(target, image.path);
+      },
+    },
+  }), { logger: silentLogger() });
+  try {
+    await assert.rejects(collectRun(revalidationProvider, request), /failed no-follow spawn-time revalidation/u);
+  } finally {
+    await revalidationProvider.close();
+  }
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+
+  const ledgerPath = join(root, "cleanup-ledger.jsonl");
+  let stagedDirectory;
+  const cleanupProvider = new GrokBuildProvider("grok", createProviderConfig({
+    commandArgs: [],
+    env: { IMAGE_CONTACT_MARKER: marker },
+    ledger: { enabled: true, path: ledgerPath, includeOutput: false },
+    [GROK_HOST_GATE_TEST_OPTIONS]: {
+      imageCommandArgs: [script],
+      allowDisabledImageGate: true,
+      failImageCleanup: true,
+      beforeStagedFileRevalidation({ stagedFiles }) { stagedDirectory = dirname(stagedFiles[0].path); },
+    },
+  }), { logger: silentLogger() });
+  try {
+    await assert.rejects(collectRun(cleanupProvider, request), /fixture image cleanup failure/u);
+  } finally {
+    await cleanupProvider.close();
+  }
+  const ledger = await readFile(ledgerPath, "utf8");
+  assert.match(ledger, /"event":"cleanup-required"/u);
+  assert.match(ledger, /"cleanupRequired":true/u);
+  assert.doesNotMatch(ledger, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  await rm(stagedDirectory, { recursive: true, force: true });
 });
 
 test("Grok rejects protected execution-policy flags from every arbitrary argument tail", () => {

@@ -47,6 +47,23 @@ test("registry resolves route-prefixed and explicit provider models", () => {
   assert.equal(explicitPrefixed.model, "mock/other");
 });
 
+test("Grok image capability is advertised only on Consult routes", async () => {
+  const registry = new ProviderRegistry(createTestConfig(), { logger: silentLogger() });
+  const provider = registry.get("mock");
+  provider.config.adapter = "grok-build";
+  provider.capabilities = () => ({
+    modes: {
+      consult: { supported: true },
+      integrated: { supported: false },
+      delegate: { supported: true },
+    },
+    images: true,
+  });
+  const routes = await registry.listRoutedModels();
+  assert.equal(routes.find((route) => route.id.startsWith("consult/mock/")).metadata.images, true);
+  assert.equal(routes.find((route) => route.id.startsWith("delegate/mock/")).metadata.images, false);
+});
+
 test("provider activation route resolution forbids smart selection and preserves capability errors", () => {
   const registry = new ProviderRegistry(createTestConfig({
     providers: { mock: { adapter: "mock", model: "exact-model", models: ["exact-model"], capabilities: ["consult"] } },

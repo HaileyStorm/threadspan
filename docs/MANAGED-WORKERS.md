@@ -39,7 +39,7 @@ The packaged `skills/managed-worker/references/task-packet.md` contains a compac
 - Keep cross-session memory disabled by default. This package allows Grok nested subagents and web/search by default under the operator's policy; nested work inherits the parent boundary, and web content is treated as untrusted evidence. Explicitly disable either when it adds no value.
 - Bound active jobs, start rate, model-turn budget, output, and wall time.
 - On Linux Grok saved-session routes, require the canonical process-shared SQLite gate for every inference/discovery contact; local weighted admission remains fairness and turn-budget policy only.
-- Send only explicitly disclosed `public_synthetic` or `public_repo` payloads, reject Grok/xAI secret environment presence, and keep images plus API/provider/model/billed fallback disabled.
+- Send text only as explicitly disclosed `public_synthetic` or `public_repo`. Grok image Consult is separately limited to disclosed `public_synthetic_image` or `public_image` inline PNG/JPEG under the owner-armed `image-read-v1` receipt and fixed Read-only staging boundary. Reject Grok/xAI secret environment presence and keep image Delegate plus API/provider/model/account/billed fallback disabled.
 - Terminate descendant processes on abort/timeout/shutdown.
 - Record durable lifecycle, usage, process, Git, and evidence data.
 - Do not automatically retry quota, entitlement, malformed-output, or worker failure.

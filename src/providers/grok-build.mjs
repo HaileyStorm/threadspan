@@ -1,5 +1,6 @@
 import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { WeightedAdmissionController } from "../core/admission-controller.mjs";
@@ -8,6 +9,7 @@ import { CapabilityError, ProviderError, RequestError } from "../core/errors.mjs
 import { classifyExplorationLoop } from "../core/exploration-loop.mjs";
 import { createId } from "../core/ids.mjs";
 import { KeyedSerialQueue } from "../core/keyed-serial-queue.mjs";
+import { MAX_GROK_IMAGE_BYTES, MAX_GROK_IMAGE_COUNT, MAX_GROK_IMAGE_TOTAL_BYTES } from "../core/input-normalizer.mjs";
 import {
   GROK_HOST_GATE_MODEL,
   GROK_HOST_GATE_REPORTED_MODEL,
@@ -17,6 +19,7 @@ import {
 } from "../core/grok-host-gate.mjs";
 import { ManagedProcessError, normalizeManagedCommand, runCapturedProcess } from "../core/managed-process.mjs";
 import { renderMessagesForAgent } from "../core/policies.mjs";
+import { redact, redactText } from "../core/redact.mjs";
 import { RunLedger, sha256Text, workspacePathFingerprint } from "../core/run-ledger.mjs";
 import { enforceGitWorkspacePolicy, inspectGitWorkspace } from "../workspace/git-workspace.mjs";
 import { createWorkspaceSnapshot } from "../workspace/snapshot.mjs";
@@ -32,6 +35,7 @@ const BUILTIN_PROFILES = Object.freeze({
 
 const DEFAULT_ALLOWED_EFFORTS = Object.freeze(["low", "medium", "high"]);
 const DEFAULT_GROK_MAX_PROMPT_CHARS = 524_288;
+const LONG_BASE64_PAYLOAD = /[A-Za-z0-9+/]{256,}={0,2}/gu;
 const GROK_EXPLORATION_WORKSPACE_QUEUE = new KeyedSerialQueue();
 const PROTECTED_GROK_ARGUMENTS = new Set([
   "-c", "-m", "-p", "-r", "-s", "-w",
@@ -79,8 +83,13 @@ export class GrokBuildProvider extends ProviderAdapter {
       logger: this.logger,
     });
     this.preflightPromise = undefined;
+    this.imagePreflightPromise = undefined;
     this.modelDiscovery = undefined;
     this.closed = false;
+    this.testOptions = config.grokHostGate?.testContext === true && config[GROK_HOST_GATE_TEST_OPTIONS]
+      && typeof config[GROK_HOST_GATE_TEST_OPTIONS] === "object"
+      ? config[GROK_HOST_GATE_TEST_OPTIONS]
+      : {};
     this.hostGate = new GrokHostGate({
       ...(config.grokHostGate ?? {}),
       ...(config[GROK_HOST_GATE_TEST_OPTIONS] ?? {}),
@@ -92,12 +101,15 @@ export class GrokBuildProvider extends ProviderAdapter {
   capabilities() {
     const configured = new Set(Array.isArray(this.config.capabilities) ? this.config.capabilities : ["consult", "delegate"]);
     const explorationLoop = resolveGrokExplorationLoopPolicy(this.config, { mode: "delegate" }, { maxTurns: this.config.delegate?.maxTurns ?? 16 });
+    const imageSupported = configured.has("consult") && !this.hostGate.disabled;
     return {
       modes: {
         consult: {
           supported: configured.has("consult"),
           reason: configured.has("consult") ? undefined : "not enabled in provider configuration",
           readOnlyBoundary: "disposable-workspace-snapshot",
+          imageBoundary: imageSupported ? "saved-session-public-data-uri-png-jpeg-read-only" : undefined,
+          imageReason: imageSupported ? undefined : "Grok images require the enabled canonical Linux saved-session host gate",
         },
         integrated: {
           supported: false,
@@ -111,7 +123,8 @@ export class GrokBuildProvider extends ProviderAdapter {
       },
       streaming: false,
       tools: false,
-      images: false,
+      images: imageSupported,
+      imageMode: imageSupported ? "consult-only" : "unavailable",
       durableThreads: false,
       providerOwnsTools: true,
       freshBoundedSessions: true,
@@ -199,7 +212,12 @@ export class GrokBuildProvider extends ProviderAdapter {
   async *#runJob(request, expectedWorkspaceKey) {
     if (this.closed) throw new ProviderError(this.id, "Grok Build provider is closed", { status: 503 });
     assertNoGrokSecretEnvironment(this.config, process.env);
-    if (!this.hostGate.disabled) assertGrokSavedSessionRequest(request);
+    const images = normalizeGrokImageRequest(request.images);
+    const imageRequest = images.length > 0;
+    if (imageRequest || !this.hostGate.disabled) assertGrokSavedSessionRequest(request, { imageRequest });
+    if (imageRequest && this.hostGate.disabled && this.testOptions.allowDisabledImageGate !== true) {
+      throw new CapabilityError(this.id, "consult-images", "Grok images require the enabled canonical Linux saved-session host gate");
+    }
     if (request.model !== GROK_HOST_GATE_MODEL) {
       throw new RequestError(`Grok saved-session route requires exact model '${GROK_HOST_GATE_MODEL}'`);
     }
@@ -207,16 +225,38 @@ export class GrokBuildProvider extends ProviderAdapter {
     if (request.mode === "integrated") {
       throw new CapabilityError(this.id, "integrated", this.capabilities().modes.integrated.reason);
     }
+    if (imageRequest && request.mode !== "consult") {
+      throw new CapabilityError(this.id, request.mode, "Grok saved-session images are supported only for Consult");
+    }
+    if (imageRequest) assertClosedGrokImageLaunchConfig(this.config);
 
     const jobId = createId("job");
-    const profile = resolveGrokTaskProfile(this.config, request);
+    const profileRequest = imageRequest
+      ? {
+          ...request,
+          metadata: {
+            ...(request.metadata ?? {}),
+            bridge_max_turns: undefined,
+            bridge_expected_turns: undefined,
+            bridge_no_plan: undefined,
+          },
+        }
+      : request;
+    let profile = resolveGrokTaskProfile(this.config, profileRequest);
+    if (imageRequest) profile = { ...profile, maxTurns: 2, expectedTurns: 2, noPlan: true };
     const explorationLoop = resolveGrokExplorationLoopPolicy(this.config, request, profile);
     const admissionExpectedTurns = explorationLoop.enabled
       ? Math.min(profile.maxTurns, profile.expectedTurns + explorationLoop.reserveTurns)
       : profile.expectedTurns;
-    const executionPolicy = resolveGrokExecutionPolicy(this.config, request);
+    const executionPolicy = imageRequest
+      ? { allowSubagents: false, allowWebSearch: false, noMemory: true }
+      : resolveGrokExecutionPolicy(this.config, request);
     const acceptance = normalizeAcceptanceCommands(request.metadata?.bridge_acceptance_commands);
+    if (imageRequest && acceptance.commands.length > 0) {
+      throw new RequestError("Grok saved-session image Consult permits only Read of staged images; acceptance commands are disabled");
+    }
     const acceptanceCommands = acceptance.commands;
+    const imageProjection = imageRequest ? summarizeGrokImages(images) : undefined;
     let workspaceFingerprint;
     const coordinatorId = optionalMetadataString(request.metadata?.bridge_coordinator_id);
     const workerGroup = optionalMetadataString(request.metadata?.bridge_worker_group);
@@ -225,6 +265,7 @@ export class GrokBuildProvider extends ProviderAdapter {
     let workspace;
     let gitBefore;
     let gitAfter;
+    let imageWorkspaceHandedOff = false;
     let releaseAdmission;
     let terminalRecorded = false;
     let actualAdmissionUnits;
@@ -250,7 +291,7 @@ export class GrokBuildProvider extends ProviderAdapter {
         throw new RequestError(`Grok Build prompt is ${prompt.length} characters, exceeding maxPromptChars (${maxPromptChars}); reduce thread context or raise the reviewed limit`);
       }
       await this.#assertConfiguredModel(request.model);
-      const installation = await this.#preflight();
+      const installation = await this.#preflight({ imageRequest });
       nativeSessionId = explorationLoop.enabled ? randomUUID() : undefined;
       const initialEvidence = await this.ledger.captureEvidence(`${jobId}-initial`, { prompt });
 
@@ -277,6 +318,7 @@ export class GrokBuildProvider extends ProviderAdapter {
         workspaceFingerprint,
         acceptanceCommands: acceptance.summary,
         gitBefore: summarizeGitState(gitBefore),
+        ...(imageProjection ? { images: imageProjection } : {}),
         ...initialEvidence,
       });
       yield { type: "status", status: "queued", message: "Waiting for Grok Build admission" };
@@ -285,6 +327,7 @@ export class GrokBuildProvider extends ProviderAdapter {
       yield { type: "status", status: "admitted" };
 
       yield { type: "status", status: "started" };
+      imageWorkspaceHandedOff = imageRequest;
       const initialAttempt = await this.#runAttempt({
         attempt: "initial",
         ordinal: 1,
@@ -300,6 +343,7 @@ export class GrokBuildProvider extends ProviderAdapter {
         nativeSession: nativeSessionId ? { id: nativeSessionId, resume: false } : undefined,
         allowNonzeroMaxTurnRecovery: request.mode === "delegate" && explorationLoop.enabled,
         modeConfig,
+        images,
       });
       let finalAttempt = initialAttempt;
       const attempts = [summarizeGrokAttempt(initialAttempt)];
@@ -399,6 +443,7 @@ export class GrokBuildProvider extends ProviderAdapter {
             classification: explorationDecision,
           },
           attempts: attempts.map(({ usage: _usage, ...attempt }) => attempt),
+          ...(imageProjection ? { images: imageProjection } : {}),
         },
       };
       await this.ledger.append({
@@ -415,6 +460,7 @@ export class GrokBuildProvider extends ProviderAdapter {
         gitAfter: summarizeGitState(gitAfter),
         recoveryIssued: explorationDecision?.recover === true,
         attempts: attempts.map(({ usage: _usage, ...attempt }) => attempt),
+        ...(imageProjection ? { images: imageProjection } : {}),
       });
       terminalRecorded = true;
 
@@ -437,28 +483,29 @@ export class GrokBuildProvider extends ProviderAdapter {
           attempt: activeAttempt,
           sessionId: nativeSessionId,
           admissionUnits: actualAdmissionUnits,
-          error: boundedError(error),
+          error: boundedError(error, { image: imageRequest }),
           admission: this.admission.stats(),
         });
       }
       if (cancelled) throw request.signal.reason ?? error;
       if (error instanceof ProviderError || error instanceof RequestError || error instanceof CapabilityError) throw error;
       if (error instanceof ManagedProcessError) {
-        throw new ProviderError(this.id, `Grok Build process ${error.kind} failure: ${error.message}`, {
+        throw new ProviderError(this.id, `Grok Build process ${error.kind} failure: ${imageRequest ? sanitizeImageText(error.message) : error.message}`, {
           status: error.kind === "timeout" ? 504 : 502,
           retryable: false,
-          details: error.details,
+          details: imageRequest ? sanitizeImageProcessDetails(error.details) : error.details,
           cause: error,
         });
       }
-      throw new ProviderError(this.id, `Grok Build execution failed: ${error instanceof Error ? error.message : String(error)}`, {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ProviderError(this.id, `Grok Build execution failed: ${imageRequest ? sanitizeImageText(message) : message}`, {
         retryable: false,
         cause: error,
       });
     } finally {
       releaseAdmission?.(actualAdmissionUnits);
       await snapshot?.dispose();
-      if (emptyWorkspace) await rm(emptyWorkspace, { recursive: true, force: true }).catch(() => undefined);
+      if (emptyWorkspace && !imageWorkspaceHandedOff) await rm(emptyWorkspace, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
@@ -481,13 +528,16 @@ export class GrokBuildProvider extends ProviderAdapter {
   }
 
   /** Resolve and verify the executable according to configured cache policy. */
-  #preflight() {
-    if (this.config.verifyOnEveryRun === true) return inspectGrokBuildInstallationOrThrow(this.id, this.config);
-    this.preflightPromise ??= inspectGrokBuildInstallationOrThrow(this.id, this.config).catch((error) => {
-      this.preflightPromise = undefined;
+  #preflight(options = {}) {
+    const imageRequest = options.imageRequest === true;
+    const config = imageRequest ? { ...this.config, commandArgs: internalImageCommandArgs(this.config) } : this.config;
+    if (config.verifyOnEveryRun === true) return inspectGrokBuildInstallationOrThrow(this.id, config);
+    const field = imageRequest ? "imagePreflightPromise" : "preflightPromise";
+    this[field] ??= inspectGrokBuildInstallationOrThrow(this.id, config).catch((error) => {
+      this[field] = undefined;
       throw error;
     });
-    return this.preflightPromise;
+    return this[field];
   }
 
   /** Run one initial or recovery process inside the same admitted logical job. */
@@ -507,15 +557,25 @@ export class GrokBuildProvider extends ProviderAdapter {
       nativeSession,
       allowNonzeroMaxTurnRecovery,
       modeConfig,
+      images = [],
     } = options;
     const evidenceId = `${jobId}-${attempt}`;
     let result;
     let promptDirectory;
     let attemptError;
     try {
-      const promptFile = await createPrivateGrokPromptFile(prompt);
-      promptDirectory = promptFile.directory;
-      const args = buildGrokBuildArguments(this.config, request, profile, workspace, promptFile.path, executionPolicy, nativeSession);
+      const attemptFiles = await createPrivateGrokAttemptFiles(prompt, images, workspace);
+      promptDirectory = attemptFiles.directory;
+      const args = buildGrokBuildArguments(
+        this.config,
+        request,
+        profile,
+        workspace,
+        attemptFiles.promptPath,
+        executionPolicy,
+        nativeSession,
+        attemptFiles.imagePaths,
+      );
       result = await this.#runGatedProcess({
         command: installation.executable,
         args,
@@ -540,6 +600,10 @@ export class GrokBuildProvider extends ProviderAdapter {
         maxStdoutBytes: modeConfig.maxOutputBytes ?? this.config.maxOutputBytes ?? 16 * 1024 * 1024,
         maxStderrBytes: this.config.maxStderrBytes ?? 256 * 1024,
         killTree: true,
+        beforeProviderSpawn: images.length > 0 ? () => {
+          this.testOptions.beforeStagedFileRevalidation?.({ stagedFiles: attemptFiles.stagedFiles.map((entry) => ({ ...entry })) });
+          revalidateStagedGrokFiles(attemptFiles.stagedFiles);
+        } : undefined,
         onSpawn: ({ pid, startedAt }) => this.ledger.append({
           event: "running",
           jobId,
@@ -556,14 +620,25 @@ export class GrokBuildProvider extends ProviderAdapter {
           version: installation.version,
           ...(installation.sha256 ? { executableSha256: installation.sha256 } : {}),
         }),
-      }, { requireTerminalModelBinding: true });
+      }, { requireTerminalModelBinding: true, requireImage: images.length > 0 });
+      if (images.length > 0 && containsForbiddenImageOutput(`${result.stdout ?? ""}\n${result.stderr ?? ""}`)) {
+        throw new ProviderError(this.id, "Grok image Consult returned a forbidden inline image or encoded binary payload", {
+          retryable: false,
+          details: { retryPolicy: "no-automatic-retry", outputPolicy: "text-only-no-data-image-or-long-base64" },
+        });
+      }
     } catch (error) {
       attemptError = error;
-      const evidence = await this.ledger.captureEvidence(evidenceId, {
+      const evidence = {
+        ...await captureGrokAttemptEvidence(this.ledger, evidenceId, {
         prompt,
-        ...(error?.details?.stderr === undefined ? {} : { stderr: error.details.stderr }),
+        ...(images.length > 0 && result
+          ? { stdout: result.stdout, stderr: result.stderr }
+          : error?.details?.stderr === undefined ? {} : { stderr: error.details.stderr }),
         metadata: { attempt, ordinal, processFailure: true },
-      });
+        }, images.length > 0),
+        ...(images.length > 0 ? imageStreamHashesFromError(error) : {}),
+      };
       await this.ledger.append({
         event: "attempt-failed",
         jobId,
@@ -574,15 +649,26 @@ export class GrokBuildProvider extends ProviderAdapter {
         sessionId: nativeSession?.id,
         sessionOperation: nativeSession ? nativeSession.resume === true ? "resume" : "create" : undefined,
         maxTurns: profile.maxTurns,
-        error: boundedError(error),
+        error: boundedError(error, { image: images.length > 0 }),
         ...evidence,
       });
       throw error;
     } finally {
       if (promptDirectory) {
         try {
+          if (images.length > 0 && this.testOptions.failImageCleanup === true) throw new Error("fixture image cleanup failure");
           await removePrivateGrokPromptDirectory(promptDirectory);
         } catch (cleanupError) {
+          await this.ledger.appendRequired({
+            event: "cleanup-required",
+            jobId,
+            threadId: request.threadId,
+            attempt,
+            attemptOrdinal: ordinal,
+            cleanupRequired: true,
+            directoryFingerprint: workspacePathFingerprint(promptDirectory),
+            error: boundedError(cleanupError, { image: images.length > 0 }),
+          });
           if (!attemptError) throw cleanupError;
           this.logger?.warn?.("Could not remove a private Grok prompt directory after a failed attempt", {
             jobId,
@@ -592,12 +678,12 @@ export class GrokBuildProvider extends ProviderAdapter {
         }
       }
     }
-    const evidence = await this.ledger.captureEvidence(evidenceId, {
+    const evidence = await captureGrokAttemptEvidence(this.ledger, evidenceId, {
       prompt,
       stdout: result.stdout,
       stderr: result.stderr,
       metadata: { exitCode: result.exitCode, exitSignal: result.exitSignal, attempt, ordinal },
-    });
+    }, images.length > 0);
     const appendFailedAttempt = (error) => this.ledger.append({
       event: "attempt-failed",
       jobId,
@@ -611,12 +697,18 @@ export class GrokBuildProvider extends ProviderAdapter {
       durationMs: result.durationMs,
       exitCode: result.exitCode,
       exitSignal: result.exitSignal,
-      error: boundedError(error),
+      error: boundedError(error, { image: images.length > 0 }),
       ...evidence,
     });
     let parsed;
     try {
       parsed = parseGrokBuildPayload(result.stdout, result.stderr, this.id);
+      if (images.length > 0 && containsForbiddenImageOutput(parsed.text)) {
+        throw new ProviderError(this.id, "Grok image Consult parsed output contained a forbidden inline image or encoded binary payload", {
+          retryable: false,
+          details: { retryPolicy: "no-automatic-retry", outputPolicy: "text-only-no-data-image-or-long-base64" },
+        });
+      }
     } catch (error) {
       await appendFailedAttempt(error);
       throw error;
@@ -687,22 +779,49 @@ export class GrokBuildProvider extends ProviderAdapter {
       }
     };
     try {
-      slot = this.hostGate.acquire({ timeoutMs, deadlineAt });
+      slot = this.hostGate.acquire({ timeoutMs, deadlineAt, requireImage: gateOptions.requireImage === true });
+      if (gateOptions.requireImage === true && typeof this.testOptions.beforeImageSpawn === "function") {
+        this.testOptions.beforeImageSpawn({ slot });
+      }
       const remainingMs = remainingProcessTimeout(deadlineAt);
+      const { beforeProviderSpawn, ...processOptions } = options;
+      const hostSpawnGuard = this.hostGate.spawnGuard(slot, { deadlineAt });
+      const spawnGuard = beforeProviderSpawn
+        ? (spawnChild) => hostSpawnGuard
+          ? hostSpawnGuard(() => { beforeProviderSpawn(); return spawnChild(); })
+          : (() => { beforeProviderSpawn(); return spawnChild(); })()
+        : hostSpawnGuard;
       const result = await runCapturedProcess({
-        ...options,
+        ...processOptions,
         timeoutMs: remainingMs,
         deadlineAt,
-        spawnGuard: this.hostGate.spawnGuard(slot, { deadlineAt }),
+        spawnGuard,
       });
       terminalProven = true;
       const parsed = tryParseGrokPayload(result, this.id);
+      if (gateOptions.requireImage === true) {
+        if (containsForbiddenImageOutput(`${result.stdout ?? ""}\n${result.stderr ?? ""}`)) {
+          persistRevocation("Grok image terminal output contained forbidden inline image or encoded binary data");
+          throw new ProviderError(this.id, "Grok image Consult returned a forbidden inline image or encoded binary payload", {
+            retryable: false,
+            details: { retryPolicy: "no-automatic-retry", outputPolicy: "text-only-no-data-image-or-long-base64", ...imageStreamHashes(result) },
+          });
+        }
+        const finishReason = String(parsed?.finishReason ?? "").trim().toLowerCase();
+        if (parsed?.turns !== 2 || parsed?.modelCalls !== 2 || !["stop", "end_turn"].includes(finishReason)) {
+          persistRevocation("Grok image terminal envelope did not prove exact two-turn stop semantics");
+          throw new ProviderError(this.id, "Grok image Consult terminal envelope must prove turns=2, model_calls=2, and finish_reason=stop or end_turn", {
+            retryable: false,
+            details: { retryPolicy: "no-automatic-retry", terminalPolicy: "exact-two-turn-stop", ...imageStreamHashes(result) },
+          });
+        }
+      }
       if (gateOptions.requireTerminalModelBinding === true && !this.hostGate.disabled
         && (parsed?.reportedModels.length !== 1 || parsed.reportedModels[0] !== GROK_HOST_GATE_REPORTED_MODEL)) {
         persistRevocation("Grok terminal modelUsage did not prove the exact grok-4.6-build binding");
         throw new ProviderError(this.id, `Grok Build terminal modelUsage must report only '${GROK_HOST_GATE_REPORTED_MODEL}'`, {
           retryable: false,
-          details: { retryPolicy: "no-fallback-exact-model-binding" },
+          details: { retryPolicy: "no-fallback-exact-model-binding", ...(gateOptions.requireImage === true ? imageStreamHashes(result) : {}) },
         });
       }
       const revocation = classifyGrokGateRevocation(result, parsed);
@@ -757,17 +876,37 @@ async function inspectGrokBuildInstallationOrThrow(providerId, config) {
 }
 
 /**
- * Materialize one attempt's prompt outside argv and return its absolute private path.
+ * Materialize one attempt's prompt and bounded images outside argv in an owner-private directory.
  * The caller owns removing the returned directory after the child has fully settled.
  */
-async function createPrivateGrokPromptFile(prompt) {
-  const directory = resolve(await mkdtemp(join(tmpdir(), "threadspan-grok-prompt-")));
+async function createPrivateGrokAttemptFiles(prompt, images = [], workspace) {
+  const imageRequest = images.length > 0;
+  const directory = imageRequest
+    ? resolve(workspace)
+    : resolve(await mkdtemp(join(tmpdir(), "threadspan-grok-attempt-")));
   try {
     await chmod(directory, 0o700);
-    const path = join(directory, "prompt.txt");
-    await writeFile(path, prompt, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    await chmod(path, 0o600);
-    return { directory, path };
+    const imagePaths = [];
+    const imageNames = [];
+    const stagedFiles = [];
+    for (const [index, image] of images.entries()) {
+      const name = `image-${index + 1}.${image.mime === "image/png" ? "png" : "jpg"}`;
+      const path = join(directory, name);
+      await writeFile(path, image.bytes, { flag: "wx", mode: 0o600 });
+      await chmod(path, 0o600);
+      imagePaths.push(path);
+      imageNames.push(name);
+      stagedFiles.push({ path, sha256: image.sha256, size: image.bytes.length, label: `image-${index + 1}` });
+    }
+    const promptPath = join(directory, "prompt.txt");
+    const imageInstructions = imagePaths.length > 0
+      ? `\n\nSTAGED IMAGE INPUTS\nUse the Read tool only on the exact relative filenames below. Do not search for, derive, open, or request any other file or URL. Analyze the images and answer the authoritative text question.\n${imageNames.map((name, index) => `- ${name} (${images[index].mime}; sha256=${images[index].sha256})`).join("\n")}`
+      : "";
+    const promptText = `${prompt}${imageInstructions}`;
+    await writeFile(promptPath, promptText, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await chmod(promptPath, 0o600);
+    stagedFiles.push({ path: promptPath, sha256: sha256Text(promptText), size: Buffer.byteLength(promptText), label: "prompt" });
+    return { directory, promptPath, imagePaths, imageNames, stagedFiles };
   } catch (error) {
     await removePrivateGrokPromptDirectory(directory).catch(() => undefined);
     throw error;
@@ -777,6 +916,36 @@ async function createPrivateGrokPromptFile(prompt) {
 /** Remove one private prompt directory with bounded retries for transient Windows sharing failures. */
 async function removePrivateGrokPromptDirectory(directory) {
   await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+}
+
+/** Synchronously reopen staged inputs without following links and prove exact bytes at child spawn. */
+function revalidateStagedGrokFiles(stagedFiles) {
+  if (!Number.isInteger(fsConstants.O_NOFOLLOW)) {
+    throw new RequestError("Grok image staged-file validation requires O_NOFOLLOW support");
+  }
+  for (const staged of stagedFiles) {
+    let descriptor;
+    try {
+      descriptor = openSync(staged.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const entry = fstatSync(descriptor);
+      if (!entry.isFile() || entry.nlink !== 1 || (entry.mode & 0o777) !== 0o600
+        || typeof process.getuid === "function" && entry.uid !== process.getuid()
+        || entry.size !== staged.size) {
+        throw new Error("identity, owner, mode, link count, or size changed");
+      }
+      const hash = createHash("sha256");
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      let bytesRead;
+      while ((bytesRead = readSync(descriptor, buffer, 0, buffer.length, null)) > 0) hash.update(buffer.subarray(0, bytesRead));
+      if (hash.digest("hex") !== staged.sha256) throw new Error("digest changed");
+    } catch (error) {
+      throw new RequestError(`Grok staged ${staged.label} failed no-follow spawn-time revalidation`, {
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      if (descriptor !== undefined) try { closeSync(descriptor); } catch {}
+    }
+  }
 }
 
 /** Return whether a bounded Grok version banner proves prompt-file support. */
@@ -877,45 +1046,54 @@ export async function inspectGrokBuildInstallation(config, options = {}) {
 }
 
 /** Build the exact one-shot argument vector used for a Grok Build job. */
-export function buildGrokBuildArguments(config, request, profile, workspace, promptFile, resolvedPolicy, nativeSession) {
+export function buildGrokBuildArguments(config, request, profile, workspace, promptFile, resolvedPolicy, nativeSession, imagePaths = []) {
   const modeConfig = config[request.mode] ?? {};
   const executionPolicy = resolvedPolicy ?? resolveGrokExecutionPolicy(config, request);
-  const permissionMode = modeConfig.permissionMode ?? config.permissionMode ?? "dontAsk";
+  const imageRequest = imagePaths.length > 0;
+  if (imageRequest) assertClosedGrokImageLaunchConfig(config);
+  const permissionMode = imageRequest ? "dontAsk" : modeConfig.permissionMode ?? config.permissionMode ?? "dontAsk";
   if (permissionMode === "bypassPermissions" && request.mode !== "delegate") {
     throw new RequestError("Grok Build bypassPermissions is permitted only for explicitly authorized Delegate workspaces");
   }
   if (typeof promptFile !== "string" || !isAbsolute(promptFile)) {
     throw new RequestError("Grok Build promptFile must be an absolute path");
   }
-  const args = [...(config.commandArgs ?? [])];
-  if (config.noAutoUpdate !== false) args.push("--no-auto-update");
+  const args = imageRequest ? [...internalImageCommandArgs(config)] : [...(config.commandArgs ?? [])];
+  if (imageRequest || config.noAutoUpdate !== false) args.push("--no-auto-update");
   args.push("--cwd", workspace);
   args.push("--model", request.model);
   args.push("--reasoning-effort", profile.reasoningEffort);
-  for (const value of config.preArgs ?? []) args.push(String(value));
+  if (!imageRequest) for (const value of config.preArgs ?? []) args.push(String(value));
   if (nativeSession?.id) args.push(nativeSession.resume === true ? "--resume" : "--session-id", nativeSession.id);
   args.push("--prompt-file", promptFile);
   args.push("--output-format", "json");
   args.push("--permission-mode", permissionMode);
-  args.push("--sandbox", modeConfig.sandbox ?? config.sandbox ?? "strict");
+  args.push("--sandbox", imageRequest ? "read-only" : modeConfig.sandbox ?? config.sandbox ?? "strict");
   if (!executionPolicy.allowSubagents) args.push("--no-subagents");
   if (executionPolicy.noMemory) args.push("--no-memory");
   if (!executionPolicy.allowWebSearch) args.push("--disable-web-search");
   args.push("--max-turns", String(profile.maxTurns));
   if (profile.noPlan) args.push("--no-plan");
-  const tools = modeConfig.tools ?? config.grokTools;
+  const tools = imageRequest ? ["Read"] : modeConfig.tools ?? config.grokTools;
   if (Array.isArray(tools) && tools.length > 0) args.push("--tools", tools.join(","));
-  const disallowedTools = modeConfig.disallowedTools ?? config.disallowedTools;
+  const disallowedTools = imageRequest ? [] : modeConfig.disallowedTools ?? config.disallowedTools;
   if (Array.isArray(disallowedTools) && disallowedTools.length > 0) args.push("--disallowed-tools", disallowedTools.join(","));
-  for (const rule of [...(config.rules ?? []), ...(modeConfig.rules ?? [])]) args.push("--rules", String(rule));
-  for (const rule of collectModeRules(config, modeConfig, "allow")) args.push("--allow", String(rule));
-  for (const rule of collectModeRules(config, modeConfig, "deny")) args.push("--deny", String(rule));
-  const useJsonSchema = modeConfig.useJsonSchema ?? config.useJsonSchema ?? false;
+  if (imageRequest) {
+    for (const path of imagePaths) {
+      if (typeof path !== "string" || !isAbsolute(path)) throw new RequestError("Grok staged image paths must be absolute");
+      args.push("--allow", `Read(${path})`);
+    }
+  } else {
+    for (const rule of [...(config.rules ?? []), ...(modeConfig.rules ?? [])]) args.push("--rules", String(rule));
+    for (const rule of collectModeRules(config, modeConfig, "allow")) args.push("--allow", String(rule));
+    for (const rule of collectModeRules(config, modeConfig, "deny")) args.push("--deny", String(rule));
+  }
+  const useJsonSchema = imageRequest ? false : modeConfig.useJsonSchema ?? config.useJsonSchema ?? false;
   const jsonSchema = modeConfig.resultSchema ?? modeConfig.jsonSchema ?? config.resultSchema ?? config.jsonSchema;
   if (useJsonSchema && jsonSchema) {
     args.push("--json-schema", typeof jsonSchema === "string" ? jsonSchema : JSON.stringify(jsonSchema));
   }
-  for (const value of config.postArgs ?? []) args.push(String(value));
+  if (!imageRequest) for (const value of config.postArgs ?? []) args.push(String(value));
   return args;
 }
 
@@ -1128,6 +1306,14 @@ async function prepareGrokWorkspace(config, request, logger) {
     return { workspace, snapshot: undefined, emptyWorkspace: undefined, gitBefore };
   }
 
+  if (Array.isArray(request.images) && request.images.length > 0) {
+    const root = modeConfig.snapshotRoot ? resolve(modeConfig.snapshotRoot) : tmpdir();
+    await mkdir(root, { recursive: true });
+    const emptyWorkspace = await mkdtemp(join(root, "cursor-bridge-grok-image-consult-"));
+    await chmod(emptyWorkspace, 0o700);
+    return { workspace: emptyWorkspace, snapshot: undefined, emptyWorkspace, gitBefore: undefined };
+  }
+
   const strategy = modeConfig.workspaceStrategy ?? "snapshot";
   if (request.workspace && strategy === "snapshot") {
     const snapshot = await createWorkspaceSnapshot(request.workspace, {
@@ -1152,7 +1338,10 @@ async function prepareGrokWorkspace(config, request, logger) {
 
 /** Render a bounded worker task packet with authority, evidence, and acceptance boundaries. */
 function renderGrokBuildPrompt(request, profile, executionPolicy, snapshot, gitBefore, acceptanceCommands, fleet, renderOptions) {
-  const boundary = request.mode === "consult"
+  const imageRequest = Array.isArray(request.images) && request.images.length > 0;
+  const boundary = imageRequest
+    ? `EXECUTION BOUNDARY\nYou are an advisory image-analysis worker inside another agent's active thread. The workspace is empty and disposable. Use only Read on the explicitly staged image paths appended to this packet. Do not edit files, use shell commands, browse the web, use memory, make a plan, spawn subagents, inspect the host, or access any other path. Return image-grounded findings and uncertainty. The primary agent retains judgment and final-answer authority.`
+    : request.mode === "consult"
     ? `EXECUTION BOUNDARY\nYou are an advisory worker inside another agent's active thread. The workspace is disposable. Inspect it, but do not intentionally edit it. Return findings, evidence, uncertainty, disagreements, and a compact recommendation. The primary agent retains judgment, tool use, edits, and final-answer authority.`
     : `EXECUTION BOUNDARY\nYou own only this bounded worker task. Stay inside the assigned workspace and scope. The workspace may be a primary checkout, may already contain uncommitted work, or may not use Git. Preserve unrelated work. You have no commit, reset, checkout, merge, push, rebase, tag, release, or integration authority. Do not broaden the task. Report changed files, exact validation performed, terminal results, and unresolved risks. A separate coordinator will inspect the result and independently accept or reject the work.`;
   const nestedAgentPolicy = executionPolicy.allowSubagents
@@ -1193,15 +1382,108 @@ function buildGrokEnvironment(config, bridgeEnvironment, baseEnvironment = proce
 }
 
 /** Enforce the public-data disclosure boundary before a production saved-session contact. */
-export function assertGrokSavedSessionRequest(request) {
+export function assertGrokSavedSessionRequest(request, options = {}) {
   const classification = request?.metadata?.bridge_payload_classification;
-  if (!["public_synthetic", "public_repo"].includes(classification)) {
-    throw new RequestError("Grok saved-session route requires bridge_payload_classification=public_synthetic or public_repo");
+  const allowed = options.imageRequest === true
+    ? ["public_synthetic_image", "public_image"]
+    : ["public_synthetic", "public_repo"];
+  if (!allowed.includes(classification)) {
+    throw new RequestError(`Grok saved-session ${options.imageRequest === true ? "image" : "text"} route requires bridge_payload_classification=${allowed.join(" or ")}`);
   }
   if (request?.metadata?.bridge_payload_disclosed !== true) {
     throw new RequestError("Grok saved-session route requires explicit bridge_payload_disclosed=true");
   }
   assertGrokTextOnlyMessages(request?.messages);
+}
+
+/** Validate ephemeral image buffers before any workspace, ledger, admission, or provider work. */
+function normalizeGrokImageRequest(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_GROK_IMAGE_COUNT) {
+    throw new RequestError(`Grok saved-session images must contain 1 through ${MAX_GROK_IMAGE_COUNT} validated images`);
+  }
+  let totalBytes = 0;
+  return value.map((image, index) => {
+    if (!image || typeof image !== "object" || !Buffer.isBuffer(image.bytes)
+      || !["image/png", "image/jpeg"].includes(image.mime)
+      || !/^[0-9a-f]{64}$/u.test(String(image.sha256 ?? ""))) {
+      throw new RequestError(`Grok saved-session image ${index} is not a validated PNG/JPEG buffer projection`);
+    }
+    if (image.bytes.length < 1 || image.bytes.length > MAX_GROK_IMAGE_BYTES) {
+      throw new RequestError(`Grok saved-session image ${index} exceeds the per-image byte limit`);
+    }
+    totalBytes += image.bytes.length;
+    if (totalBytes > MAX_GROK_IMAGE_TOTAL_BYTES) throw new RequestError("Grok saved-session images exceed the aggregate byte limit");
+    const digest = createHash("sha256").update(image.bytes).digest("hex");
+    if (digest !== image.sha256) throw new RequestError(`Grok saved-session image ${index} SHA-256 does not match its bytes`);
+    const png = image.bytes.length >= 8 && image.bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const jpeg = image.bytes.length >= 5
+      && image.bytes[0] === 0xff && image.bytes[1] === 0xd8 && image.bytes[2] === 0xff
+      && image.bytes.at(-2) === 0xff && image.bytes.at(-1) === 0xd9;
+    if (image.mime === "image/png" ? !png : !jpeg) throw new RequestError(`Grok saved-session image ${index} magic does not match ${image.mime}`);
+    return image;
+  });
+}
+
+/** Return only the bounded image metadata that may appear in provider results and ledgers. */
+function summarizeGrokImages(images) {
+  return {
+    count: images.length,
+    items: images.map((image) => ({ mime: image.mime, sha256: image.sha256 })),
+  };
+}
+
+/** Hash image-attempt process streams without ever handing their raw values to RunLedger. */
+async function captureGrokAttemptEvidence(ledger, evidenceId, evidence, imageRequest) {
+  if (!imageRequest) return ledger.captureEvidence(evidenceId, evidence);
+  const { stdout, stderr, ...safeEvidence } = evidence;
+  const captured = await ledger.captureEvidence(evidenceId, safeEvidence);
+  return {
+    ...captured,
+    ...(stdout === undefined ? {} : { stdoutSha256: sha256Text(stdout) }),
+    ...(stderr === undefined ? {} : { stderrSha256: sha256Text(stderr) }),
+  };
+}
+
+function imageStreamHashes(result) {
+  return {
+    stdoutSha256: sha256Text(result?.stdout ?? ""),
+    stderrSha256: sha256Text(result?.stderr ?? ""),
+  };
+}
+
+function imageStreamHashesFromError(error) {
+  const details = error?.details?.upstream ?? error?.details;
+  return {
+    ...(typeof details?.stdoutSha256 === "string" && /^[0-9a-f]{64}$/u.test(details.stdoutSha256) ? { stdoutSha256: details.stdoutSha256 } : {}),
+    ...(typeof details?.stderrSha256 === "string" && /^[0-9a-f]{64}$/u.test(details.stderrSha256) ? { stderrSha256: details.stderrSha256 } : {}),
+  };
+}
+
+function containsForbiddenImageOutput(value) {
+  const text = String(value ?? "");
+  LONG_BASE64_PAYLOAD.lastIndex = 0;
+  return /data:image\//iu.test(text) || LONG_BASE64_PAYLOAD.test(text);
+}
+
+function sanitizeImageText(value) {
+  LONG_BASE64_PAYLOAD.lastIndex = 0;
+  return redactText(String(value ?? "")).replace(LONG_BASE64_PAYLOAD, "[redacted-base64]");
+}
+
+/** Remove image payloads from exceptional process diagnostics without retaining raw bytes. */
+function sanitizeImageProcessDetails(value) {
+  return sanitizeImageDiagnosticValue(redact(value));
+}
+
+function sanitizeImageDiagnosticValue(value, depth = 0) {
+  if (depth > 12) return "[depth-limit]";
+  if (typeof value === "string") return sanitizeImageText(value);
+  if (Array.isArray(value)) return value.map((entry) => sanitizeImageDiagnosticValue(entry, depth + 1));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, sanitizeImageDiagnosticValue(child, depth + 1)]));
+  }
+  return value;
 }
 
 /** Reject API-key/token/secret environment presence instead of silently switching auth modes. */
@@ -1222,15 +1504,22 @@ function assertGrokTextOnlyMessages(messages) {
   if (!Array.isArray(messages)) throw new RequestError("Grok saved-session route requires standard text-only messages");
   for (const [messageIndex, message] of messages.entries()) {
     const content = message?.content;
-    if (typeof content === "string") continue;
+    if (typeof content === "string") {
+      if (/data:image\//iu.test(content)) throw new RequestError(`Grok saved-session message ${messageIndex} contains an unstaged image data URI`);
+      continue;
+    }
     if (!Array.isArray(content)) throw new RequestError(`Grok saved-session message ${messageIndex} must contain standard text only`);
     for (const [partIndex, part] of content.entries()) {
-      if (typeof part === "string") continue;
+      if (typeof part === "string") {
+        if (/data:image\//iu.test(part)) throw new RequestError(`Grok saved-session message ${messageIndex} part ${partIndex} contains an unstaged image data URI`);
+        continue;
+      }
       if (!part || typeof part !== "object" || Array.isArray(part)
         || !["text", "input_text", "output_text"].includes(part.type)
         || typeof part.text !== "string") {
         throw new RequestError(`Grok saved-session message ${messageIndex} part ${partIndex} must be an explicit text block; audio, files, attachments, images, binary, media, and unknown blocks are disabled`);
       }
+      if (/data:image\//iu.test(part.text)) throw new RequestError(`Grok saved-session message ${messageIndex} part ${partIndex} contains an unstaged image data URI`);
     }
   }
 }
@@ -1400,6 +1689,61 @@ function collectModeRules(config, modeConfig, kind) {
     ...(modeConfig[primary] ?? []),
     ...(modeConfig[alias] ?? []),
   ];
+}
+
+/** Reject every configurable attempt-level tail before a governed image launch. */
+function assertClosedGrokImageLaunchConfig(config) {
+  const modeConfig = config.consult ?? {};
+  const arrayFields = [
+    ["commandArgs", config.commandArgs],
+    ["preArgs", config.preArgs],
+    ["postArgs", config.postArgs],
+    ["rules", config.rules],
+    ["allow", config.allow],
+    ["deny", config.deny],
+    ["allowRules", config.allowRules],
+    ["denyRules", config.denyRules],
+    ["grokTools", config.grokTools],
+    ["disallowedTools", config.disallowedTools],
+    ["consult.tools", modeConfig.tools],
+    ["consult.disallowedTools", modeConfig.disallowedTools],
+    ["consult.rules", modeConfig.rules],
+    ["consult.allow", modeConfig.allow],
+    ["consult.deny", modeConfig.deny],
+    ["consult.allowRules", modeConfig.allowRules],
+    ["consult.denyRules", modeConfig.denyRules],
+    ["addDirs", config.addDirs],
+    ["consult.addDirs", modeConfig.addDirs],
+  ];
+  const configured = arrayFields.filter(([, value]) => Array.isArray(value) && value.length > 0).map(([name]) => name);
+  for (const [name, value] of [
+    ["mcpServers", config.mcpServers],
+    ["consult.mcpServers", modeConfig.mcpServers],
+    ["mcpConfig", config.mcpConfig],
+    ["consult.mcpConfig", modeConfig.mcpConfig],
+  ]) if (value && typeof value === "object" && Object.keys(value).length > 0) configured.push(name);
+  for (const [name, value] of [
+    ["useJsonSchema", config.useJsonSchema],
+    ["consult.useJsonSchema", modeConfig.useJsonSchema],
+    ["jsonSchema", config.jsonSchema],
+    ["resultSchema", config.resultSchema],
+    ["consult.jsonSchema", modeConfig.jsonSchema],
+    ["consult.resultSchema", modeConfig.resultSchema],
+  ]) if (value !== undefined && value !== false) configured.push(name);
+  if (configured.length > 0) {
+    throw new RequestError(`Grok image Consult rejects configurable launch tails (${configured.sort().join(", ")}); only the fixed image argv is allowed`);
+  }
+}
+
+/** Return one explicit internal Node fixture path without exposing a production argument surface. */
+function internalImageCommandArgs(config) {
+  if (config.grokHostGate?.testContext !== true) return [];
+  const value = config[GROK_HOST_GATE_TEST_OPTIONS]?.imageCommandArgs;
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 1 || value.some((entry) => typeof entry !== "string" || !isAbsolute(entry) || entry.startsWith("-"))) {
+    throw new RequestError("Internal Grok image test command path is invalid");
+  }
+  return value;
 }
 
 /** Reject generic argument tails that could override adapter-owned execution policy. */
@@ -1709,10 +2053,11 @@ function summarizeGitState(state) {
 }
 
 /** Convert an error to a bounded ledger-safe record. */
-function boundedError(error) {
+function boundedError(error, options = {}) {
+  const rawMessage = error instanceof Error ? error.message : String(error);
   return {
     name: error instanceof Error ? error.name : "Error",
-    message: truncate(error instanceof Error ? error.message : String(error), 2000),
+    message: truncate(options.image === true ? sanitizeImageText(rawMessage) : rawMessage, 2000),
     ...(error?.code ? { code: String(error.code) } : {}),
     ...(error?.status ? { status: Number(error.status) } : {}),
   };

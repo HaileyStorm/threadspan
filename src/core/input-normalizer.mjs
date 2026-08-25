@@ -1,4 +1,20 @@
+import { createHash } from "node:crypto";
 import { RequestError } from "./errors.mjs";
+
+export const MAX_GROK_IMAGE_COUNT = 4;
+export const MAX_GROK_IMAGE_BYTES = 20 * 1024 * 1024;
+export const MAX_GROK_IMAGE_TOTAL_BYTES = 40 * 1024 * 1024;
+
+const GROK_IMAGE_TYPES = new Set(["input_image", "image_url"]);
+const ALLOWED_TOP_LEVEL_INPUT_TYPES = new Set([
+  "message",
+  "function_call",
+  "reasoning",
+  "function_call_output",
+  "computer_call_output",
+  "compaction",
+  "context_compaction",
+]);
 
 const ATTACHMENT_LABELS = new Map([
   ["input_image", "image"],
@@ -50,6 +66,147 @@ export function normalizeResponsesInput(request, previousRecord) {
 
   if (messages.length === 0) throw new RequestError("Request contains no input messages");
   return coalesceAdjacentMessages(messages);
+}
+
+/**
+ * Extract bounded inline images from only the current Responses input.
+ *
+ * Returned buffers are ephemeral provider-attempt inputs. Normalized messages retain only opaque
+ * attachment placeholders, so image bytes and data URLs never enter history, logs, or ledgers.
+ */
+export function extractResponsesImages(request) {
+  const input = request?.input;
+  if (typeof input === "string" || input === undefined || input === null) return [];
+  if (!Array.isArray(input)) throw new RequestError("input must be a string or an array");
+
+  const imageRequest = input.some((item) => messageContentParts(item).some((part) => part && typeof part === "object" && GROK_IMAGE_TYPES.has(part.type)));
+  const images = [];
+  let totalBytes = 0;
+  for (const [itemIndex, item] of input.entries()) {
+    if (imageRequest) assertClosedImageMessageItem(item, itemIndex);
+    if (typeof item === "string") continue;
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new RequestError(`Grok saved-session input item ${itemIndex} must be text or a structured Responses item`);
+    }
+    const type = String(item.type ?? "");
+    if (type === "message" || item.role) {
+      const content = item.content;
+      if (typeof content === "string") {
+        assertNoEmbeddedImageDataUri(content, `message ${itemIndex}`);
+        continue;
+      }
+      if (content === undefined || content === null) continue;
+      const parts = Array.isArray(content) ? content : [content];
+      for (const [partIndex, part] of parts.entries()) {
+        if (typeof part === "string") {
+          assertNoEmbeddedImageDataUri(part, `message ${itemIndex} part ${partIndex}`);
+          continue;
+        }
+        if (!part || typeof part !== "object" || Array.isArray(part)) {
+          throw new RequestError(`Grok saved-session message ${itemIndex} part ${partIndex} is not a supported text or image block`);
+        }
+        if (["input_text", "output_text", "text"].includes(part.type) && typeof part.text === "string") {
+          assertNoEmbeddedImageDataUri(part.text, `message ${itemIndex} part ${partIndex}`);
+          continue;
+        }
+        if (!GROK_IMAGE_TYPES.has(part.type)) {
+          throw new RequestError(`Grok saved-session message ${itemIndex} part ${partIndex} is unsupported; remote URLs, local paths, audio, video, files, generated media, and unknown blocks are disabled`);
+        }
+        if (images.length >= MAX_GROK_IMAGE_COUNT) {
+          throw new RequestError(`Grok saved-session image input cannot contain more than ${MAX_GROK_IMAGE_COUNT} images`);
+        }
+        const reference = part.image_url ?? part.url;
+        const candidate = reference && typeof reference === "object" && !Array.isArray(reference) ? reference.url : reference;
+        const image = decodeCanonicalImageDataUri(candidate, itemIndex, partIndex);
+        totalBytes += image.bytes.length;
+        if (totalBytes > MAX_GROK_IMAGE_TOTAL_BYTES) {
+          throw new RequestError(`Grok saved-session image input exceeds the ${MAX_GROK_IMAGE_TOTAL_BYTES}-byte aggregate limit`);
+        }
+        images.push(image);
+      }
+      continue;
+    }
+    if (!ALLOWED_TOP_LEVEL_INPUT_TYPES.has(type)) {
+      throw new RequestError(`Grok saved-session input item ${itemIndex} type '${type || "unknown"}' is unsupported`);
+    }
+    assertNoEmbeddedImageDataUri(JSON.stringify(item), `input item ${itemIndex}`);
+  }
+  return images;
+}
+
+function messageContentParts(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item) || !(item.type === "message" || item.role)) return [];
+  return Array.isArray(item.content) ? item.content : item.content === undefined || item.content === null ? [] : [item.content];
+}
+
+function assertClosedImageMessageItem(item, itemIndex) {
+  if (!item || typeof item !== "object" || Array.isArray(item) || item.type !== "message") {
+    throw new RequestError(`Grok image input item ${itemIndex} must be an explicit message; reasoning, tool calls/results, and other top-level items are disabled`);
+  }
+  const unknownMessageFields = Object.keys(item).filter((key) => !["type", "role", "content"].includes(key));
+  if (unknownMessageFields.length > 0) {
+    throw new RequestError(`Grok image message ${itemIndex} contains unsupported fields; only type, role, and content are allowed`);
+  }
+  if (!["system", "developer", "user", "assistant"].includes(item.role) || !Array.isArray(item.content)) {
+    throw new RequestError(`Grok image message ${itemIndex} requires an explicit role and content block array`);
+  }
+  for (const [partIndex, part] of item.content.entries()) {
+    if (!part || typeof part !== "object" || Array.isArray(part)) {
+      throw new RequestError(`Grok image message ${itemIndex} part ${partIndex} must be an explicit text or image block`);
+    }
+    if (["input_text", "output_text", "text"].includes(part.type)) {
+      if (typeof part.text !== "string" || Object.keys(part).some((key) => !["type", "text"].includes(key))) {
+        throw new RequestError(`Grok image message ${itemIndex} part ${partIndex} must contain only explicit type and text fields`);
+      }
+      continue;
+    }
+    if (!GROK_IMAGE_TYPES.has(part.type) || item.role !== "user"
+      || Object.keys(part).some((key) => !["type", "image_url", "url"].includes(key))) {
+      throw new RequestError(`Grok image message ${itemIndex} part ${partIndex} must be a user image block with no hidden fields`);
+    }
+    const reference = part.image_url ?? part.url;
+    if (reference && typeof reference === "object" && !Array.isArray(reference)
+      && Object.keys(reference).some((key) => key !== "url")) {
+      throw new RequestError(`Grok image message ${itemIndex} part ${partIndex} image reference contains unsupported fields`);
+    }
+  }
+}
+
+function assertNoEmbeddedImageDataUri(value, label) {
+  if (/data:image\//iu.test(String(value ?? ""))) {
+    throw new RequestError(`Grok saved-session ${label} contains an image data URI outside an input_image/image_url block`);
+  }
+}
+
+function decodeCanonicalImageDataUri(value, itemIndex, partIndex) {
+  if (typeof value !== "string") {
+    throw new RequestError(`Grok saved-session image ${itemIndex}:${partIndex} must be an inline PNG or JPEG data URI`);
+  }
+  const match = value.match(/^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/]*={0,2})$/u);
+  if (!match || match[2].length === 0 || match[2].length % 4 !== 0) {
+    throw new RequestError(`Grok saved-session image ${itemIndex}:${partIndex} must use strict canonical base64 PNG or JPEG data URI encoding`);
+  }
+  const [, mime, encoded] = match;
+  const maximumEncodedLength = Math.ceil(MAX_GROK_IMAGE_BYTES / 3) * 4;
+  if (encoded.length > maximumEncodedLength) {
+    throw new RequestError(`Grok saved-session image ${itemIndex}:${partIndex} exceeds the ${MAX_GROK_IMAGE_BYTES}-byte per-image limit`);
+  }
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.length === 0 || bytes.length > MAX_GROK_IMAGE_BYTES || bytes.toString("base64") !== encoded) {
+    throw new RequestError(`Grok saved-session image ${itemIndex}:${partIndex} is not canonical base64 within the per-image limit`);
+  }
+  const png = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const jpeg = bytes.length >= 5
+    && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+    && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9;
+  if (mime === "image/png" ? !png : !jpeg) {
+    throw new RequestError(`Grok saved-session image ${itemIndex}:${partIndex} bytes do not match declared ${mime} magic`);
+  }
+  return {
+    bytes,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    mime,
+  };
 }
 
 /** Convert a Consult tool request into normalized messages. */

@@ -106,7 +106,7 @@ Grok Bot has no documented arbitrary HUD injection API. Its supported path is an
 |---|---:|---:|---:|---|
 | OpenAI-compatible API | Yes | Yes | No | The caller owns tools in Integrated. |
 | Native Codex worker | No | No | Yes | Codex owns the bounded worker loop. |
-| Grok Build | Yes | No | Yes | Finite workers, native subagents/web, process-shared Linux host gate plus local fairness/turn admission. |
+| Grok Build | Yes | No | Yes | Finite workers, native subagents/web, process-shared Linux host gate plus local fairness/turn admission; bounded public PNG/JPEG input is Consult-only. |
 | Cursor CLI/SDK | Yes | No | Yes | SDK/CLI choice is host-specific; models are discovered live. |
 | Nous Portal | Yes | Yes | Yes | Delegate uses the bounded Codex-worker adapter. |
 | OpenRouter | Yes | Yes | No | Free-model discovery is optional and live. |

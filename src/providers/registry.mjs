@@ -269,7 +269,9 @@ export class ProviderRegistry {
                 ...(contextWindow ? { context_window: contextWindow } : {}),
                 ...(model.supported_reasoning_levels ? { supported_reasoning_levels: model.supported_reasoning_levels } : {}),
                 ...(model.default_reasoning_level ? { default_reasoning_level: model.default_reasoning_level } : {}),
-                ...(capabilities.images === true ? { images: true } : {}),
+                ...(capabilities.images === true
+                  ? { images: provider.config.adapter === "grok-build" ? mode === "consult" : true }
+                  : {}),
               },
             });
           }

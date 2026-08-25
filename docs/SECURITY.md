@@ -211,6 +211,7 @@ Implemented controls:
 - optional environment allowlist;
 - provider-local fairness/turn admission plus a canonical process-shared Linux SQLite Grok gate, and no implicit retries;
 - saved-session-only Grok authentication with secret/API environment rejection, explicit public payload classification/disclosure, and no API/provider/model/billed fallback;
+- Grok image input only through Consult, strict canonical inline PNG/JPEG bounds, a separately armed `image-read-v1` gate receipt, empty/read-only execution, exact staged-file Read allows, two turns, no web/subagents/memory/plan, owner-private cleanup, placeholder-only history, data-image log redaction, and count/MIME/SHA-256-only ledger metadata;
 - private lifecycle/usage ledger with raw content disabled by default;
 - disposable Consult snapshot;
 - optional Git, linked-worktree, clean-start, and denied-branch checks for Delegate;

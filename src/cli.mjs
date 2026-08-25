@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { realpathSync, statSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -610,16 +610,25 @@ async function runInstallerGui(options, config) {
  * @param {{live?: boolean}} options Doctor options.
  * @returns {Promise<Record<string, any>>}
  */
-async function runDoctor(config, options) {
+export async function runDoctor(config, options = {}) {
   const checks = [];
   checks.push({ name: "config", ok: true, detail: config.configPath });
   const tokenEnv = config.server.authTokenEnv;
-  const tokenConfigured = Boolean(tokenEnv && process.env[tokenEnv]);
+  const tokenFromEnvironment = Boolean(tokenEnv && process.env[tokenEnv]);
+  const tokenFile = !tokenFromEnvironment && config.server.authTokenFile
+    ? inspectBridgeAuthTokenFile(config.server.authTokenFile)
+    : undefined;
+  const tokenConfigured = tokenFromEnvironment || tokenFile?.ok === true;
+  const unauthenticatedLoopback = !tokenConfigured && config.server.allowUnauthenticatedLoopback === true;
   checks.push({
     name: "bridge-auth-token",
-    ok: tokenConfigured || config.server.allowUnauthenticatedLoopback === true,
-    warning: !tokenConfigured && config.server.allowUnauthenticatedLoopback === true,
-    detail: tokenConfigured ? `${tokenEnv} is set` : `${tokenEnv ?? "THREADSPAN_TOKEN"} is not set; loopback-only unauthenticated access is enabled`,
+    ok: tokenConfigured || unauthenticatedLoopback,
+    warning: unauthenticatedLoopback,
+    detail: tokenFromEnvironment
+      ? `${tokenEnv} is set`
+      : tokenFile?.ok === true
+        ? "Configured owner auth-token file passed existence, type, owner, mode, link, and symlink checks"
+        : tokenFile?.detail ?? `${tokenEnv ?? "THREADSPAN_TOKEN"} is not set${unauthenticatedLoopback ? "; loopback-only unauthenticated access is enabled" : ""}`,
   });
 
   for (const [id, provider] of Object.entries(config.providers)) {
@@ -672,7 +681,7 @@ async function runDoctor(config, options) {
           name: `provider:${id}:grok-host-gate`,
           ok: gate.ready === true,
           detail: gate.ready
-            ? `schema v${gate.schemaVersion}; ${gate.state}; cap ${gate.maxConcurrency}; ${gate.allowanceState}; ${gate.billingMode}; authorization expires ${gate.authorizationExpiresAt}`
+            ? `schema v${gate.schemaVersion}; ${gate.state}; cap ${gate.maxConcurrency}; ${gate.allowanceState}; ${gate.billingMode}; image ${gate.imageReady === true ? "armed" : "not armed"}; authorization expires ${gate.authorizationExpiresAt}`
             : `not ready (${gate.state})`,
         });
       } catch (error) {
@@ -715,6 +724,38 @@ async function runDoctor(config, options) {
     liveChecks: options.live === true,
     checks,
   };
+}
+
+/** Inspect owner-token file metadata without reading or reporting its contents. */
+export function inspectBridgeAuthTokenFile(path) {
+  try {
+    const resolvedPath = resolve(path);
+    let ancestor = dirname(resolvedPath);
+    while (true) {
+      const ancestorEntry = lstatSync(ancestor);
+      if (ancestorEntry.isSymbolicLink()) {
+        return { ok: false, detail: "Configured owner auth-token file must not have symbolic-link ancestors" };
+      }
+      const parent = dirname(ancestor);
+      if (parent === ancestor) break;
+      ancestor = parent;
+    }
+    const entry = lstatSync(resolvedPath);
+    if (entry.isSymbolicLink()) return { ok: false, detail: "Configured owner auth-token file must not be a symbolic link" };
+    if (!entry.isFile()) return { ok: false, detail: "Configured owner auth-token file must be a regular file" };
+    if (entry.nlink !== 1) return { ok: false, detail: "Configured owner auth-token file must have exactly one filesystem link" };
+    if (process.platform !== "win32") {
+      if (typeof process.getuid === "function" && entry.uid !== process.getuid()) {
+        return { ok: false, detail: "Configured owner auth-token file is not owned by the current user" };
+      }
+      if ((entry.mode & 0o777) !== 0o600) {
+        return { ok: false, detail: "Configured owner auth-token file must have exact mode 0600" };
+      }
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, detail: "Configured owner auth-token file is unavailable" };
+  }
 }
 
 export { resolveExecutablePath };
@@ -960,6 +1001,7 @@ Usage:
   threadspan compatibility intake [--config PATH] [--repository OWNER/NAME] [--state PATH]
   threadspan catalog build --output PATH [--native PATH|--codex PATH] [--favorite ROUTE ...] [--show-free]
   threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--payload-classification public_synthetic|public_repo --disclosed] [--json]
+  Grok image Consult uses /v1/responses inline PNG/JPEG data URIs with public_synthetic_image|public_image and explicit disclosure; the convenience CLI remains text-only.
   threadspan delegate "task" --workspace PATH --allow-path PATH ... [--deny-path PATH ...] [--non-goal TEXT ...] [same routing options] [--acceptance-command CMD ...]
   threadspan codex snippet [--config PATH]
   threadspan codex install [--config PATH] [--codex-config PATH] [--embedded-mcp]

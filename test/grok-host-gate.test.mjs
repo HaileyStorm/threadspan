@@ -56,12 +56,13 @@ async function createPythonShapedGate(root, options = {}) {
   db.prepare(`INSERT INTO grok_host_gates(
       provider, account_class, contract_hash, max_concurrency, state, detail, updated_at,
       source_evidence_hash, authorization_expires_at, revocation_epoch, allowance_state, billing_mode
-    ) VALUES (?, ?, ?, ?, 'healthy', NULL, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, 'healthy', ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       "xai_grok_build",
       "subscription",
       grokHostGateContract(maxConcurrency).hash,
       maxConcurrency,
+      options.detail ?? null,
       new Date().toISOString(),
       "1".repeat(64),
       options.authorizationExpiresAt ?? "2099-01-01T00:00:00+00:00",
@@ -109,6 +110,7 @@ sqliteTest("Python-shaped gate enforces shared cap, TTL purge, epoch, and transa
     authorizationExpiresAt: "2099-01-01T00:00:00+00:00",
     allowanceState: "available",
     billingMode: "subscription_included",
+    imageReady: false,
     schemaVersion: 2,
   });
   const slot = first.acquire({ timeoutMs: 1_000 });
@@ -132,6 +134,43 @@ sqliteTest("Python-shaped gate enforces shared cap, TTL purge, epoch, and transa
   assert.equal(gate.allowance_state, "unavailable");
   assert.equal(gate.billing_mode, "blocked");
   assert.match(gate.detail, /allowance exhausted/);
+});
+
+sqliteTest("image admission binds an owner-armed image receipt through the final spawn barrier", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-image-gate-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = await createPythonShapedGate(root);
+  const gate = new GrokHostGate({ path, testContext: true });
+  assert.throws(() => gate.acquire({ timeoutMs: 1_000, requireImage: true }), /image-read-v1 receipt/);
+
+  const firstReceipt = `image-read-v1:${"a".repeat(64)}`;
+  const secondReceipt = `image-read-v1:${"b".repeat(64)}`;
+  let db = new DatabaseSync(path);
+  db.prepare("UPDATE grok_host_gates SET detail=?").run(firstReceipt);
+  db.close();
+  const stale = gate.acquire({ timeoutMs: 1_000, requireImage: true });
+  assert.equal(stale.requiredImageDetail, firstReceipt);
+  db = new DatabaseSync(path);
+  db.prepare("UPDATE grok_host_gates SET detail=?").run(secondReceipt);
+  db.close();
+  let contacted = false;
+  await assert.rejects(runCapturedProcess({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('unexpected')"],
+    spawnGuard: gate.spawnGuard(stale),
+    onSpawn() { contacted = true; },
+  }), /receipt changed or is unavailable/);
+  assert.equal(contacted, false);
+  assert.deepEqual(gate.settle(stale, { terminalProven: false }), { released: true, reconcileRequired: false });
+
+  const live = gate.acquire({ timeoutMs: 1_000, requireImage: true });
+  const result = await runCapturedProcess({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('image-ok')"],
+    spawnGuard: gate.spawnGuard(live),
+  });
+  assert.equal(result.stdout, "image-ok");
+  assert.deepEqual(gate.settle(live, { terminalProven: true }), { released: true, reconcileRequired: false });
 });
 
 sqliteTest("expired authorization and non-included billing revoke before contact", async (t) => {

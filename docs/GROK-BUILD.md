@@ -14,7 +14,9 @@ On Linux, this is a saved-session-only route subordinate to the canonical owner-
 
 The Linux gate requires `node:sqlite` `DatabaseSync` (Node.js 22.5 or newer). It is loaded only when this route is instantiated; unrelated providers and Windows retain the package-wide Node 22 baseline. If the module is unavailable, Grok fails closed with no in-memory fallback.
 
-Production calls must classify outbound data as `public_synthetic` or `public_repo` and explicitly record disclosure. Grok/xAI API-key, token, or secret environment presence is rejected. Images and API, provider, model, or billed fallback remain disabled for this route.
+Production text calls must classify outbound data as `public_synthetic` or `public_repo` and explicitly record disclosure. Grok/xAI API-key, token, or secret environment presence is rejected. API, provider, model, account, and billed fallback remain disabled.
+
+Image input is a narrower Consult-only route. The current Responses input may contain 1-4 strict canonical base64 `data:image/png` or `data:image/jpeg` blocks, at most 20 MiB each and 40 MiB total, classified as `public_synthetic_image` or `public_image` with explicit disclosure. Remote URLs, local paths, audio, video, files, generated media, and unknown blocks fail before provider contact. The owner-armed gate must carry an exact `image-read-v1:<64-hex receipt artifact hash>` detail at both admission and the final spawn barrier. Threadspan stages images as single-link owner-private files, gives Grok only `Read` permission for those exact paths in an empty read-only workspace, forces two turns with no plan/web/subagents/memory, and removes every staged file after the attempt. Normalized history retains only attachment placeholders; logs redact data-image bodies; ledgers and provider metadata may retain only count, MIME, and SHA-256 projections. This source boundary is offline-tested and is not a live multimodal entitlement claim.
 
 ## Research basis and account-specific observations
 
@@ -233,6 +235,8 @@ The adapter constructs a structured argv and never launches Grok through a shell
 `--no-subagents` and `--disable-web-search` are emitted only when explicitly disabled in provider/mode/request policy. Optional `tools`, `disallowedTools`, `rules`, `allow`, and `deny` values are supplied only from trusted configuration, not synthesized from the worker's prompt.
 
 `dontAsk` remains the base/Consult default. The owner-authorized direct Delegate profile uses `bypassPermissions` because current Grok Build otherwise reports completion without performing requested writes; this mode remains Delegate-only and requires explicit per-request workspace authority. Permission rules, scope, and sandboxing remain separate controls.
+
+Image Consult overrides broader operator defaults: `dontAsk`, `--sandbox read-only`, `--tools Read`, one exact `Read(<staged path>)` allow per image, `--max-turns 2`, `--no-plan`, `--no-subagents`, `--disable-web-search`, and `--no-memory`. It never snapshots the requested project and never enables exploration recovery.
 
 At minimum, a Delegate policy should deny or omit authority for:
 

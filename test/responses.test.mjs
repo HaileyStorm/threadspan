@@ -87,6 +87,47 @@ test("BridgeService executes mock Responses requests and links previous response
   }
 });
 
+test("service passes ephemeral images only to one Grok Consult attempt and stores placeholder history", async () => {
+  const service = new BridgeService(createTestConfig(), { logger: silentLogger() });
+  const provider = service.registry.providers.get("mock");
+  provider.config.adapter = "grok-build";
+  let received;
+  let fallbackQueries = 0;
+  provider.run = async function* (request) {
+    received = request;
+    yield { type: "done", finishReason: "stop", message: { role: "assistant", content: "image answer" } };
+  };
+  service.registry.fallbackRoutes = () => { fallbackQueries += 1; return []; };
+  const dataUri = "data:image/png;base64,iVBORw0KGgo=";
+  try {
+    const response = await service.executeResponse({
+      model: "consult/mock/mock-model",
+      input: [{ type: "message", role: "user", content: [
+        { type: "input_text", text: "Describe this public synthetic image" },
+        { type: "input_image", image_url: dataUri },
+      ] }],
+      metadata: {
+        bridge_payload_classification: "public_synthetic_image",
+        bridge_payload_disclosed: true,
+        bridge_account_fallback: true,
+        bridge_automatic_takeover: true,
+      },
+    });
+    assert.equal(response.output_text, "image answer");
+    assert.equal(fallbackQueries, 0);
+    assert.equal(received.images.length, 1);
+    assert.equal(Buffer.isBuffer(received.images[0].bytes), true);
+    assert.equal(received.images[0].mime, "image/png");
+    assert.match(received.messages.map((message) => message.content).join("\n"), /\[image attachment omitted\]/u);
+    assert.doesNotMatch(JSON.stringify(received.messages), /data:image|iVBOR/u);
+    const stored = service.sessions.getResponse(response.id).messages;
+    assert.match(stored.map((message) => message.content).join("\n"), /\[image attachment omitted\]/u);
+    assert.doesNotMatch(JSON.stringify(stored), /data:image|iVBOR/u);
+  } finally {
+    await service.close();
+  }
+});
+
 test("opaque Responses compaction history is rejected before provider dispatch", async () => {
   const service = new BridgeService(createTestConfig(), { logger: silentLogger() });
   const requests = observeMockRequests(service);
@@ -274,7 +315,10 @@ test("opt-in body logging is bounded and redacts credential fields", async () =>
     await service.executeResponse({
       model: "consult/mock/mock-model",
       metadata: { apiToken: "should-not-appear" },
-      input: `review ${"x".repeat(40_000)}`,
+      input: [{ type: "message", role: "user", content: [
+        { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" },
+        { type: "input_text", text: `review ${"x".repeat(40_000)}` },
+      ] }],
     });
   } finally {
     await service.close();
@@ -288,7 +332,9 @@ test("opt-in body logging is bounded and redacts credential fields", async () =>
   assert.equal(requestLog.fields.body.truncated, true);
   assert.ok(requestLog.fields.body.json.length <= 32_768);
   assert.doesNotMatch(JSON.stringify(requestLog), /should-not-appear/);
+  assert.doesNotMatch(JSON.stringify(requestLog), /data:image|iVBOR/u);
   assert.match(requestLog.fields.body.json, /\[redacted\]/);
+  assert.match(requestLog.fields.body.json, /\[redacted-data-image\]/u);
 });
 
 test("body logging remains off by default", async () => {

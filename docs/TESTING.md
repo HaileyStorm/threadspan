@@ -10,15 +10,7 @@ npm run verify
 
 This executes source syntax checks and Node's built-in test runner over `test/*.test.mjs`.
 
-Current 0.6.0 Linux release-source result:
-
-```text
-npm run check: passed
-753 tests
-753 passed
-0 failed
-0 skipped
-```
+Exact test counts are revision-bound and are recorded in `STATUS.md` only after the full command completes. Focused image/gate checks do not replace a final `npm run verify` on the exact commit.
 
 The suite uses local fakes, local HTTP servers, and isolated temporary paths. It makes no paid inference calls and does not certify provider credentials, subscription quota, current live models/events, native Windows behavior, Desktop integration, or end-to-end host acceptance.
 
@@ -30,7 +22,7 @@ The suite uses local fakes, local HTTP servers, and isolated temporary paths. It
 | CLI | GNU-style parsing, repeated options, POSIX PATH lookup, Windows PATHEXT lookup, and human/JSON continuity-id output. |
 | Codex config | Responses wire API, profiles, MCP stanza, marker replacement, backup, atomic install/uninstall. |
 | Routing | Mode/provider/model route parsing, defaults, capability errors, dynamic adapter registration, isolated account state, native Codex exact usage-limit fallback, OpenAI-compatible pre-output HTTP 429 fallback, one same-provider alternate before compatible cross-provider takeover, and explicit-route preservation. |
-| Responses | Text lifecycle, reasoning visibility, function-call events, terminal object, continuation linkage, and bounded opt-in body logs. |
+| Responses | Text lifecycle, reasoning visibility, function-call events, terminal object, continuation linkage, bounded opt-in body logs, closed Grok image-message extraction, placeholder-only image history, and data-image/base64 output rejection. |
 | OpenAI-compatible provider | SSE parsing, text/reasoning/tool calls/usage, streaming-unsupported buffered retry, safe error shaping, pre-output HTTP 429 account fallback, single-alternate enforcement, and split CRLF framing. |
 | Continuity/takeover | Opaque task trees, closed HTTP/browser projection, source-bound App Server receipt validation, cooperative process-shared claim/revision conflict races, non-replayable indeterminate dispatch, schema migration, exact worker/rw successor and predecessor fencing, Goal-free/objective/status/accounting parity, owner-only controls, externally monitored liveness, deduplicated account-first replacement, exact-reset cancellation, maximum-utilization protection, staggered child recovery, and restart replay. |
 | DeepSeek | Thinking controls and required reasoning/content replay. |
@@ -41,7 +33,7 @@ The suite uses local fakes, local HTTP servers, and isolated temporary paths. It
 | Cursor adapter | Integrated rejection, simultaneous Delegate creation dedupe, queued Delegate cancellation/overtake prevention. |
 | Hermes blocker/reverse | Raw Nous remains Consult/Integrated and distinct; no full-agent provider route exists; host metadata records the source-bound-tool/configured-MCP blocker; reverse YAML allowlists status/models/accounts/Consult/Integrated only; installer remains staged and does not start, sign in, or merge native config. |
 | Snapshots | Copy/exclusions, canonical symlink confinement and snapshot-local rewriting, byte limit, cleanup after failed copy, and pattern behavior. |
-| Grok Build | Non-consuming executable/version/hash preflight, model/usage/error parsing, finite safety argv, profiles/overrides, snapshot Consult, quota failure/no retry, Integrated rejection, and opt-in Delegate exploration classification with trusted top-level fields, exact session echo, workspace-keyed serialization, and one same-session patch/test recovery. |
+| Grok Build | Non-consuming executable/version/hash preflight, model/usage/error parsing, finite safety argv, profiles/overrides, snapshot Consult, quota failure/no retry, Integrated rejection, opt-in Delegate exploration classification, plus Linux image Consult coverage for receipt-bound admission/spawn, fixed argv, relative owner-private staging, no-follow digest/mode/link revalidation, exact two-turn terminal proof, stream-hash-only evidence, cleanup-required persistence, and stale-receipt no-contact. |
 | Managed workers | Weighted FIFO admission and expected/actual turn reconciliation, private run ledger/evidence, direct primary/dirty/non-Git workspaces, optional Git linked-worktree/branch/clean gates, and multi-skill installation. |
 | xAI-compatible accounting | Reasoning usage plus exact `cost_in_usd_ticks` preservation as provider metadata. |
 | Compatibility Watch | Exact N→N+1 artifact/version identities, retained N acceptance, separate attach/protocol/routing/provider/settings outcomes, manual/passive evidence rules, process-shared transition and repair-target claims, transition-bound preimages, truthful retry/rollback states, and sanitized actionable/diagnostic HUD projection. Linux/Windows plans are synthetic unless run natively. |
@@ -145,6 +137,7 @@ Keep this phase intentionally small and account-aware:
 - [ ] Settings → Usage confirms the expected Build entitlement and weekly reset/remaining percentage.
 - [ ] Tiny low/medium/high effort canaries establish which values the installed model accepts; no silent fallback occurs.
 - [ ] One tiny Consult runs over a disposable snapshot and leaves the source tree unchanged.
+- [ ] Only after the owner arms a fresh `image-read-v1` receipt, one disclosed public-synthetic PNG/JPEG Consult proves the installed CLI accepts the fixed Read-only/per-file argv, exact two-turn terminal envelope, relative staged prompt names, zero remaining slots/files, and hash-only ledger evidence. Offline fakes do not certify image entitlement or live multimodal behavior.
 - [ ] One mechanical Delegate mutates a disposable dirty primary workspace under the direct profile; optional linked/clean policy has a separate canary.
 - [ ] Direct Delegate `bypassPermissions` performs the exact disposable write without requiring linked/clean Git, while Consult still rejects bypass mode.
 - [ ] Default invocation keeps web/search and subagents enabled, still emits `--no-memory`, finite `--max-turns`, and no-auto-update; explicit opt-out calls add `--no-subagents` and/or `--disable-web-search`.

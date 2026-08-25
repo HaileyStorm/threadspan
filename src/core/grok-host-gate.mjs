@@ -42,6 +42,7 @@ const SLOT_COLUMNS = Object.freeze({
 const USER_TABLES = Object.freeze(["grok_host_gates", "grok_host_slots"]);
 const SLOT_INDEX = "idx_grok_host_slots_gate";
 const SLOT_INDEX_COLUMNS = Object.freeze(["provider", "account_class", "expires_at"]);
+const IMAGE_GATE_DETAIL = /^image-read-v1:[0-9a-f]{64}$/u;
 
 /** Fail-closed shared-gate error with bounded lifecycle metadata. */
 export class GrokHostGateError extends Error {
@@ -116,6 +117,10 @@ export class GrokHostGate {
     try {
       beginImmediate(db, deadlineAt);
       const gate = this.#validatedHealthyGate(db, now);
+      if (options.requireImage === true && !IMAGE_GATE_DETAIL.test(String(gate.detail ?? ""))) {
+        db.exec("ROLLBACK");
+        throw new GrokHostGateError("Grok image contact requires an owner-armed image-read-v1 receipt", { code: "grok_host_gate_image" });
+      }
       db.prepare("DELETE FROM grok_host_slots WHERE provider=? AND account_class=? AND julianday(expires_at) <= julianday(?)")
         .run(GROK_HOST_GATE_PROVIDER, GROK_HOST_GATE_ACCOUNT_CLASS, nowText);
       const active = db.prepare("SELECT COUNT(*) AS count FROM grok_host_slots WHERE provider=? AND account_class=?")
@@ -131,7 +136,13 @@ export class GrokHostGate {
         ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`)
         .run(token, GROK_HOST_GATE_PROVIDER, GROK_HOST_GATE_ACCOUNT_CLASS, ownerRootHash, nowText, expiresAt, gate.revocation_epoch);
       db.exec("COMMIT");
-      return Object.freeze({ token, gateEpoch: gate.revocation_epoch, ownerRootHash, expiresAt });
+      return Object.freeze({
+        token,
+        gateEpoch: gate.revocation_epoch,
+        ownerRootHash,
+        expiresAt,
+        ...(options.requireImage === true ? { requiredImageDetail: gate.detail } : {}),
+      });
     } catch (error) {
       rollbackQuietly(db);
       throw normalizeGateError(error);
@@ -158,6 +169,10 @@ export class GrokHostGate {
         beginImmediate(db, deadlineAt);
         const now = new Date();
         const gate = this.#validatedHealthyGate(db, now);
+        if (slot.requiredImageDetail !== undefined
+          && (!IMAGE_GATE_DETAIL.test(String(gate.detail ?? "")) || gate.detail !== slot.requiredImageDetail)) {
+          throw new GrokHostGateError("Grok image receipt changed or is unavailable before provider contact", { code: "grok_host_gate_image" });
+        }
         if (gate.revocation_epoch !== slot.gateEpoch) {
           throw new GrokHostGateError("Grok host slot belongs to a stale revocation epoch", { code: "grok_host_gate_epoch" });
         }
@@ -300,6 +315,7 @@ export class GrokHostGate {
         authorizationExpiresAt: typeof gate.authorization_expires_at === "string" ? gate.authorization_expires_at : undefined,
         allowanceState: typeof gate.allowance_state === "string" ? gate.allowance_state : undefined,
         billingMode: typeof gate.billing_mode === "string" ? gate.billing_mode : undefined,
+        imageReady: IMAGE_GATE_DETAIL.test(String(gate.detail ?? "")),
         schemaVersion: GROK_HOST_GATE_SCHEMA_VERSION,
       };
     } finally {

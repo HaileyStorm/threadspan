@@ -261,6 +261,7 @@ Use the dedicated `grok-build` adapter for the official Grok Build CLI:
 Behavior:
 
 - Consult runs one fresh finite CLI job over a disposable snapshot or empty temporary workspace.
+- Grok image Consult accepts only bounded disclosed public inline PNG/JPEG data URIs, requires the separately armed `image-read-v1` host-gate receipt, and runs exactly two turns with Read-only per-file access in an empty workspace. Delegate and Integrated advertise no Grok image support.
 - Delegate runs one fresh finite CLI job in the supplied workspace after configured Git/worktree gates.
 - Integrated is always rejected because Grok Build owns an agent/tool loop.
 - `doctor` resolves and inspects the executable without inference; version/hash policy can be warning-only or strict.
@@ -271,7 +272,7 @@ Behavior:
 - Optional Delegate exploration recovery is default-off and permits exactly one same-session continuation only after trusted top-level max-turn evidence, exact session echo, repeated structured plan/read activity, unchanged Git, and a reserved patch/test budget. Execution is serialized by canonical physical Git worktree and remains bound to that physical path even if a lexical symlink changes.
 - Structured provider diagnostics and bounded stderr fail closed on authentication, quota, rate, payment, subscription, or entitlement failures. Worker-authored `output_text` is not scanned as provider diagnostics, so a report discussing those topics cannot suppress or authorize recovery.
 
-Provider controls include `profiles`, `reasoningEffort`, `maxTurns`, `expectedTurns`, `noPlan`, `grokTools`, `disallowedTools`, `rules`, `allow`, `deny`, `permissionMode`, `sandbox`, `allowSubagents`, `noMemory`, `allowWebSearch` (legacy `noSubagents` / `disableWebSearch` opt-outs remain accepted), and optional `jsonSchema`/`resultSchema`.
+Provider controls include `profiles`, `reasoningEffort`, `maxTurns`, `expectedTurns`, `noPlan`, `grokTools`, `disallowedTools`, `rules`, `allow`, `deny`, `permissionMode`, `sandbox`, `allowSubagents`, `noMemory`, `allowWebSearch` (legacy `noSubagents` / `disableWebSearch` opt-outs remain accepted), and optional `jsonSchema`/`resultSchema`. Image Consult ignores broader tool/web/subagent/plan controls and applies its fixed narrower boundary.
 
 The packaged admission values are calibration from one bounded report, not provider guarantees. See [GROK-BUILD.md](GROK-BUILD.md) and [MANAGED-WORKERS.md](MANAGED-WORKERS.md).
 

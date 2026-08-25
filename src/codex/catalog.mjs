@@ -78,7 +78,7 @@ export function toCodexModelInfo(route, provider, options = {}) {
     comp_hash: null,
     effective_context_window_percent: 95,
     experimental_supported_tools: [],
-    input_modalities: metadata.images === true ? ["text", "image"] : ["text"],
+    input_modalities: metadata.images === true && mode === "consult" ? ["text", "image"] : ["text"],
     used_fallback_model_metadata: false,
     supports_search_tool: false,
     use_responses_lite: false,

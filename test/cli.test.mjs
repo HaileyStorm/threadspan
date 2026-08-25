@@ -13,10 +13,10 @@ test("CLI parser handles values, booleans, equals, repeated options, and saved-s
   assert.deepEqual(parsed.options.tag, ["x", "y"]);
 });
 
-import { chmod, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isDirectCliInvocation, resolveExecutablePath } from "../src/cli.mjs";
+import { inspectBridgeAuthTokenFile, isDirectCliInvocation, resolveExecutablePath, runDoctor } from "../src/cli.mjs";
 import { createWindowsNpmBinShim } from "./helpers.mjs";
 
 test("resolveExecutablePath searches PATH and rejects nonexistent commands", async () => {
@@ -47,6 +47,52 @@ test("resolveExecutablePath applies Windows PATHEXT semantics", async () => {
     }),
     executable,
   );
+});
+
+test("doctor accepts a metadata-safe owner auth-token file and rejects unsafe file identities", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-doctor-token-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const token = join(root, "owner.token");
+  await writeFile(token, "must-never-appear-in-doctor\n", { mode: 0o600 });
+  await chmod(token, 0o600);
+  assert.deepEqual(inspectBridgeAuthTokenFile(token), { ok: true });
+  const report = await runDoctor({
+    configPath: join(root, "config.json"),
+    server: { authTokenFile: token, allowUnauthenticatedLoopback: false },
+    providers: {},
+  });
+  const check = report.checks.find((entry) => entry.name === "bridge-auth-token");
+  assert.equal(check.ok, true);
+  assert.doesNotMatch(JSON.stringify(report), /must-never-appear-in-doctor/u);
+
+  await chmod(token, 0o640);
+  assert.match(inspectBridgeAuthTokenFile(token).detail, /exact mode 0600/u);
+  await chmod(token, 0o600);
+  const hardlink = join(root, "owner-hardlink.token");
+  await link(token, hardlink);
+  assert.match(inspectBridgeAuthTokenFile(token).detail, /exactly one filesystem link/u);
+  await rm(hardlink);
+  const symbolic = join(root, "owner-symbolic.token");
+  await symlink(token, symbolic);
+  assert.match(inspectBridgeAuthTokenFile(symbolic).detail, /must not be a symbolic link/u);
+
+  const realDirectory = join(root, "real-token-directory");
+  await mkdir(realDirectory);
+  const ancestorToken = join(realDirectory, "owner.token");
+  await writeFile(ancestorToken, "ancestor-secret\n", { mode: 0o600 });
+  const symbolicDirectory = join(root, "symbolic-token-directory");
+  await symlink(realDirectory, symbolicDirectory, "dir");
+  assert.match(inspectBridgeAuthTokenFile(join(symbolicDirectory, "owner.token")).detail, /symbolic-link ancestors/u);
+
+  const lateDirectory = join(root, "late-token-directory");
+  const movedDirectory = join(root, "moved-token-directory");
+  await mkdir(lateDirectory);
+  const lateToken = join(lateDirectory, "owner.token");
+  await writeFile(lateToken, "late-secret\n", { mode: 0o600 });
+  assert.deepEqual(inspectBridgeAuthTokenFile(lateToken), { ok: true });
+  await rename(lateDirectory, movedDirectory);
+  await symlink(movedDirectory, lateDirectory, "dir");
+  assert.match(inspectBridgeAuthTokenFile(lateToken).detail, /symbolic-link ancestors/u);
 });
 
 

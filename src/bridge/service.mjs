@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { applyModePolicy } from "../core/policies.mjs";
 import { asBridgeError, ProviderError, RequestError } from "../core/errors.mjs";
 import { createId, createTraceId } from "../core/ids.mjs";
-import { normalizeConsultInput, normalizeResponsesInput, toBridgeResponsesInput } from "../core/input-normalizer.mjs";
+import { extractResponsesImages, normalizeConsultInput, normalizeResponsesInput, toBridgeResponsesInput } from "../core/input-normalizer.mjs";
 import { KeyedSerialQueue } from "../core/keyed-serial-queue.mjs";
 import { Logger } from "../core/logger.mjs";
 import { boundedRedactedJson } from "../core/redact.mjs";
@@ -223,6 +223,10 @@ export class BridgeService {
     if (route.mode === "delegate" && !workspace) {
       throw new RequestError("Delegate requires an explicit workspace through metadata.bridge_workspace or metadata.cwd");
     }
+    const grokImages = route.provider?.config?.adapter === "grok-build"
+      ? extractResponsesImages(request)
+      : [];
+    const grokImageRequest = grokImages.length > 0;
     const normalizedMessages = normalizeResponsesInput(request, previousRecord);
     const messages = applyModePolicy(normalizedMessages, route.mode);
     let intentBrief;
@@ -330,13 +334,14 @@ export class BridgeService {
         workspace: workspace ? String(workspace) : undefined,
         timeoutMs: numberFromMetadata(request.metadata?.bridge_timeout_ms),
         metadata: providerVisibleMetadata(request.metadata),
+        ...(grokImageRequest ? { images: grokImages } : {}),
       };
-      const automaticTakeoverEnabled = this.config.automaticTakeover?.enabled === true
+      const automaticTakeoverEnabled = !grokImageRequest && this.config.automaticTakeover?.enabled === true
         && ((route.smart === true && route.explicitAccount !== true) || metadataBoolean(request.metadata?.bridge_automatic_takeover));
       const maximumAtStart = automaticTakeoverEnabled ? await sanitizedMaximumUtilizationReadModel(this.maximumUtilizationController) : null;
       const protectedDelegate = route.mode === "delegate" && ["maximum-utilization", "exhausted"].includes(maximumAtStart?.phase);
-      const fallbackEnabled = automaticTakeoverEnabled
-        || (this.config.accounts?.fallback?.enabled === true && metadataBoolean(request.metadata?.bridge_account_fallback));
+      const fallbackEnabled = !grokImageRequest && (automaticTakeoverEnabled
+        || (this.config.accounts?.fallback?.enabled === true && metadataBoolean(request.metadata?.bridge_account_fallback)));
       const candidates = fallbackEnabled && !protectedDelegate
         ? this.registry.fallbackRoutes(route, this.config.accounts.fallback.maxCandidates).slice(0, 1)
         : [];
@@ -1798,7 +1803,7 @@ function publicPickerRoute(entry, provider) {
     ...(Number.isSafeInteger(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
     ...(reasoningLevels.length > 0 ? { supportedReasoningLevels: reasoningLevels } : {}),
     ...(typeof metadata.default_reasoning_level === "string" ? { defaultReasoningLevel: metadata.default_reasoning_level.slice(0, 40) } : {}),
-    ...(metadata.images === true ? { images: true } : {}),
+    ...(metadata.images === true && mode === "consult" ? { images: true } : {}),
     ...publicProviderWebMetadata(provider),
   };
 }

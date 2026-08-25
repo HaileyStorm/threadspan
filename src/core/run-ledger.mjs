@@ -47,6 +47,20 @@ export class RunLedger {
     return operation.catch((error) => this.#handleFailure("append provider run ledger", error));
   }
 
+  /** Append one cleanup/safety record through the existing serialized tail and always surface failure. */
+  appendRequired(record) {
+    if (!this.enabled || !this.path) return Promise.reject(new Error("Required provider run-ledger persistence is disabled"));
+    const payload = {
+      schemaVersion: 1,
+      timestamp: new Date().toISOString(),
+      provider: this.providerId,
+      ...record,
+    };
+    const operation = this.tail.then(() => appendJsonLine(this.path, payload));
+    this.tail = operation.catch(() => undefined);
+    return operation;
+  }
+
   /**
    * Hash prompt/stdout/stderr and optionally persist the raw evidence in a private JSON file.
    * @param {string} jobId Stable job id.

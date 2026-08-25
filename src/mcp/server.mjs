@@ -499,7 +499,7 @@ const MCP_TOOLS = Object.freeze([
         allow_web_search: { type: "boolean", description: "Allow provider-native web/search retrieval. Grok Build defaults to true in this package." },
         coordinator_id: { type: "string", minLength: 1, description: "Optional coordinator identity recorded in provider telemetry." },
         worker_group: { type: "string", minLength: 1, description: "Optional worker/fleet group recorded in provider telemetry." },
-        payload_classification: { type: "string", enum: ["public_synthetic", "public_repo"], description: "Required public-data classification for the Grok saved-session route." },
+        payload_classification: { type: "string", enum: ["public_synthetic", "public_repo", "public_synthetic_image", "public_image"], description: "Required public-data classification for Grok saved-session text; image classifications apply only to bounded Responses data-URI image Consult." },
         disclosed: { type: "boolean", description: "Explicit confirmation that the saved-session provider disclosure was shown and accepted." },
         continuity_handoff: { type: "boolean", description: "Explicitly authorize a mode-changing continuation on an existing bridge thread." },
       },
@@ -562,7 +562,7 @@ const MCP_TOOLS = Object.freeze([
         allow_web_search: { type: "boolean", description: "Allow provider-native web/search retrieval. Grok Build defaults to true in this package." },
         coordinator_id: { type: "string", minLength: 1, description: "Optional coordinator identity recorded in provider telemetry." },
         worker_group: { type: "string", minLength: 1, description: "Optional worker/fleet group recorded in provider telemetry." },
-        payload_classification: { type: "string", enum: ["public_synthetic", "public_repo"], description: "Required public-data classification for the Grok saved-session route." },
+        payload_classification: { type: "string", enum: ["public_synthetic", "public_repo", "public_synthetic_image", "public_image"], description: "Required public-data classification for Grok saved-session text; image classifications apply only to bounded Responses data-URI image Consult." },
         disclosed: { type: "boolean", description: "Explicit confirmation that the saved-session provider disclosure was shown and accepted." },
         continuity_handoff: { type: "boolean", description: "Explicitly authorize a mode-changing continuation on an existing bridge thread." },
         acceptance_commands: {

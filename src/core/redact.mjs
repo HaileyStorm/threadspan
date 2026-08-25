@@ -1,6 +1,7 @@
 const SENSITIVE_KEY = /(authorization|api[-_]?key|token|secret|password|cookie|session)/i;
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+\/=:-]+/gi;
 const LONG_SECRET = /\b(?:sk|cursor|ghp|pat|jwt|key)[-_][A-Za-z0-9._~+\/=:-]{12,}\b/gi;
+const DATA_IMAGE = /data:image\/[^,\\\s"]+,[^\\\s"]*/gi;
 
 /**
  * Recursively redact likely credentials without mutating the input.
@@ -24,7 +25,10 @@ export function redact(value, depth = 0) {
 
 /** Redact likely credentials embedded in free text. */
 export function redactText(text) {
-  return text.replace(BEARER, "Bearer [redacted]").replace(LONG_SECRET, "[redacted]");
+  return text
+    .replace(DATA_IMAGE, "[redacted-data-image]")
+    .replace(BEARER, "Bearer [redacted]")
+    .replace(LONG_SECRET, "[redacted]");
 }
 /**
  * Serialize an arbitrary value for opt-in body logging after credential redaction.
@@ -56,4 +60,3 @@ export function boundedRedactedJson(value, maxChars = 32_768) {
     originalChars,
   };
 }
-

@@ -144,6 +144,14 @@ test("MCP forwards fleet, subagent, and web controls to the shared service contr
   assert.equal(received.workerGroup, "grok-nine");
   assert.equal(received.payloadClassification, "public_repo");
   assert.equal(received.disclosed, true);
+  for (const name of ["consult", "delegate"]) {
+    assert.deepEqual(MCP_TOOLS.find((tool) => tool.name === name).inputSchema.properties.payload_classification.enum, [
+      "public_synthetic",
+      "public_repo",
+      "public_synthetic_image",
+      "public_image",
+    ]);
+  }
 });
 
 test("MCP forwards an explicit disjoint-write scope without changing native settings", async () => {
