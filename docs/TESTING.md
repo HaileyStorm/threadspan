@@ -137,7 +137,7 @@ Keep this phase intentionally small and account-aware:
 - [ ] Settings → Usage confirms the expected Build entitlement and weekly reset/remaining percentage.
 - [ ] Tiny low/medium/high effort canaries establish which values the installed model accepts; no silent fallback occurs.
 - [ ] One tiny Consult runs over a disposable snapshot and leaves the source tree unchanged.
-- [ ] Only after the owner arms a fresh `image-read-v1` receipt, one disclosed public-synthetic PNG/JPEG Consult proves the installed CLI accepts the fixed Read-only/per-file argv, matching terminal turn counters between one and two, relative staged prompt names, zero remaining slots/files, and hash-only ledger evidence. Offline fakes do not certify image entitlement or live multimodal behavior.
+- [x] On 2026-08-25, after the owner armed a fresh `image-read-v1` receipt, one disclosed public JPEG Consult proved the installed CLI accepts the fixed Read-only/per-file argv, matching terminal turn counters between one and two, relative staged prompt names, zero remaining slots/files, and hash-only ledger evidence. This certifies the current Linux saved-session route only; Windows and other media types remain unverified.
 - [ ] One mechanical Delegate mutates a disposable dirty primary workspace under the direct profile; optional linked/clean policy has a separate canary.
 - [ ] Direct Delegate `bypassPermissions` performs the exact disposable write without requiring linked/clean Git, while Consult still rejects bypass mode.
 - [ ] Default invocation keeps web/search and subagents enabled, still emits `--no-memory`, finite `--max-turns`, and no-auto-update; explicit opt-out calls add `--no-subagents` and/or `--disable-web-search`.
