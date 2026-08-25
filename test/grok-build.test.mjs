@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import {
@@ -68,7 +68,17 @@ test("Grok installation preflight validates version without consuming inference"
   const result = await inspectGrokBuildInstallation(createProviderConfig());
   assert.equal(result.ok, true);
   assert.equal(result.executable, process.execPath);
-  assert.match(result.version, /^grok 1\.0\.4/);
+  assert.match(result.version, /^grok 1\.0\.5/);
+});
+
+test("Grok installation preflight rejects CLIs without prompt-file support", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-old-cli-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = join(root, "grok-old.mjs");
+  await writeFile(script, "process.stdout.write('grok 1.0.4 (test)\\n');\n");
+  const result = await inspectGrokBuildInstallation(createProviderConfig({ commandArgs: [script] }));
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("; "), /does not support --prompt-file; version 1\.0\.5 or newer is required/);
 });
 
 test("Grok Build keeps native profile auth paths but excludes unnamed provider and daemon credentials", async (t) => {
@@ -76,7 +86,7 @@ test("Grok Build keeps native profile auth paths but excludes unnamed provider a
   t.after(() => rm(root, { recursive: true, force: true }));
   const script = join(root, "grok-env.mjs");
   await writeFile(script, `
-    if (process.argv.includes("--version")) process.stdout.write("grok 1.0.4");
+    if (process.argv.includes("--version")) process.stdout.write("grok 1.0.5");
     else process.stdout.write(JSON.stringify({ output_text: JSON.stringify({
       home: process.env.HOME ?? process.env.USERPROFILE,
       named: process.env.THREADSPAN_GROK_NAMED,
@@ -251,12 +261,14 @@ test("Grok task profiles honor bounded mode and request overrides", () => {
 });
 
 test("Grok argument builder keeps subagents and web enabled by default while retaining finite controls", () => {
+  const promptFile = resolve("threadspan-test-prompt.txt");
   const args = buildGrokBuildArguments(createProviderConfig(), { mode: "delegate", model: "grok-4.6", metadata: {} }, {
     reasoningEffort: "medium", maxTurns: 8, expectedTurns: 2, noPlan: true,
-  }, "/tmp/worktree", "task");
-  for (const expected of ["--no-auto-update", "--single", "--permission-mode", "dontAsk", "--sandbox", "strict", "--no-memory", "--max-turns", "8", "--no-plan"]) {
+  }, "/tmp/worktree", promptFile);
+  for (const expected of ["--no-auto-update", "--prompt-file", promptFile, "--permission-mode", "dontAsk", "--sandbox", "strict", "--no-memory", "--max-turns", "8", "--no-plan"]) {
     assert.ok(args.includes(expected), `missing ${expected}`);
   }
+  assert.equal(args.includes("--single"), false);
   assert.equal(args.includes("--no-subagents"), false);
   assert.equal(args.includes("--disable-web-search"), false);
 });
@@ -302,7 +314,7 @@ test("Grok bypassPermissions is Delegate-only while Git isolation remains config
   assert.throws(
     () => buildGrokBuildArguments(createProviderConfig({ consult: { permissionMode: "bypassPermissions" } }), { mode: "consult", model: "grok-4.6", metadata: {} }, {
       reasoningEffort: "medium", maxTurns: 4, expectedTurns: 1, noPlan: false,
-    }, repository, "task"),
+    }, repository, resolve("threadspan-test-prompt.txt")),
     /only for explicitly authorized Delegate workspaces/,
   );
 
@@ -347,9 +359,14 @@ test("Grok Delegate closes stdin and passes the explicit bypass permission mode"
   const root = await mkdtemp(join(tmpdir(), "threadspan-grok-unattended-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const argsPath = join(root, "args.json");
+  const promptCapturePath = join(root, "prompt-capture.txt");
+  const promptModePath = join(root, "prompt-mode.json");
+  const secretPromptText = "bounded unattended task must stay out of argv";
   const provider = new GrokBuildProvider("grok", createProviderConfig({
     env: {
       FAKE_GROK_ARGS_PATH: argsPath,
+      FAKE_GROK_PROMPT_CAPTURE_PATH: promptCapturePath,
+      FAKE_GROK_PROMPT_MODE_PATH: promptModePath,
       FAKE_GROK_REQUIRE_STDIN_EOF: "1",
     },
     delegate: {
@@ -365,7 +382,7 @@ test("Grok Delegate closes stdin and passes the explicit bypass permission mode"
       model: "grok-4.6",
       workspace: root,
       timeoutMs: 5_000,
-      messages: [{ role: "user", content: "bounded unattended task" }],
+      messages: [{ role: "user", content: secretPromptText }],
     });
     assert.equal(events.at(-1).message.content, "worker-ok");
   } finally {
@@ -373,7 +390,79 @@ test("Grok Delegate closes stdin and passes the explicit bypass permission mode"
   }
   const args = JSON.parse(await readFile(argsPath, "utf8"));
   assert.equal(args[args.indexOf("--permission-mode") + 1], "bypassPermissions");
-  assert.ok(args.includes("--single"));
+  assert.equal(args.includes("--single"), false);
+  const promptFile = args[args.indexOf("--prompt-file") + 1];
+  assert.equal(isAbsolute(promptFile), true);
+  assert.equal(args.some((value) => value.includes(secretPromptText)), false);
+  assert.match(await readFile(promptCapturePath, "utf8"), new RegExp(secretPromptText));
+  if (process.platform !== "win32") {
+    assert.deepEqual(JSON.parse(await readFile(promptModePath, "utf8")), { directoryMode: 0o700, fileMode: 0o600 });
+  }
+  await assert.rejects(readFile(promptFile, "utf8"), { code: "ENOENT" });
+  await assert.rejects(readFile(dirname(promptFile), "utf8"), { code: "ENOENT" });
+});
+
+test("Grok removes the private prompt file when the child fails", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-prompt-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const argsPath = join(root, "args.json");
+  const secretPromptText = "failure-path secret prompt text";
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    env: { FAKE_GROK_ARGS_PATH: argsPath, FAKE_GROK_QUOTA: "1" },
+  }), { logger: silentLogger() });
+  try {
+    await assert.rejects(collectRun(provider, {
+      mode: "consult",
+      model: "grok-4.6",
+      messages: [{ role: "user", content: secretPromptText }],
+    }), /usage is exhausted|quota/i);
+  } finally {
+    await provider.close();
+  }
+
+  const args = JSON.parse(await readFile(argsPath, "utf8"));
+  const promptFile = args[args.indexOf("--prompt-file") + 1];
+  assert.equal(isAbsolute(promptFile), true);
+  assert.equal(args.some((value) => value.includes(secretPromptText)), false);
+  await assert.rejects(readFile(promptFile, "utf8"), { code: "ENOENT" });
+  await assert.rejects(readFile(dirname(promptFile), "utf8"), { code: "ENOENT" });
+});
+
+test("Grok file-backed prompts admit compacted context while rejecting true oversize before CLI preflight", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-prompt-cap-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const admittedCounterPath = join(root, "admitted-counter.jsonl");
+  const admittedProvider = new GrokBuildProvider("grok", createProviderConfig({
+    env: { FAKE_GROK_COUNTER_PATH: admittedCounterPath },
+  }), { logger: silentLogger() });
+  try {
+    const events = await collectRun(admittedProvider, {
+      mode: "consult",
+      model: "grok-4.6",
+      messages: [{ role: "user", content: "x".repeat(448_000) }],
+    });
+    assert.equal(events.at(-1).message.content, "worker-ok");
+  } finally {
+    await admittedProvider.close();
+  }
+  assert.match(await readFile(admittedCounterPath, "utf8"), /--prompt-file/);
+
+  const rejectedCounterPath = join(root, "rejected-counter.jsonl");
+  const rejectedProvider = new GrokBuildProvider("grok", createProviderConfig({
+    models: undefined,
+    discoverModels: true,
+    env: { FAKE_GROK_COUNTER_PATH: rejectedCounterPath },
+  }), { logger: silentLogger() });
+  try {
+    await assert.rejects(collectRun(rejectedProvider, {
+      mode: "consult",
+      model: "grok-4.6",
+      messages: [{ role: "user", content: "x".repeat(524_288) }],
+    }), /exceeding maxPromptChars \(524288\)/);
+  } finally {
+    await rejectedProvider.close();
+  }
+  await assert.rejects(readFile(rejectedCounterPath, "utf8"), { code: "ENOENT" });
 });
 
 test("Grok Delegate direct-workspace policy accepts dirty primary and non-Git workspaces", async (t) => {
@@ -437,7 +526,7 @@ test("Grok execution policy supports explicit per-request subagent and web disab
   });
   const args = buildGrokBuildArguments(createProviderConfig(), request, {
     reasoningEffort: "medium", maxTurns: 8, expectedTurns: 2, noPlan: false,
-  }, "/tmp/worktree", "task");
+  }, "/tmp/worktree", resolve("threadspan-test-prompt.txt"));
   assert.ok(args.includes("--no-subagents"));
   assert.ok(args.includes("--disable-web-search"));
 });
@@ -456,10 +545,14 @@ test("Grok execution policy retains legacy negative configuration aliases", () =
   });
 });
 
-test("Grok Consult executes in a disposable workspace and emits usage/metadata", async () => {
+test("Grok Consult executes in a disposable workspace and emits usage/metadata", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "cursor-bridge-grok-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const argsPath = join(root, "args.json");
-  const provider = new GrokBuildProvider("grok", createProviderConfig({ env: { FAKE_GROK_ARGS_PATH: argsPath } }), { logger: silentLogger() });
+  const promptCapturePath = join(root, "prompt-capture.txt");
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    env: { FAKE_GROK_ARGS_PATH: argsPath, FAKE_GROK_PROMPT_CAPTURE_PATH: promptCapturePath },
+  }), { logger: silentLogger() });
   const events = [];
   for await (const event of provider.run({
     mode: "consult",
@@ -480,9 +573,10 @@ test("Grok Consult executes in a disposable workspace and emits usage/metadata",
   assert.equal(events.find((event) => event.type === "usage").usage.cachedInputTokens, 20);
   assert.equal(events.at(-1).providerMetadata.grokBuild.modelCalls, 2);
   const args = JSON.parse(await readFile(argsPath, "utf8"));
-  assert.ok(args.includes("--single"));
+  assert.ok(args.includes("--prompt-file"));
+  assert.equal(args.includes("--single"), false);
   assert.equal(args.filter((value) => value === fixture).length, 0, "commandArgs must be applied exactly once as the Node script path, not duplicated into script argv");
-  const prompt = args[args.indexOf("--single") + 1];
+  const prompt = await readFile(promptCapturePath, "utf8");
   assert.match(prompt, /NESTED AGENTS[\s\S]*subagents are allowed/i);
   assert.match(prompt, /WEB AND INFORMATION RETRIEVAL[\s\S]*Web\/search access is allowed/i);
   assert.match(prompt, /FLEET IDENTITY[\s\S]*coordinator_id=cgpt-a[\s\S]*worker_group=grok-nine/);
@@ -496,8 +590,9 @@ test("Grok Build summarizes only repetitive tool output in the transmitted worke
   const root = await mkdtemp(join(tmpdir(), "threadspan-grok-summary-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const argsPath = join(root, "args.json");
+  const promptCapturePath = join(root, "prompt-capture.txt");
   const provider = new GrokBuildProvider("grok", createProviderConfig({
-    env: { FAKE_GROK_ARGS_PATH: argsPath },
+    env: { FAKE_GROK_ARGS_PATH: argsPath, FAKE_GROK_PROMPT_CAPTURE_PATH: promptCapturePath },
     outputSummary: {
       minBytes: 128,
       minLines: 12,
@@ -516,7 +611,8 @@ test("Grok Build summarizes only repetitive tool output in the transmitted worke
     await provider.close();
   }
   const args = JSON.parse(await readFile(argsPath, "utf8"));
-  const prompt = args[args.indexOf("--single") + 1];
+  assert.equal(args.includes("--single"), false);
+  const prompt = await readFile(promptCapturePath, "utf8");
   assert.match(prompt, /THREADSPAN PROGRAMMATIC OUTPUT SUMMARY/);
   assert.deepEqual(messages, before);
 });
@@ -581,12 +677,14 @@ test("Grok Delegate resumes unchanged repeated exploration exactly once with its
   t.after(() => rm(root, { recursive: true, force: true }));
   const repository = await createGitRepository(root);
   const counterPath = join(root, "counter.jsonl");
+  const promptCapturePath = join(root, "prompt-capture.txt");
   const ledgerPath = join(root, "ledger.jsonl");
   const provider = new GrokBuildProvider("grok", createProviderConfig({
     env: {
       FAKE_GROK_COUNTER_PATH: counterPath,
       FAKE_GROK_EXPLORATION: "1",
       FAKE_GROK_MAX_TURN_EXIT: "1",
+      FAKE_GROK_PROMPT_CAPTURE_PATH: promptCapturePath,
     },
     ledger: { enabled: true, path: ledgerPath, includeOutput: false },
     delegate: {
@@ -641,7 +739,8 @@ test("Grok Delegate resumes unchanged repeated exploration exactly once with its
   assert.equal(invocations[0][initialSessionIndex + 1], invocations[1][recoverySessionIndex + 1]);
   assert.equal(invocations[0][invocations[0].indexOf("--max-turns") + 1], "12");
   assert.equal(invocations[1][invocations[1].indexOf("--max-turns") + 1], "4");
-  assert.match(invocations[1][invocations[1].indexOf("--single") + 1], /PATCH-FIRST RECOVERY[\s\S]*npm test/);
+  assert.equal(invocations.flat().some((value) => value.includes("private-acceptance")), false);
+  assert.match(await readFile(promptCapturePath, "utf8"), /PATCH-FIRST RECOVERY[\s\S]*npm test/);
 
   const ledger = (await readFile(ledgerPath, "utf8")).trim().split("\n").map(JSON.parse);
   const running = ledger.filter((record) => record.event === "running");
@@ -1171,7 +1270,11 @@ test("Grok ManagedProcessError records only evidence hashes available at its err
   const repository = await createGitRepository(root);
   const ledgerPath = join(root, "ledger.jsonl");
   const provider = new GrokBuildProvider("grok", createProviderConfig({
-    env: { FAKE_GROK_LOCK_DIR: join(root, "locks"), FAKE_GROK_LOCK_DELAY_MS: "200" },
+    env: {
+      FAKE_GROK_ARGS_PATH: join(root, "args.json"),
+      FAKE_GROK_LOCK_DIR: join(root, "locks"),
+      FAKE_GROK_LOCK_DELAY_MS: "2000",
+    },
     ledger: { enabled: true, path: ledgerPath, includeOutput: false },
     delegate: {
       profile: "balanced",
@@ -1187,7 +1290,7 @@ test("Grok ManagedProcessError records only evidence hashes available at its err
         mode: "delegate",
         model: "grok-4.6",
         workspace: repository,
-        timeoutMs: 10,
+        timeoutMs: 500,
         messages: [{ role: "user", content: "timeout probe" }],
       }),
       /process timeout failure/,
@@ -1200,6 +1303,10 @@ test("Grok ManagedProcessError records only evidence hashes available at its err
   assert.match(failedAttempt.promptSha256, /^[a-f0-9]{64}$/);
   assert.match(failedAttempt.stderrSha256, /^[a-f0-9]{64}$/);
   assert.equal(failedAttempt.stdoutSha256, undefined);
+  const args = JSON.parse(await readFile(join(root, "args.json"), "utf8"));
+  const promptFile = args[args.indexOf("--prompt-file") + 1];
+  await assert.rejects(readFile(promptFile, "utf8"), { code: "ENOENT" });
+  await assert.rejects(readFile(dirname(promptFile), "utf8"), { code: "ENOENT" });
 });
 
 test("Grok disabled exploration and Consult bypass workspace serialization", async (t) => {

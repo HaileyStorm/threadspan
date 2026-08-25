@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, open, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { appendFile, mkdir, open, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const args = process.argv.slice(2);
@@ -8,7 +8,7 @@ if (process.env.FAKE_GROK_COUNTER_PATH) {
   await appendFile(process.env.FAKE_GROK_COUNTER_PATH, `${JSON.stringify(args)}\n`, "utf8");
 }
 if (args.includes("--version")) {
-  process.stdout.write("grok 1.0.4 (test)\n");
+  process.stdout.write("grok 1.0.5 (test)\n");
   process.exit(0);
 }
 if (args[0] === "models") {
@@ -25,6 +25,23 @@ if (process.env.FAKE_GROK_REQUIRE_STDIN_EOF === "1") {
     process.stderr.write(JSON.stringify({ error: { code: "interactive_stdin", message: "unexpected interactive input" } }));
     process.exit(1);
   }
+}
+const promptFileIndex = args.indexOf("--prompt-file");
+const promptFile = promptFileIndex >= 0 ? args[promptFileIndex + 1] : undefined;
+if (!promptFile) {
+  process.stderr.write(JSON.stringify({ error: { code: "missing_prompt_file", message: "--prompt-file was not supplied" } }));
+  process.exit(1);
+}
+const prompt = await readFile(promptFile, "utf8");
+if (process.env.FAKE_GROK_PROMPT_CAPTURE_PATH) {
+  await writeFile(process.env.FAKE_GROK_PROMPT_CAPTURE_PATH, prompt, "utf8");
+}
+if (process.env.FAKE_GROK_PROMPT_MODE_PATH) {
+  const [directoryStat, fileStat] = await Promise.all([stat(dirname(promptFile)), stat(promptFile)]);
+  await writeFile(process.env.FAKE_GROK_PROMPT_MODE_PATH, JSON.stringify({
+    directoryMode: directoryStat.mode & 0o777,
+    fileMode: fileStat.mode & 0o777,
+  }), "utf8");
 }
 if (process.env.FAKE_GROK_QUOTA === "1") {
   process.stderr.write(JSON.stringify({ error: { code: "subscription:free-usage-exhausted", message: "quota exhausted" } }));
@@ -157,8 +174,6 @@ if (process.env.FAKE_GROK_EXPLORATION === "1" || process.env.FAKE_GROK_INCOMPLET
   }));
   process.exit(process.env.FAKE_GROK_MAX_TURN_EXIT === "1" ? 17 : 0);
 }
-const promptIndex = args.indexOf("--single");
-const prompt = promptIndex >= 0 ? args[promptIndex + 1] : "";
 process.stdout.write(JSON.stringify({
   output_text: prompt.includes("AUTHORITATIVE THREAD PACKET") ? "worker-ok" : "missing-packet",
   ...sessionEnvelope,

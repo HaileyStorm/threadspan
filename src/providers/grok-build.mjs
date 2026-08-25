@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -24,6 +24,7 @@ const BUILTIN_PROFILES = Object.freeze({
 });
 
 const DEFAULT_ALLOWED_EFFORTS = Object.freeze(["low", "medium", "high"]);
+const DEFAULT_GROK_MAX_PROMPT_CHARS = 524_288;
 const GROK_EXPLORATION_WORKSPACE_QUEUE = new KeyedSerialQueue();
 const PROTECTED_GROK_ARGUMENTS = new Set([
   "-c", "-m", "-p", "-r", "-s", "-w",
@@ -178,7 +179,6 @@ export class GrokBuildProvider extends ProviderAdapter {
       throw new CapabilityError(this.id, "integrated", this.capabilities().modes.integrated.reason);
     }
 
-    await this.#assertConfiguredModel(request.model);
     const jobId = createId("job");
     const profile = resolveGrokTaskProfile(this.config, request);
     const explorationLoop = resolveGrokExplorationLoopPolicy(this.config, request, profile);
@@ -188,7 +188,6 @@ export class GrokBuildProvider extends ProviderAdapter {
     const executionPolicy = resolveGrokExecutionPolicy(this.config, request);
     const acceptance = normalizeAcceptanceCommands(request.metadata?.bridge_acceptance_commands);
     const acceptanceCommands = acceptance.commands;
-    const installation = await this.#preflight();
     let workspaceFingerprint;
     const coordinatorId = optionalMetadataString(request.metadata?.bridge_coordinator_id);
     const workerGroup = optionalMetadataString(request.metadata?.bridge_worker_group);
@@ -217,10 +216,12 @@ export class GrokBuildProvider extends ProviderAdapter {
       const modeConfig = this.config[request.mode] ?? {};
       const maxPromptChars = modeConfig.maxPromptChars
         ?? this.config.maxPromptChars
-        ?? (process.platform === "win32" ? 24_000 : 131_072);
+        ?? DEFAULT_GROK_MAX_PROMPT_CHARS;
       if (prompt.length > maxPromptChars) {
         throw new RequestError(`Grok Build prompt is ${prompt.length} characters, exceeding maxPromptChars (${maxPromptChars}); reduce thread context or raise the reviewed limit`);
       }
+      await this.#assertConfiguredModel(request.model);
+      const installation = await this.#preflight();
       nativeSessionId = explorationLoop.enabled ? randomUUID() : undefined;
       const initialEvidence = await this.ledger.captureEvidence(`${jobId}-initial`, { prompt });
 
@@ -478,10 +479,14 @@ export class GrokBuildProvider extends ProviderAdapter {
       allowNonzeroMaxTurnRecovery,
       modeConfig,
     } = options;
-    const args = buildGrokBuildArguments(this.config, request, profile, workspace, prompt, executionPolicy, nativeSession);
     const evidenceId = `${jobId}-${attempt}`;
     let result;
+    let promptDirectory;
+    let attemptError;
     try {
+      const promptFile = await createPrivateGrokPromptFile(prompt);
+      promptDirectory = promptFile.directory;
+      const args = buildGrokBuildArguments(this.config, request, profile, workspace, promptFile.path, executionPolicy, nativeSession);
       result = await runCapturedProcess({
         command: installation.executable,
         args,
@@ -524,6 +529,7 @@ export class GrokBuildProvider extends ProviderAdapter {
         }),
       });
     } catch (error) {
+      attemptError = error;
       const evidence = await this.ledger.captureEvidence(evidenceId, {
         prompt,
         ...(error?.details?.stderr === undefined ? {} : { stderr: error.details.stderr }),
@@ -543,6 +549,19 @@ export class GrokBuildProvider extends ProviderAdapter {
         ...evidence,
       });
       throw error;
+    } finally {
+      if (promptDirectory) {
+        try {
+          await removePrivateGrokPromptDirectory(promptDirectory);
+        } catch (cleanupError) {
+          if (!attemptError) throw cleanupError;
+          this.logger?.warn?.("Could not remove a private Grok prompt directory after a failed attempt", {
+            jobId,
+            attempt,
+            message: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        }
+      }
     }
     const evidence = await this.ledger.captureEvidence(evidenceId, {
       prompt,
@@ -646,6 +665,37 @@ async function inspectGrokBuildInstallationOrThrow(providerId, config) {
 }
 
 /**
+ * Materialize one attempt's prompt outside argv and return its absolute private path.
+ * The caller owns removing the returned directory after the child has fully settled.
+ */
+async function createPrivateGrokPromptFile(prompt) {
+  const directory = resolve(await mkdtemp(join(tmpdir(), "threadspan-grok-prompt-")));
+  try {
+    await chmod(directory, 0o700);
+    const path = join(directory, "prompt.txt");
+    await writeFile(path, prompt, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await chmod(path, 0o600);
+    return { directory, path };
+  } catch (error) {
+    await removePrivateGrokPromptDirectory(directory).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Remove one private prompt directory with bounded retries for transient Windows sharing failures. */
+async function removePrivateGrokPromptDirectory(directory) {
+  await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+}
+
+/** Return whether a bounded Grok version banner proves prompt-file support. */
+function grokVersionSupportsPromptFile(version) {
+  const match = String(version ?? "").match(/\bgrok\b[^\r\n]*?\b(\d+)\.(\d+)\.(\d+)\b/i);
+  if (!match) return false;
+  const [major, minor, patch] = match.slice(1).map(Number);
+  return major > 1 || (major === 1 && (minor > 0 || (minor === 0 && patch >= 5)));
+}
+
+/**
  * Resolve and non-consumingly inspect a Grok Build installation.
  * Expected version/hash checks are enforced when configured; report-specific probe values are never hard-coded.
  *
@@ -713,6 +763,9 @@ export async function inspectGrokBuildInstallation(config, options = {}) {
         errors.push(`versionPattern is invalid: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    if (!grokVersionSupportsPromptFile(version)) {
+      errors.push(`Grok Build CLI version '${version ?? "unknown"}' does not support --prompt-file; version 1.0.5 or newer is required`);
+    }
   }
 
   if (pinnedHash || config.pin?.recordSha256 === true || options.recordSha256 === true) {
@@ -732,12 +785,15 @@ export async function inspectGrokBuildInstallation(config, options = {}) {
 }
 
 /** Build the exact one-shot argument vector used for a Grok Build job. */
-export function buildGrokBuildArguments(config, request, profile, workspace, prompt, resolvedPolicy, nativeSession) {
+export function buildGrokBuildArguments(config, request, profile, workspace, promptFile, resolvedPolicy, nativeSession) {
   const modeConfig = config[request.mode] ?? {};
   const executionPolicy = resolvedPolicy ?? resolveGrokExecutionPolicy(config, request);
   const permissionMode = modeConfig.permissionMode ?? config.permissionMode ?? "dontAsk";
   if (permissionMode === "bypassPermissions" && request.mode !== "delegate") {
     throw new RequestError("Grok Build bypassPermissions is permitted only for explicitly authorized Delegate workspaces");
+  }
+  if (typeof promptFile !== "string" || !isAbsolute(promptFile)) {
+    throw new RequestError("Grok Build promptFile must be an absolute path");
   }
   const args = [...(config.commandArgs ?? [])];
   if (config.noAutoUpdate !== false) args.push("--no-auto-update");
@@ -746,7 +802,7 @@ export function buildGrokBuildArguments(config, request, profile, workspace, pro
   args.push("--reasoning-effort", profile.reasoningEffort);
   for (const value of config.preArgs ?? []) args.push(String(value));
   if (nativeSession?.id) args.push(nativeSession.resume === true ? "--resume" : "--session-id", nativeSession.id);
-  args.push("--single", prompt);
+  args.push("--prompt-file", promptFile);
   args.push("--output-format", "json");
   args.push("--permission-mode", permissionMode);
   args.push("--sandbox", modeConfig.sandbox ?? config.sandbox ?? "strict");
