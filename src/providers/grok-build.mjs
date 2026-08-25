@@ -811,9 +811,10 @@ export class GrokBuildProvider extends ProviderAdapter {
         const terminalTurns = parsed?.turns;
         const terminalModelCalls = parsed?.modelCalls;
         if (!Number.isInteger(terminalTurns) || terminalTurns < 1 || terminalTurns > 2
-          || terminalModelCalls !== terminalTurns || !["stop", "end_turn"].includes(finishReason)) {
+          || (terminalModelCalls !== undefined && terminalModelCalls !== terminalTurns)
+          || !["stop", "end_turn"].includes(finishReason)) {
           persistRevocation("Grok image terminal envelope did not prove matching one-or-two-turn stop semantics");
-          throw new ProviderError(this.id, "Grok image Consult terminal envelope must prove matching turns/model_calls between 1 and 2 and finish_reason=stop or end_turn", {
+          throw new ProviderError(this.id, "Grok image Consult terminal envelope must prove num_turns between 1 and 2, any reported model_calls must match, and finish_reason=stop or end_turn", {
             retryable: false,
             details: { retryPolicy: "no-automatic-retry", terminalPolicy: "bounded-one-or-two-turn-stop", ...imageStreamHashes(result) },
           });
@@ -1247,7 +1248,7 @@ export function parseGrokBuildPayload(stdout, stderr = "", providerId = "grok-bu
     text: fallbackText,
     usage,
     trustedTerminalEnvelope: payload !== null && typeof payload === "object" && !Array.isArray(payload),
-    turns: findTopLevelNumber(payload, ["turns", "turn_count", "turnCount"]),
+    turns: findTopLevelNumber(payload, ["num_turns", "turns", "turn_count", "turnCount"]),
     modelCalls: findTopLevelNumber(payload, ["model_calls", "modelCalls", "request_count", "requestCount"]),
     estimatedCostUsd: findMoney(payload, ["estimated_cost", "estimatedCost", "estimated_cost_usd", "cost", "cost_usd"]),
     reportedModel: findString(payload, ["model", "model_id", "modelId"]),

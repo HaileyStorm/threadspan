@@ -286,6 +286,7 @@ test("Grok parser preserves cache-read/reasoning usage and terminal accounting",
     output_text: "ok",
     usage: { input_tokens: 1, cache_read_input_tokens: 2, output_tokens: 3, reasoning_tokens: 4, total_tokens: 10 },
     model_calls: 2,
+    num_turns: 2,
     estimated_cost: "$0.02",
   }));
   assert.equal(parsed.text, "ok");
@@ -297,6 +298,7 @@ test("Grok parser preserves cache-read/reasoning usage and terminal accounting",
     totalTokens: 10,
   });
   assert.equal(parsed.modelCalls, 2);
+  assert.equal(parsed.turns, 2);
   assert.equal(parsed.estimatedCostUsd, 0.02);
 });
 
@@ -585,7 +587,6 @@ test("Grok image terminal envelope requires matching bounded turn counters and s
   const scenarios = [
     { name: "too-many-turns", payload: { turns: 3, model_calls: 3, finish_reason: "stop" } },
     { name: "mismatched-turns", payload: { turns: 1, model_calls: 2, finish_reason: "stop" } },
-    { name: "missing-model-calls", payload: { turns: 2, finish_reason: "stop" } },
     { name: "missing-finish", payload: { turns: 2, model_calls: 2 } },
     { name: "wrong-finish", payload: { turns: 2, model_calls: 2, finish_reason: "length" } },
   ];
@@ -607,7 +608,7 @@ test("Grok image terminal envelope requires matching bounded turn counters and s
         metadata: { bridge_payload_classification: "public_image", bridge_payload_disclosed: true },
         images: [{ bytes, mime: "image/png", sha256: createHash("sha256").update(bytes).digest("hex") }],
       }), (error) => {
-        assert.match(error.message, /matching turns\/model_calls between 1 and 2/u, scenario.name);
+        assert.match(error.message, /num_turns between 1 and 2/u, scenario.name);
         assert.doesNotMatch(JSON.stringify(error), /must-not-surface/u);
         return true;
       });
@@ -627,7 +628,7 @@ sqliteTest("Grok image provider uses one receipt-bound slot, settles it, and blo
     import { appendFile } from 'node:fs/promises';
     if(process.argv.includes('--version')){process.stdout.write('grok 1.0.5 (gated-image-test)');process.exit(0)}
     await appendFile(process.env.IMAGE_CONTACT_MARKER,'contact\\n');
-    process.stdout.write(JSON.stringify({output_text:'gated-image-ok',modelUsage:{'grok-4.6-build':{}},turns:2,model_calls:2,finish_reason:'end_turn'}));
+    process.stdout.write(JSON.stringify({output_text:'gated-image-ok',modelUsage:{'grok-4.6-build':{}},num_turns:1,stopReason:'end_turn'}));
   `);
   const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const request = {
