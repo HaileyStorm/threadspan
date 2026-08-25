@@ -578,12 +578,13 @@ test("Grok image Consult rejects returned data images and long base64 before his
   }
 });
 
-test("Grok image terminal envelope requires exact two-turn stop semantics", async (t) => {
+test("Grok image terminal envelope requires matching bounded turn counters and stop semantics", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "threadspan-grok-image-terminal-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const scenarios = [
-    { name: "wrong-turns", payload: { turns: 1, model_calls: 2, finish_reason: "stop" } },
+    { name: "too-many-turns", payload: { turns: 3, model_calls: 3, finish_reason: "stop" } },
+    { name: "mismatched-turns", payload: { turns: 1, model_calls: 2, finish_reason: "stop" } },
     { name: "missing-model-calls", payload: { turns: 2, finish_reason: "stop" } },
     { name: "missing-finish", payload: { turns: 2, model_calls: 2 } },
     { name: "wrong-finish", payload: { turns: 2, model_calls: 2, finish_reason: "length" } },
@@ -606,7 +607,7 @@ test("Grok image terminal envelope requires exact two-turn stop semantics", asyn
         metadata: { bridge_payload_classification: "public_image", bridge_payload_disclosed: true },
         images: [{ bytes, mime: "image/png", sha256: createHash("sha256").update(bytes).digest("hex") }],
       }), (error) => {
-        assert.match(error.message, /must prove turns=2, model_calls=2/u, scenario.name);
+        assert.match(error.message, /matching turns\/model_calls between 1 and 2/u, scenario.name);
         assert.doesNotMatch(JSON.stringify(error), /must-not-surface/u);
         return true;
       });

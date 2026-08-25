@@ -86,7 +86,7 @@ Input item support:
 
 Unsupported image/file/binary content is converted to an explicit text placeholder. This avoids silently dropping the fact that media existed and remains the default behavior; Threadspan does not claim universal multimodal forwarding.
 
-The one exception is the Linux Grok saved-session Consult route. The current request may carry 1-4 strict inline PNG/JPEG data URIs under the separately owner-armed `image-read-v1` host-gate receipt and explicit `public_synthetic_image` or `public_image` disclosure. That request uses a closed message-only input shape, an empty disposable workspace, relative staged filenames, fixed Read-only/two-turn argv, exact terminal proof, and placeholder-only retained history. Files, URLs, audio/video, generated media, tool/reasoning items, hidden message fields, arbitrary launch tails, and image Delegate/Integrated remain rejected.
+The one exception is the Linux Grok saved-session Consult route. The current request may carry 1-4 strict inline PNG/JPEG data URIs under the separately owner-armed `image-read-v1` host-gate receipt and explicit `public_synthetic_image` or `public_image` disclosure. That request uses a closed message-only input shape, an empty disposable workspace, relative staged filenames, fixed Read-only argv capped at two turns, bounded terminal proof, and placeholder-only retained history. Files, URLs, audio/video, generated media, tool/reasoning items, hidden message fields, arbitrary launch tails, and image Delegate/Integrated remain rejected.
 
 ## Responses output
 

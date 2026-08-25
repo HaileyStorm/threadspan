@@ -808,11 +808,14 @@ export class GrokBuildProvider extends ProviderAdapter {
           });
         }
         const finishReason = String(parsed?.finishReason ?? "").trim().toLowerCase();
-        if (parsed?.turns !== 2 || parsed?.modelCalls !== 2 || !["stop", "end_turn"].includes(finishReason)) {
-          persistRevocation("Grok image terminal envelope did not prove exact two-turn stop semantics");
-          throw new ProviderError(this.id, "Grok image Consult terminal envelope must prove turns=2, model_calls=2, and finish_reason=stop or end_turn", {
+        const terminalTurns = parsed?.turns;
+        const terminalModelCalls = parsed?.modelCalls;
+        if (!Number.isInteger(terminalTurns) || terminalTurns < 1 || terminalTurns > 2
+          || terminalModelCalls !== terminalTurns || !["stop", "end_turn"].includes(finishReason)) {
+          persistRevocation("Grok image terminal envelope did not prove matching one-or-two-turn stop semantics");
+          throw new ProviderError(this.id, "Grok image Consult terminal envelope must prove matching turns/model_calls between 1 and 2 and finish_reason=stop or end_turn", {
             retryable: false,
-            details: { retryPolicy: "no-automatic-retry", terminalPolicy: "exact-two-turn-stop", ...imageStreamHashes(result) },
+            details: { retryPolicy: "no-automatic-retry", terminalPolicy: "bounded-one-or-two-turn-stop", ...imageStreamHashes(result) },
           });
         }
       }

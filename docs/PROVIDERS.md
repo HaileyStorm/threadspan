@@ -261,7 +261,7 @@ Use the dedicated `grok-build` adapter for the official Grok Build CLI:
 Behavior:
 
 - Consult runs one fresh finite CLI job over a disposable snapshot or empty temporary workspace.
-- Grok image Consult accepts only bounded disclosed public inline PNG/JPEG data URIs, requires the separately armed `image-read-v1` host-gate receipt, and runs exactly two turns with Read-only per-file access in an empty workspace. Delegate and Integrated advertise no Grok image support.
+- Grok image Consult accepts only bounded disclosed public inline PNG/JPEG data URIs, requires the separately armed `image-read-v1` host-gate receipt, and runs one or two terminal turns with Read-only per-file access in an empty workspace. Delegate and Integrated advertise no Grok image support.
 - Delegate runs one fresh finite CLI job in the supplied workspace after configured Git/worktree gates.
 - Integrated is always rejected because Grok Build owns an agent/tool loop.
 - `doctor` resolves and inspects the executable without inference; version/hash policy can be warning-only or strict.
