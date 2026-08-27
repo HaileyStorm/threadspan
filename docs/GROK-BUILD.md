@@ -14,7 +14,7 @@ On Linux, this is a saved-session-only route subordinate to the canonical owner-
 
 The Linux gate requires `node:sqlite` `DatabaseSync` (Node.js 22.5 or newer). It is loaded only when this route is instantiated; unrelated providers and Windows retain the package-wide Node 22 baseline. If the module is unavailable, Grok fails closed with no in-memory fallback.
 
-Production text calls must classify outbound data as `public_synthetic` or `public_repo` and explicitly record disclosure. Grok/xAI API-key, token, or secret environment presence is rejected. API, provider, model, account, and billed fallback remain disabled.
+Production text calls must classify outbound data as `public_synthetic`, `public_repo`, or `owner_private` and explicitly record `bridge_payload_disclosed=true`. `owner_private` means the user explicitly authorized transfer of that text to the saved-session Grok provider; it is not inferred from a workspace, prompt, account, or route name. An owner-authenticated native picker/router selection is a valid disclosure origin when that route injects the exact classification and disclosure metadata into the request. The adapter still validates both fields before contact. Grok/xAI API-key, token, or secret environment presence is rejected, and there is no API, provider, model, account, billed, or silent fallback. Owner-private disclosure authorizes provider transfer only; it does not enable raw prompt or secret logging, and default ledger evidence remains hash-only.
 
 Image input is a narrower Consult-only route. The current Responses input may contain 1-4 strict canonical base64 `data:image/png` or `data:image/jpeg` blocks, at most 20 MiB each and 40 MiB total, classified as `public_synthetic_image` or `public_image` with explicit disclosure. Remote URLs, local paths, audio, video, files, generated media, and unknown blocks fail before provider contact. The owner-armed gate must carry an exact `image-read-v1:<64-hex receipt artifact hash>` detail at both admission and the final spawn barrier. Threadspan stages images as single-link owner-private files, gives Grok only `Read` permission for those exact paths in an empty read-only workspace, caps execution at two turns with no plan/web/subagents/memory, and removes every staged file after the attempt. Normalized history retains only attachment placeholders; logs redact data-image bodies; ledgers and provider metadata may retain only count, MIME, and SHA-256 projections. This boundary was live-certified on Linux on 2026-08-25 with one disclosed public JPEG; it does not certify Windows or other media types.
 
@@ -177,6 +177,8 @@ cursor-bridge delegate "Add characterization tests only" \
   --payload-classification public_repo --disclosed \
   --acceptance-command "npm test -- test/parser.test.mjs"
 ```
+
+For an explicitly owner-authorized private text task, use `--payload-classification owner_private --disclosed`. This classification is text-only; images remain limited to the public image classifications and the separately armed image boundary described above.
 
 Use low effort only when the task is genuinely mechanical. A failed low-effort pass plus correction can cost more than one medium-effort pass. Threadspan preserves the exact selected effort and never silently substitutes another.
 

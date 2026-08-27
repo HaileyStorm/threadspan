@@ -13,6 +13,14 @@ test("CLI parser handles values, booleans, equals, repeated options, and saved-s
   assert.deepEqual(parsed.options.tag, ["x", "y"]);
 });
 
+test("CLI parser and help expose owner-authorized private text classification", async () => {
+  const parsed = parseArguments(["delegate", "task", "--payload-classification=owner_private", "--disclosed"]);
+  assert.equal(parsed.options.payloadClassification, "owner_private");
+  assert.equal(parsed.options.disclosed, true);
+  const source = await readFile(new URL("../src/cli.mjs", import.meta.url), "utf8");
+  assert.match(source, /--payload-classification public_synthetic\|public_repo\|owner_private --disclosed/);
+});
+
 import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

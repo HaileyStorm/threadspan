@@ -214,7 +214,10 @@ export class GrokBuildProvider extends ProviderAdapter {
     assertNoGrokSecretEnvironment(this.config, process.env);
     const images = normalizeGrokImageRequest(request.images);
     const imageRequest = images.length > 0;
-    if (imageRequest || !this.hostGate.disabled) assertGrokSavedSessionRequest(request, { imageRequest });
+    if (imageRequest || !this.hostGate.disabled || !this.hostGate.testContext
+      || request.metadata?.bridge_payload_classification !== undefined) {
+      assertGrokSavedSessionRequest(request, { imageRequest });
+    }
     if (imageRequest && this.hostGate.disabled && this.testOptions.allowDisabledImageGate !== true) {
       throw new CapabilityError(this.id, "consult-images", "Grok images require the enabled canonical Linux saved-session host gate");
     }
@@ -1390,7 +1393,7 @@ export function assertGrokSavedSessionRequest(request, options = {}) {
   const classification = request?.metadata?.bridge_payload_classification;
   const allowed = options.imageRequest === true
     ? ["public_synthetic_image", "public_image"]
-    : ["public_synthetic", "public_repo"];
+    : ["public_synthetic", "public_repo", "owner_private"];
   if (!allowed.includes(classification)) {
     throw new RequestError(`Grok saved-session ${options.imageRequest === true ? "image" : "text"} route requires bridge_payload_classification=${allowed.join(" or ")}`);
   }
@@ -1624,13 +1627,14 @@ function expandConfiguredPath(value, environment) {
 /** Convert a nonzero CLI exit into a quota-, rate-, and entitlement-aware provider error. */
 function createGrokExitError(providerId, result, parsed) {
   const { quota, rateLimited, paymentRequired, authenticationOrEntitlement } = classifyGrokErrorSignals(result, parsed);
+  const stderr = String(result.stderr ?? "");
   const message = quota
     ? "Grok Build usage is exhausted or the CLI account is not recognized at the expected entitlement"
     : paymentRequired
       ? "Grok Build payment or usage credits are required"
     : authenticationOrEntitlement
       ? "Grok Build authentication or product entitlement was rejected"
-      : `Grok Build exited with code ${result.exitCode ?? "null"}${result.exitSignal ? ` (${result.exitSignal})` : ""}${result.stderr ? ` — ${truncate(result.stderr, 2000)}` : ""}`;
+      : `Grok Build exited with code ${result.exitCode ?? "null"}${result.exitSignal ? ` (${result.exitSignal})` : ""}`;
   return new ProviderError(providerId, message, {
     status: quota || rateLimited ? 429 : paymentRequired ? 402 : authenticationOrEntitlement ? 401 : 502,
     retryable: false,
@@ -1638,8 +1642,7 @@ function createGrokExitError(providerId, result, parsed) {
       exitCode: result.exitCode,
       exitSignal: result.exitSignal,
       errorCode: parsed.errorCode,
-      errorMessage: parsed.errorMessage,
-      stderr: truncate(result.stderr ?? "", 8000),
+      stderrSha256: sha256Text(stderr),
       quota,
       rateLimited,
       paymentRequired,

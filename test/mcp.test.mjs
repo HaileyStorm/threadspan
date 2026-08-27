@@ -130,7 +130,7 @@ test("MCP forwards fleet, subagent, and web controls to the shared service contr
         allow_web_search: true,
         coordinator_id: "cgpt-a",
         worker_group: "grok-nine",
-        payload_classification: "public_repo",
+        payload_classification: "owner_private",
         disclosed: true,
       },
     },
@@ -142,15 +142,17 @@ test("MCP forwards fleet, subagent, and web controls to the shared service contr
   assert.equal(received.allowWebSearch, true);
   assert.equal(received.coordinatorId, "cgpt-a");
   assert.equal(received.workerGroup, "grok-nine");
-  assert.equal(received.payloadClassification, "public_repo");
+  assert.equal(received.payloadClassification, "owner_private");
   assert.equal(received.disclosed, true);
   for (const name of ["consult", "delegate"]) {
     assert.deepEqual(MCP_TOOLS.find((tool) => tool.name === name).inputSchema.properties.payload_classification.enum, [
       "public_synthetic",
       "public_repo",
+      "owner_private",
       "public_synthetic_image",
       "public_image",
     ]);
+    assert.match(MCP_TOOLS.find((tool) => tool.name === name).inputSchema.properties.payload_classification.description, /owner-authorized text transfer/);
   }
 });
 

@@ -210,7 +210,7 @@ Implemented controls:
 - no cross-session memory or auto-update by default; Grok subagents and web/search are enabled by the current operator policy, with explicit opt-outs and inherited authority boundaries;
 - optional environment allowlist;
 - provider-local fairness/turn admission plus a canonical process-shared Linux SQLite Grok gate, and no implicit retries;
-- saved-session-only Grok authentication with secret/API environment rejection, explicit public payload classification/disclosure, and no API/provider/model/billed fallback;
+- saved-session-only Grok authentication with secret/API environment rejection, explicit text classification/disclosure (`public_synthetic`, `public_repo`, or owner-authorized `owner_private`), and no API/provider/model/account/billed/silent fallback; an owner-authenticated picker/native route is a valid disclosure origin only when it injects the exact metadata;
 - Grok image input only through Consult, strict canonical inline PNG/JPEG bounds, a separately armed `image-read-v1` gate receipt, empty/read-only execution, exact staged-file Read allows, at most two turns, no web/subagents/memory/plan, owner-private cleanup, placeholder-only history, data-image log redaction, and count/MIME/SHA-256-only ledger metadata;
 - private lifecycle/usage ledger with raw content disabled by default;
 - disposable Consult snapshot;
@@ -262,7 +262,7 @@ Residual risks:
 
 Use one explicitly owned workspace per active worker, exact allow/deny policy, and independent acceptance. Direct mode may target a primary, dirty, or non-Git workspace after caller authority; optional linked/clean Git checks remain available. The worker must not receive commit, reset, branch-switch, push, merge, rebase, tag, release, or completion authority.
 
-Raw prompt/stdout/stderr ledger evidence is opt-in because it may contain proprietary code or secrets. Default hashes prove evidence identity without storing its content in the ledger. Ledger directories/files are created with private modes where supported, but OS backups and administrator access remain outside the application's control.
+Raw prompt/stdout/stderr ledger evidence is opt-in because it may contain proprietary code or secrets. `owner_private` provider disclosure does not enable that option or authorize prompt/secret logging. Default hashes prove evidence identity without storing its content in the ledger. Ledger directories/files are created with private modes where supported, but OS backups and administrator access remain outside the application's control.
 
 
 ## Nested agents and web-derived content

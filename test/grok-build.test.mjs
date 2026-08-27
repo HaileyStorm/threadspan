@@ -20,6 +20,7 @@ import {
   resolveGrokTaskProfile,
 } from "../src/providers/grok-build.mjs";
 import { GROK_HOST_GATE_TEST_OPTIONS, grokHostGateContract } from "../src/core/grok-host-gate.mjs";
+import { Logger } from "../src/core/logger.mjs";
 import { nativePath, silentLogger } from "./helpers.mjs";
 
 const fixture = nativePath(new URL("./fixtures/fake-grok.mjs", import.meta.url));
@@ -43,8 +44,19 @@ async function createGitRepository(root) {
 
 async function collectRun(provider, request) {
   const events = [];
-  for await (const event of provider.run(request)) events.push(event);
+  for await (const event of provider.run(withPublicSavedSessionDisclosure(request))) events.push(event);
   return events;
+}
+
+function withPublicSavedSessionDisclosure(request) {
+  return {
+    ...request,
+    metadata: {
+      bridge_payload_classification: "public_synthetic",
+      bridge_payload_disclosed: true,
+      ...(request.metadata ?? {}),
+    },
+  };
 }
 
 function createProviderConfig(overrides = {}) {
@@ -191,11 +203,11 @@ test("Grok Build rejects secret auth environment, then keeps only reviewed non-s
   delete process.env.XAI_API_KEY;
   const events = [];
   try {
-    for await (const event of provider.run({
+    for await (const event of provider.run(withPublicSavedSessionDisclosure({
       mode: "consult",
       model: "grok-4.6",
       messages: [{ role: "user", content: "hello" }],
-    })) events.push(event);
+    }))) events.push(event);
   } finally {
     await provider.close();
   }
@@ -338,6 +350,18 @@ test("Grok saved-session privacy and terminal billing signals fail closed", () =
     metadata: { bridge_payload_classification: "public_repo", bridge_payload_disclosed: true },
     messages: [{ role: "user", content: "public repository task" }],
   }));
+  assert.doesNotThrow(() => assertGrokSavedSessionRequest({
+    metadata: { bridge_payload_classification: "owner_private", bridge_payload_disclosed: true },
+    messages: [{ role: "user", content: "owner-authorized private task" }],
+  }));
+  assert.throws(() => assertGrokSavedSessionRequest({
+    metadata: { bridge_payload_classification: "owner_private" },
+    messages: [{ role: "user", content: "undisclosed private task" }],
+  }), /bridge_payload_disclosed=true/);
+  assert.throws(() => assertGrokSavedSessionRequest({
+    metadata: { bridge_payload_classification: "owner_private", bridge_payload_disclosed: false },
+    messages: [{ role: "user", content: "declined private task" }],
+  }), /bridge_payload_disclosed=true/);
   assert.throws(() => assertGrokSavedSessionRequest({ metadata: {}, messages: [] }), /payload_classification/);
   assert.doesNotThrow(() => assertGrokSavedSessionRequest({
     metadata: { bridge_payload_classification: "public_image", bridge_payload_disclosed: true },
@@ -345,6 +369,10 @@ test("Grok saved-session privacy and terminal billing signals fail closed", () =
   }, { imageRequest: true }));
   assert.throws(() => assertGrokSavedSessionRequest({
     metadata: { bridge_payload_classification: "public_repo", bridge_payload_disclosed: true },
+    messages: [{ role: "user", content: "[image attachment omitted]" }],
+  }, { imageRequest: true }), /public_synthetic_image or public_image/);
+  assert.throws(() => assertGrokSavedSessionRequest({
+    metadata: { bridge_payload_classification: "owner_private", bridge_payload_disclosed: true },
     messages: [{ role: "user", content: "[image attachment omitted]" }],
   }, { imageRequest: true }), /public_synthetic_image or public_image/);
   assert.throws(() => assertGrokSavedSessionRequest({
@@ -1016,6 +1044,226 @@ test("Grok execution policy retains legacy negative configuration aliases", () =
   });
 });
 
+sqliteTest("Grok owner-private Delegate honors explicit subagent enablement without logging the prompt", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "threadspan-grok-owner-private-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const gatePath = await createImageHostGate(root);
+  const argsPath = join(root, "args.json");
+  const counterPath = join(root, "counter.jsonl");
+  const promptCapturePath = join(root, "prompt-capture.txt");
+  const ledgerPath = join(root, "ledger.jsonl");
+  const fakePath = join(root, "fake-owner-private-grok.mjs");
+  const privatePrompt = "owner-private prompt marker must-never-enter-log-7b9c";
+  await writeFile(fakePath, `
+    import { appendFile, readFile, writeFile } from "node:fs/promises";
+    const args = process.argv.slice(2);
+    await appendFile(process.env.FAKE_GROK_COUNTER_PATH, JSON.stringify(args) + "\\n", "utf8");
+    if (args.includes("--version")) { process.stdout.write("grok 1.0.5 (test)\\n"); process.exit(0); }
+    await writeFile(process.env.FAKE_GROK_ARGS_PATH, JSON.stringify(args), "utf8");
+    const prompt = await readFile(args[args.indexOf("--prompt-file") + 1], "utf8");
+    await writeFile(process.env.FAKE_GROK_PROMPT_CAPTURE_PATH, prompt, "utf8");
+    if (process.env.FAKE_GROK_OWNER_PRIVATE_FAIL === "1") {
+      process.stderr.write(prompt);
+      process.stdout.write(JSON.stringify({
+        output_text: "worker-failed",
+        modelUsage: { "grok-4.6-build": {} },
+        turns: 1,
+        model_calls: 1,
+        finish_reason: "stop"
+      }));
+      process.exit(17);
+    }
+    process.stdout.write(JSON.stringify({
+      output_text: "worker-ok",
+      modelUsage: { "grok-4.6-build": {} },
+      usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+      turns: 1,
+      model_calls: 1,
+      finish_reason: "stop"
+    }));
+  `);
+  let logs = "";
+  const logger = new Logger({
+    level: "debug",
+    sink: { write(value) { logs += String(value); return true; } },
+  });
+  const provider = new GrokBuildProvider("grok", createProviderConfig({
+    commandArgs: [fakePath],
+    grokHostGate: { path: gatePath, testContext: true },
+    env: {
+      FAKE_GROK_ARGS_PATH: argsPath,
+      FAKE_GROK_COUNTER_PATH: counterPath,
+      FAKE_GROK_PROMPT_CAPTURE_PATH: promptCapturePath,
+    },
+    ledger: { enabled: true, path: ledgerPath, includeOutput: false },
+    delegate: {
+      profile: "balanced",
+      maxTurns: 16,
+      expectedTurns: 4,
+      requireGit: false,
+      requireLinkedWorktree: false,
+      requireCleanStart: false,
+    },
+  }), { logger });
+  const undisclosedRequest = {
+    mode: "delegate",
+    model: "grok-4.6",
+    workspace: root,
+    messages: [{ role: "user", content: privatePrompt }],
+    metadata: { bridge_payload_classification: "owner_private", bridge_allow_subagents: true },
+  };
+  for (const metadata of [
+    undisclosedRequest.metadata,
+    { ...undisclosedRequest.metadata, bridge_payload_disclosed: false },
+  ]) {
+    await assert.rejects(async () => {
+      for await (const _event of provider.run({ ...undisclosedRequest, metadata })) {}
+    }, /bridge_payload_disclosed=true/);
+  }
+  await assert.rejects(readFile(counterPath, "utf8"), { code: "ENOENT" });
+  const disabledCounterPath = join(root, "disabled-gate-counter.jsonl");
+  const disabledProvider = new GrokBuildProvider("grok", createProviderConfig({
+    commandArgs: [fakePath],
+    env: {
+      FAKE_GROK_ARGS_PATH: join(root, "disabled-gate-args.json"),
+      FAKE_GROK_COUNTER_PATH: disabledCounterPath,
+      FAKE_GROK_PROMPT_CAPTURE_PATH: join(root, "disabled-gate-prompt.txt"),
+    },
+    delegate: {
+      profile: "balanced",
+      maxTurns: 16,
+      expectedTurns: 4,
+      requireGit: false,
+      requireLinkedWorktree: false,
+      requireCleanStart: false,
+    },
+  }), { logger: silentLogger() });
+  try {
+    for (const metadata of [
+      undisclosedRequest.metadata,
+      { ...undisclosedRequest.metadata, bridge_payload_disclosed: false },
+    ]) {
+      await assert.rejects(async () => {
+        for await (const _event of disabledProvider.run({ ...undisclosedRequest, metadata })) {}
+      }, /bridge_payload_disclosed=true/);
+    }
+  } finally {
+    await disabledProvider.close();
+  }
+  await assert.rejects(readFile(disabledCounterPath, "utf8"), { code: "ENOENT" });
+  const nonLinuxCounterPath = join(root, "non-linux-counter.jsonl");
+  const nonLinuxProvider = new GrokBuildProvider("grok", createProviderConfig({
+    commandArgs: [fakePath],
+    grokHostGate: { platform: "win32" },
+    env: {
+      FAKE_GROK_ARGS_PATH: join(root, "non-linux-args.json"),
+      FAKE_GROK_COUNTER_PATH: nonLinuxCounterPath,
+      FAKE_GROK_PROMPT_CAPTURE_PATH: join(root, "non-linux-prompt.txt"),
+    },
+    delegate: {
+      profile: "balanced",
+      maxTurns: 16,
+      expectedTurns: 4,
+      requireGit: false,
+      requireLinkedWorktree: false,
+      requireCleanStart: false,
+    },
+  }), { logger: silentLogger() });
+  try {
+    await assert.rejects(async () => {
+      for await (const _event of nonLinuxProvider.run({
+        mode: "delegate",
+        model: "grok-4.6",
+        workspace: root,
+        messages: [{ role: "user", content: privatePrompt }],
+      })) {}
+    }, /bridge_payload_classification/);
+  } finally {
+    await nonLinuxProvider.close();
+  }
+  await assert.rejects(readFile(nonLinuxCounterPath, "utf8"), { code: "ENOENT" });
+  let events;
+  try {
+    events = await collectRun(provider, {
+      mode: "delegate",
+      model: "grok-4.6",
+      workspace: root,
+      messages: [{ role: "user", content: privatePrompt }],
+      metadata: {
+        bridge_payload_classification: "owner_private",
+        bridge_payload_disclosed: true,
+        bridge_allow_subagents: true,
+      },
+    });
+  } finally {
+    await provider.close();
+  }
+
+  assert.equal(events.at(-1).message.content, "worker-ok");
+  assert.equal(events.at(-1).providerMetadata.grokBuild.allowSubagents, true);
+  const gate = new DatabaseSync(gatePath, { readOnly: true });
+  assert.equal(gate.prepare("SELECT COUNT(*) AS count FROM grok_host_slots").get().count, 0);
+  gate.close();
+  const args = JSON.parse(await readFile(argsPath, "utf8"));
+  assert.equal(args.includes("--no-subagents"), false);
+  assert.equal(args.some((value) => value.includes(privatePrompt)), false);
+  assert.match(await readFile(promptCapturePath, "utf8"), /NESTED AGENTS[\s\S]*subagents are allowed/i);
+  const invocations = (await readFile(counterPath, "utf8")).trim().split("\n").map(JSON.parse)
+    .filter((values) => !values.includes("--version"));
+  assert.equal(invocations.length, 1, "the saved-session adapter must not retry or fall back");
+  const ledger = await readFile(ledgerPath, "utf8");
+  assert.doesNotMatch(`${logs}\n${ledger}`, new RegExp(privatePrompt));
+
+  const failureCounterPath = join(root, "failure-counter.jsonl");
+  const failureLedgerPath = join(root, "failure-ledger.jsonl");
+  const failurePromptCapturePath = join(root, "failure-prompt-capture.txt");
+  let failureLogs = "";
+  const failureProvider = new GrokBuildProvider("grok", createProviderConfig({
+    commandArgs: [fakePath],
+    grokHostGate: { path: gatePath, testContext: true },
+    env: {
+      FAKE_GROK_ARGS_PATH: join(root, "failure-args.json"),
+      FAKE_GROK_COUNTER_PATH: failureCounterPath,
+      FAKE_GROK_PROMPT_CAPTURE_PATH: failurePromptCapturePath,
+      FAKE_GROK_OWNER_PRIVATE_FAIL: "1",
+    },
+    ledger: { enabled: true, path: failureLedgerPath, includeOutput: false },
+    delegate: {
+      profile: "balanced",
+      maxTurns: 16,
+      expectedTurns: 4,
+      requireGit: false,
+      requireLinkedWorktree: false,
+      requireCleanStart: false,
+    },
+  }), {
+    logger: new Logger({ level: "debug", sink: { write(value) { failureLogs += String(value); return true; } } }),
+  });
+  let surfacedError;
+  try {
+    await assert.rejects(collectRun(failureProvider, {
+      ...undisclosedRequest,
+      metadata: {
+        ...undisclosedRequest.metadata,
+        bridge_payload_disclosed: true,
+      },
+    }), (error) => {
+      surfacedError = error;
+      return /exited with code 17/.test(error.message);
+    });
+  } finally {
+    await failureProvider.close();
+  }
+  const failureLedger = await readFile(failureLedgerPath, "utf8");
+  assert.doesNotMatch(`${surfacedError?.message}\n${JSON.stringify(surfacedError?.details)}\n${failureLogs}\n${failureLedger}`, new RegExp(privatePrompt));
+  const failedAttempt = failureLedger.trim().split("\n").map(JSON.parse)
+    .find((record) => record.event === "attempt-failed");
+  assert.match(failedAttempt.stderrSha256, /^[a-f0-9]{64}$/);
+  const failureInvocations = (await readFile(failureCounterPath, "utf8")).trim().split("\n").map(JSON.parse)
+    .filter((values) => !values.includes("--version"));
+  assert.equal(failureInvocations.length, 1);
+});
+
 test("Grok Consult executes in a disposable workspace and emits usage/metadata", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "cursor-bridge-grok-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -1025,7 +1273,7 @@ test("Grok Consult executes in a disposable workspace and emits usage/metadata",
     env: { FAKE_GROK_ARGS_PATH: argsPath, FAKE_GROK_PROMPT_CAPTURE_PATH: promptCapturePath },
   }), { logger: silentLogger() });
   const events = [];
-  for await (const event of provider.run({
+  for await (const event of provider.run(withPublicSavedSessionDisclosure({
     mode: "consult",
     model: "grok-4.6",
     threadId: "thread-test",
@@ -1037,7 +1285,7 @@ test("Grok Consult executes in a disposable workspace and emits usage/metadata",
       bridge_coordinator_id: "cgpt-a",
       bridge_worker_group: "grok-nine",
     },
-  })) events.push(event);
+  }))) events.push(event);
   await provider.close();
 
   assert.equal(events.at(-1).message.content, "worker-ok");
@@ -1077,7 +1325,7 @@ test("Grok Build summarizes only repetitive tool output in the transmitted worke
   const messages = [{ role: "tool", toolCallId: "call_grok", content: original }];
   const before = structuredClone(messages);
   try {
-    for await (const _event of provider.run({ mode: "consult", model: "grok-4.6", messages })) {}
+    for await (const _event of provider.run(withPublicSavedSessionDisclosure({ mode: "consult", model: "grok-4.6", messages }))) {}
   } finally {
     await provider.close();
   }
@@ -1091,7 +1339,7 @@ test("Grok Build summarizes only repetitive tool output in the transmitted worke
 test("Grok Build rejects Integrated rather than substituting its agent loop", async () => {
   const provider = new GrokBuildProvider("grok", createProviderConfig({ capabilities: ["consult", "integrated", "delegate"] }), { logger: silentLogger() });
   await assert.rejects(async () => {
-    for await (const _event of provider.run({ mode: "integrated", model: "grok-4.6", messages: [] })) {}
+    for await (const _event of provider.run(withPublicSavedSessionDisclosure({ mode: "integrated", model: "grok-4.6", messages: [] }))) {}
   }, /does not support mode 'integrated'|coding-agent loop/);
   await provider.close();
 });
@@ -1106,11 +1354,11 @@ test("Grok Build classifies stderr quota JSON and does not retry", async (t) => 
   }), { logger: silentLogger() });
   try {
     await assert.rejects(async () => {
-      for await (const _event of provider.run({
+      for await (const _event of provider.run(withPublicSavedSessionDisclosure({
         mode: "consult",
         model: "grok-4.6",
         messages: [{ role: "user", content: "bounded probe" }],
-      })) {}
+      }))) {}
     }, (error) => error.status === 429 && error.retryable === false && error.details?.upstream?.retryPolicy === "no-automatic-retry");
   } finally {
     await provider.close();
@@ -1279,14 +1527,14 @@ test("Grok Delegate resumes unchanged repeated exploration exactly once with its
   }), { logger: silentLogger() });
   const events = [];
   try {
-    for await (const event of provider.run({
+    for await (const event of provider.run(withPublicSavedSessionDisclosure({
       mode: "delegate",
       model: "grok-4.6",
       workspace: repository,
       threadId: "thread-exploration",
       messages: [{ role: "user", content: "make the bounded patch" }],
       metadata: { bridge_acceptance_commands: ["npm test -- token=private-acceptance"] },
-    })) events.push(event);
+    }))) events.push(event);
   } finally {
     await provider.close();
   }
@@ -1465,12 +1713,12 @@ test("Grok Delegate does not recover changed work or incomplete output without s
       }), { logger: silentLogger() });
       const events = [];
       try {
-        for await (const event of provider.run({
+        for await (const event of provider.run(withPublicSavedSessionDisclosure({
           mode: "delegate",
           model: "grok-4.6",
           workspace: repository,
           messages: [{ role: "user", content: "bounded task" }],
-        })) events.push(event);
+        }))) events.push(event);
       } finally {
         await provider.close();
       }
@@ -1507,13 +1755,13 @@ test("Grok Delegate recovery entitlement failure remains terminal without a thir
   }), { logger: silentLogger() });
   try {
     await assert.rejects(async () => {
-      for await (const _event of provider.run({
+      for await (const _event of provider.run(withPublicSavedSessionDisclosure({
         mode: "delegate",
         model: "grok-4.6",
         workspace: repository,
         threadId: "thread-entitlement",
         messages: [{ role: "user", content: "bounded task" }],
-      })) {}
+      }))) {}
     }, (error) => error.status === 401 && error.retryable === false && error.details?.upstream?.retryPolicy === "no-automatic-retry");
   } finally {
     await provider.close();
