@@ -95,8 +95,8 @@ export const ALL_COMPONENT_IDS = Object.freeze([...COMPONENT_IDS, ...OPTIONAL_CO
 export const CONTEXT_PROFILES = Object.freeze({
   "gpt-5.6-default": Object.freeze({
     model: "gpt-5.6-sol",
-    contextWindow: 271_500,
-    autoCompactTokenLimit: 192_000,
+    contextWindow: 320_000,
+    autoCompactTokenLimit: 272_000,
     optional: false,
   }),
   spark: Object.freeze({

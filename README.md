@@ -210,7 +210,7 @@ The separate [External copy check](docs/COPY-CHECK.md) policy is off by default 
 
 | Profile | Model | Context | Auto-compact |
 |---|---|---:|---:|
-| `gpt-5.6-default` | `gpt-5.6-sol` | 271,500 | 192,000 |
+| `gpt-5.6-default` | `gpt-5.6-sol` | 320,000 | 272,000 |
 | `spark` | `gpt-5.3-codex-spark` | 128,000 | 80,000 |
 | `gpt-5.6-600k` | `gpt-5.6-sol` | 600,000 | 480,000 |
 | `gpt-5.6-1m` | `gpt-5.6-sol` | 1,000,000 | 800,000 |

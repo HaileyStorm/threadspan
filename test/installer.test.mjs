@@ -466,10 +466,26 @@ test("incremental planning selects only requested components and optional profil
 });
 
 test("context profiles use exact defaults and enforce the 90 percent ceiling", () => {
-  assert.match(renderContextProfile("gpt-5.6-default", CONTEXT_PROFILES["gpt-5.6-default"]), /model_context_window = 271500\nmodel_auto_compact_token_limit = 192000/);
+  assert.deepEqual(CONTEXT_PROFILES["gpt-5.6-default"], {
+    model: "gpt-5.6-sol",
+    contextWindow: 320_000,
+    autoCompactTokenLimit: 272_000,
+    optional: false,
+  });
+  assert.match(renderContextProfile("gpt-5.6-default", CONTEXT_PROFILES["gpt-5.6-default"]), /model_context_window = 320000\nmodel_auto_compact_token_limit = 272000/);
+  assert.deepEqual(CONTEXT_PROFILES.spark, {
+    model: "gpt-5.3-codex-spark",
+    contextWindow: 128_000,
+    autoCompactTokenLimit: 80_000,
+    optional: false,
+  });
   assert.match(renderContextProfile("spark", CONTEXT_PROFILES.spark), /model_context_window = 128000\nmodel_auto_compact_token_limit = 80000/);
   assert.match(renderContextProfile("gpt-5.6-600k", CONTEXT_PROFILES["gpt-5.6-600k"]), /600000\nmodel_auto_compact_token_limit = 480000/);
   assert.match(renderContextProfile("gpt-5.6-1m", CONTEXT_PROFILES["gpt-5.6-1m"]), /1000000\nmodel_auto_compact_token_limit = 800000/);
+  for (const [name, profile] of Object.entries(CONTEXT_PROFILES)) {
+    assert.ok(profile.autoCompactTokenLimit < profile.contextWindow, `${name} must compact before its context limit`);
+    assert.ok(profile.autoCompactTokenLimit <= Math.floor(profile.contextWindow * 0.9), `${name} must stay within the 90 percent ceiling`);
+  }
   assert.throws(
     () => validateContextProfile("unsafe", { model: "test", contextWindow: 100, autoCompactTokenLimit: 91 }),
     /must not exceed 90%/,
