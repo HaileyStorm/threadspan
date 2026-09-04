@@ -472,12 +472,12 @@ test("incremental planning selects only requested components and optional profil
 test("context profiles use exact defaults and enforce the 90 percent ceiling", () => {
   assert.deepEqual(CONTEXT_PROFILES["gpt-6-astra-default"], {
     model: "gpt-6-astra",
-    reasoningEffort: "low",
+    reasoningEffort: "medium",
     contextWindow: 602_000,
     autoCompactTokenLimit: 512_000,
     optional: false,
   });
-  assert.match(renderContextProfile("gpt-6-astra-default", CONTEXT_PROFILES["gpt-6-astra-default"]), /model = "gpt-6-astra"\nmodel_reasoning_effort = "low"\nmodel_context_window = 602000\nmodel_auto_compact_token_limit = 512000/);
+  assert.match(renderContextProfile("gpt-6-astra-default", CONTEXT_PROFILES["gpt-6-astra-default"]), /model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\nmodel_context_window = 602000\nmodel_auto_compact_token_limit = 512000/);
   assert.deepEqual(CONTEXT_PROFILES["gpt-5.6-default"], {
     model: "gpt-5.6-sol",
     contextWindow: 320_000,
@@ -492,7 +492,7 @@ test("context profiles use exact defaults and enforce the 90 percent ceiling", (
     optional: false,
   });
   assert.match(renderContextProfile("spark", CONTEXT_PROFILES.spark), /model_context_window = 128000\nmodel_auto_compact_token_limit = 80000/);
-  assert.match(renderContextProfile("gpt-6-astra-1m", CONTEXT_PROFILES["gpt-6-astra-1m"]), /model = "gpt-6-astra"\nmodel_reasoning_effort = "low"\nmodel_context_window = 1000000\nmodel_auto_compact_token_limit = 850000/);
+  assert.match(renderContextProfile("gpt-6-astra-1m", CONTEXT_PROFILES["gpt-6-astra-1m"]), /model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\nmodel_context_window = 1000000\nmodel_auto_compact_token_limit = 850000/);
   for (const [name, profile] of Object.entries(CONTEXT_PROFILES)) {
     assert.ok(profile.autoCompactTokenLimit < profile.contextWindow, `${name} must compact before its context limit`);
     assert.ok(profile.autoCompactTokenLimit <= Math.floor(profile.contextWindow * 0.9), `${name} must stay within the 90 percent ceiling`);

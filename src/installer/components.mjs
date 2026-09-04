@@ -95,7 +95,7 @@ export const ALL_COMPONENT_IDS = Object.freeze([...COMPONENT_IDS, ...OPTIONAL_CO
 export const CONTEXT_PROFILES = Object.freeze({
   "gpt-6-astra-default": Object.freeze({
     model: "gpt-6-astra",
-    reasoningEffort: "low",
+    reasoningEffort: "medium",
     contextWindow: 602_000,
     autoCompactTokenLimit: 512_000,
     optional: false,
@@ -114,7 +114,7 @@ export const CONTEXT_PROFILES = Object.freeze({
   }),
   "gpt-6-astra-1m": Object.freeze({
     model: "gpt-6-astra",
-    reasoningEffort: "low",
+    reasoningEffort: "medium",
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 850_000,
     optional: true,
