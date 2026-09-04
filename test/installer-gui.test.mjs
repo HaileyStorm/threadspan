@@ -100,6 +100,12 @@ test("installer GUI presents Codex full access as an explicit unchecked warning"
   assert.match(source, /state\.selected\.has\(c\.id\)\?"checked":""/);
 });
 
+test("installer proof counts created, updated, and removed targets as files changed", async () => {
+  const source = await readFile(new URL("../ui/install.js", import.meta.url), "utf8");
+  assert.match(source, /files changed\. Rollback manifest retained\./);
+  assert.doesNotMatch(source, /files written\. Rollback manifest retained\./);
+});
+
 test("installer theme control is accessible, enum-only, host-aware, and dark before CSS", async () => {
   const [html, source, styles] = await Promise.all([
     readFile(new URL("../ui/install.html", import.meta.url), "utf8"),

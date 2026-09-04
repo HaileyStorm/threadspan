@@ -582,7 +582,7 @@ function componentPresentation() {
     "sidecar-ui": ["Companion HUD", "Picker, usage, routes, and status."],
     "installer-gui": ["Setup window", "Preview, install, verify, and roll back."],
     "host-surfaces": ["Host surfaces", "Codex, Grok, Cursor, and preview Hermes integrations."],
-    "context-profiles": ["Context profiles", "Default, Spark, 600k, and 1M profiles."],
+    "context-profiles": ["Context profiles", "Astra default and experimental 1M, plus Sol and Spark compatibility."],
     continuity: ["Continuity", "Checkpoints and safe context rollover."],
     "compatibility-watch": ["Compatibility Watch", "Detect breakage, repair safely, and learn from fixes."],
     "voice-profiles": ["Voice", "Choose how Threadspan sounds and reports progress."],

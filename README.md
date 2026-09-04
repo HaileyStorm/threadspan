@@ -210,12 +210,12 @@ The separate [External copy check](docs/COPY-CHECK.md) policy is off by default 
 
 | Profile | Model | Context | Auto-compact |
 |---|---|---:|---:|
+| `gpt-6-astra-default` | `gpt-6-astra` (low) | 602,000 | 512,000 |
 | `gpt-5.6-default` | `gpt-5.6-sol` | 320,000 | 272,000 |
 | `spark` | `gpt-5.3-codex-spark` | 128,000 | 80,000 |
-| `gpt-5.6-600k` | `gpt-5.6-sol` | 600,000 | 480,000 |
-| `gpt-5.6-1m` | `gpt-5.6-sol` | 1,000,000 | 800,000 |
+| `gpt-6-astra-1m` (Experimental) | `gpt-6-astra` (low) | 1,000,000 | 850,000 |
 
-The first two are standard. Longer profiles are optional capability unlocks, not automatic answers to frequent compaction. Auto-compact is never generated above 90% of context. Switching to a model that cannot hold the current thread should create a Continuity task rather than truncate silently. Provider-encrypted Responses `compaction` and `context_compaction` items are rejected before dispatch because another provider cannot interpret them; recovery requires a fresh task or provider-neutral Continuity fork carrying an ordinary-text summary. Local/token-budget compaction that expands to ordinary messages remains portable.
+The first three are always generated. Astra is the primary controller profile; the Sol and Spark profiles remain available for deliberate specialist or compatibility use. The Astra 1M profile is an explicit capability unlock, not an automatic answer to frequent compaction. The current native capture advertises 872K, so the 1M profile remains experimental until a post-restart native live request accepts it. Auto-compact is never generated above 90% of context. Switching to a model that cannot hold the current thread should create a Continuity task rather than truncate silently. Provider-encrypted Responses `compaction` and `context_compaction` items are rejected before dispatch because another provider cannot interpret them; recovery requires a fresh task or provider-neutral Continuity fork carrying an ordinary-text summary. Local/token-budget compaction that expands to ordinary messages remains portable.
 
 ## Compatibility Watch
 

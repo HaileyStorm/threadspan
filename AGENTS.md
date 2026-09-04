@@ -10,6 +10,12 @@ This repository implements a provider-neutral Consult / Integrated / Delegate br
 
 Never emulate an unsupported mode by quietly using another one. Return a capability error with a useful reason.
 
+## Codex controller and delegation
+
+- New unpinned Codex work uses GPT-6 Astra at low reasoning as the primary controller. Explicit user, picker, task, and project routes always win; never silently reroute them.
+- Use the shared Pareto envelope: Astra owns intent, synthesis, and orchestration; GPT-5.6 Sol at high or above handles bounded implementation, invariant, and review work; Luna at high or above handles read-heavy scouting and documentation. Use another route only when current task evidence supports it.
+- Delegate independent work when it saves time or materially improves quality. Start with the smallest useful set, normally one to three agents, keep one writer per file or symbol cluster, and have the parent validate evidence and acceptance. Bounded mechanical work does not require delegation ceremony.
+
 ## Repository map
 
 - `src/bridge/` — Responses assembly, HTTP surface, and shared orchestration.

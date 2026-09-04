@@ -10,11 +10,12 @@ import {
   resolveCodexUserConfigPath,
   transformCodexFullAccessConfig,
 } from "../codex/execution-policy.mjs";
-import { computePlanDigest } from "./components.mjs";
+import { computePlanDigest, RETIRED_CONTEXT_PROFILES } from "./components.mjs";
 import { DAEMON_SERVICE_LIFECYCLE_API_VERSION, validateDaemonLifecycleCommands, validateDaemonServicePlan } from "./service.mjs";
 
 const SERVICE_PENDING_RUNTIME_STATUS = "applied-pending-runtime-ownership";
 const LIFECYCLE_COMMAND_TIMEOUT_MS = 20_000;
+const MANAGED_FILE_REMOVAL = "remove-managed-file";
 
 /** Resolve the production claim namespace from the OS account database, not HOME/USERPROFILE. */
 export function resolveDaemonServiceClaimRoot() {
@@ -53,6 +54,9 @@ function previewUnchanged(item) {
 }
 
 function previewOperation(operation) {
+  if (operation.operationKind === MANAGED_FILE_REMOVAL) {
+    return [`  ${operation.component}: ${operation.relativePath} (remove exact retired managed file)`];
+  }
   if (operation.operationKind !== "codex-config-transform") {
     return [`  ${operation.component}: ${operation.relativePath}`];
   }
@@ -108,6 +112,10 @@ export async function applyInstallerPlan(plan, options) {
     const currentBytes = existing ? await readFile(path) : Buffer.alloc(0);
     const originalSha256 = existing ? sha256Bytes(currentBytes) : null;
     const originalMode = existing ? existing.mode & 0o777 : null;
+    if (operation.operationKind === MANAGED_FILE_REMOVAL
+      && (!existing || originalSha256 !== operation.expectedPreimageSha256)) {
+      throw new Error("Retired managed file changed after preview; create and approve a fresh plan");
+    }
     if (operation.operationKind === "codex-config-transform") {
       assertCodexPreimage(operation, { existing, originalSha256, originalMode });
       const transformed = transformCodexFullAccessConfig(decodeCodexConfig(currentBytes));
@@ -130,6 +138,8 @@ export async function applyInstallerPlan(plan, options) {
         transformId: operation.transformId,
         expectedNextSha256: operation.expectedNextSha256,
         conflicts: operation.conflicts ?? [],
+      } : operation.operationKind === MANAGED_FILE_REMOVAL ? {
+        targetKind: "managed-file-removal",
       } : {}),
       existed: Boolean(existing),
       ...(existing ? { originalSha256 } : {}),
@@ -162,13 +172,7 @@ export async function applyInstallerPlan(plan, options) {
     for (const { operation, path } of targets) {
       const target = operation.targetPath ?? operation.relativePath;
       const entry = entries.find((candidate) => candidate.target === target);
-      const content = operation.operationKind === "codex-config-transform"
-        ? await materializeCodexTransform(path, operation, entry)
-        : operation.content;
-      if (operation.operationKind !== "codex-config-transform") await assertTargetUnchanged(path, entry);
-      await atomicWrite(path, content, operation.mode, operation.operationKind === "codex-config-transform"
-        ? { strictMode: true, beforeRename: async () => { await materializeCodexTransform(path, operation, entry); } }
-        : {});
+      await applyComponentOperation(path, operation, entry);
       written.push(path);
       await options.checkpoint?.(`component-written:${operation.component}`);
     }
@@ -228,9 +232,11 @@ export async function createInstallerUninstallPlan(manifestPath, options = {}) {
     if (entry.targetKind === "codex-user-config") await assertSafeCodexTarget(target);
     else await assertSafeTarget(root, target);
     const targetStats = await safeLstat(target);
-    if (!targetStats?.isFile() || targetStats.isSymbolicLink()) throw new Error(`Installed component target is unavailable: ${entry.component}`);
-    const installedSha256 = await sha256File(target);
-    const installedMode = targetStats.mode & 0o777;
+    if (entry.targetKind === "managed-file-removal") {
+      if (targetStats) throw new Error(`Retired component target was recreated: ${entry.component}`);
+    } else if (!targetStats?.isFile() || targetStats.isSymbolicLink()) {
+      throw new Error(`Installed component target is unavailable: ${entry.component}`);
+    }
     if (entry.existed) {
       const backup = boundedPath(root, entry.backup);
       const backupStats = await safeLstat(backup);
@@ -238,7 +244,9 @@ export async function createInstallerUninstallPlan(manifestPath, options = {}) {
         throw new Error(`Installer preimage backup changed: ${entry.component}`);
       }
     }
-    entries.push({ ...entry, installedSha256, installedMode });
+    entries.push(entry.targetKind === "managed-file-removal"
+      ? { ...entry, installedAbsent: true }
+      : { ...entry, installedSha256: await sha256File(target), installedMode: targetStats.mode & 0o777 });
   }
   const basePlan = {
     schemaVersion: 1,
@@ -292,7 +300,11 @@ export async function applyInstallerUninstallPlan(plan, options) {
   }
   const projection = manifest.entries.map((entry) => {
     const approved = plan.entries.find((candidate) => candidate.target === entry.target);
-    return approved ? { ...entry, installedSha256: approved.installedSha256, installedMode: approved.installedMode } : null;
+    return approved
+      ? approved.installedAbsent === true
+        ? { ...entry, installedAbsent: true }
+        : { ...entry, installedSha256: approved.installedSha256, installedMode: approved.installedMode }
+      : null;
   });
   if (projection.some((entry) => entry === null) || stableStringify(projection) !== stableStringify(plan.entries)) {
     throw new Error("Installer uninstall operations differ from the approved preview");
@@ -711,6 +723,13 @@ function validatePlan(plan) {
         || !(operation.expectedPreimageSha256 === null || /^[0-9a-f]{64}$/.test(operation.expectedPreimageSha256))) {
         throw new TypeError("Invalid Codex config transform operation");
       }
+    } else if (operation.operationKind === MANAGED_FILE_REMOVAL) {
+      if (operation.component !== "context-profiles"
+        || typeof operation.relativePath !== "string"
+        || !Object.entries(RETIRED_CONTEXT_PROFILES).some(([name, content]) => operation.relativePath === `${name}.config.toml`
+          && operation.expectedPreimageSha256 === sha256Bytes(Buffer.from(content, "utf8")))) {
+        throw new TypeError("Invalid managed file removal operation");
+      }
     } else if (typeof operation.content !== "string" || typeof operation.relativePath !== "string") {
       throw new TypeError("Invalid installer operation");
     }
@@ -825,6 +844,10 @@ async function assertInstallerPlanApplied(plan, root, options = {}) {
   for (const operation of plan.operations) {
     const path = resolveOperationTarget(root, operation, options).path;
     const stats = await safeLstat(path);
+    if (operation.operationKind === MANAGED_FILE_REMOVAL) {
+      if (stats) throw new Error(`Applied retired component target was recreated: ${operation.component}`);
+      continue;
+    }
     const expectedSha256 = operation.operationKind === "codex-config-transform"
       ? operation.expectedNextSha256
       : sha256Bytes(Buffer.from(operation.content, "utf8"));
@@ -860,10 +883,7 @@ async function resumeInstallerPlan(plan, options, root, manifestPath, manifest) 
       if (state?.state === "installed") continue;
       const path = resolveOperationTarget(root, operation, options).path;
       const entry = manifest.entries.find((candidate) => candidate.target === target);
-      const content = operation.operationKind === "codex-config-transform"
-        ? await materializeCodexTransform(path, operation, entry)
-        : operation.content;
-      await atomicWrite(path, content, operation.mode, operation.operationKind === "codex-config-transform" ? { strictMode: true } : {});
+      await applyComponentOperation(path, operation, entry);
       await options.checkpoint?.(`component-written:${operation.component}`);
     }
     manifest.status = "applied";
@@ -892,7 +912,7 @@ async function classifyInstallerEntries(plan, root, entries, options) {
     const path = resolveOperationTarget(root, operation, options).path;
     const stats = await safeLstat(path);
     if (!stats) {
-      results.push({ entry, state: entry.existed ? "drift" : "preimage" });
+      results.push({ entry, state: operation.operationKind === MANAGED_FILE_REMOVAL ? "installed" : entry.existed ? "drift" : "preimage" });
       continue;
     }
     if (!stats.isFile() || stats.isSymbolicLink()) { results.push({ entry, state: "drift" }); continue; }
@@ -900,7 +920,9 @@ async function classifyInstallerEntries(plan, root, entries, options) {
     const mode = stats.mode & 0o777;
     const installedSha256 = operation.operationKind === "codex-config-transform"
       ? operation.expectedNextSha256
-      : sha256Bytes(Buffer.from(operation.content, "utf8"));
+      : operation.operationKind === MANAGED_FILE_REMOVAL
+        ? null
+        : sha256Bytes(Buffer.from(operation.content, "utf8"));
     if (digest === installedSha256 && (process.platform === "win32" || mode === operation.mode)) {
       results.push({ entry, state: "installed" });
     } else if (entry.existed && digest === entry.originalSha256 && (process.platform === "win32" || mode === entry.originalMode)) {
@@ -935,9 +957,11 @@ async function restoreInstallerUninstallEntries(root, entries) {
           && (process.platform === "win32" || (stats.mode & 0o777) === entry.originalMode)
         : !stats;
       if (restored) continue;
-      if (!stats?.isFile() || stats.isSymbolicLink() || await sha256File(target) !== entry.installedSha256
-        || (process.platform !== "win32" && (stats.mode & 0o777) !== entry.installedMode)) {
-        throw new Error("installed target changed after uninstall preview");
+      if (entry.installedAbsent === true) {
+        if (stats) throw new Error("retired target was recreated after uninstall preview");
+      } else if (!stats?.isFile() || stats.isSymbolicLink() || await sha256File(target) !== entry.installedSha256
+          || (process.platform !== "win32" && (stats.mode & 0o777) !== entry.installedMode)) {
+          throw new Error("installed target changed after uninstall preview");
       }
       if (entry.existed) {
         const backup = boundedPath(root, entry.backup);
@@ -964,7 +988,9 @@ function validateComponentUninstallPlan(plan) {
     || !/^[0-9a-f]{64}$/.test(plan.digest ?? "") || !/^[0-9a-f]{64}$/.test(plan.installPlanDigest ?? "")
     || !/^[0-9a-f]{64}$/.test(plan.manifestSha256 ?? "") || !isAbsolute(plan.installRoot ?? "")
     || !isAbsolute(plan.manifestPath ?? "") || !Array.isArray(plan.entries)
-    || plan.entries.some((entry) => !entry || !/^[0-9a-f]{64}$/.test(entry.installedSha256 ?? "") || !Number.isInteger(entry.installedMode))) {
+    || plan.entries.some((entry) => !entry || (entry.installedAbsent === true
+      ? entry.targetKind !== "managed-file-removal" || entry.installedSha256 !== undefined || entry.installedMode !== undefined
+      : entry.installedAbsent !== undefined || !/^[0-9a-f]{64}$/.test(entry.installedSha256 ?? "") || !Number.isInteger(entry.installedMode)))) {
     throw new TypeError("Invalid component uninstall plan");
   }
   if (computeComponentUninstallPlanDigest(plan) !== plan.digest) throw new Error("Component uninstall plan integrity check failed");
@@ -1048,6 +1074,21 @@ async function materializeCodexTransform(path, operation, entry) {
     throw new Error("Codex user config changed after backup; refusing to write");
   }
   return Buffer.from(transformed.content, "utf8");
+}
+
+async function applyComponentOperation(path, operation, entry) {
+  if (operation.operationKind === MANAGED_FILE_REMOVAL) {
+    await assertTargetUnchanged(path, entry);
+    await rm(path);
+    return;
+  }
+  const content = operation.operationKind === "codex-config-transform"
+    ? await materializeCodexTransform(path, operation, entry)
+    : operation.content;
+  if (operation.operationKind !== "codex-config-transform") await assertTargetUnchanged(path, entry);
+  await atomicWrite(path, content, operation.mode, operation.operationKind === "codex-config-transform"
+    ? { strictMode: true, beforeRename: async () => { await materializeCodexTransform(path, operation, entry); } }
+    : {});
 }
 
 async function safeLstat(path) {
