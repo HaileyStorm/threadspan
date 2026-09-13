@@ -33,7 +33,7 @@ export function toCodexModelInfo(route, provider, options = {}) {
   const managedWorker = ["cursor-cli", "cursor-sdk", "grok-build", "claude-code"].includes(adapter);
   const contextWindow = positiveInteger(metadata.context_window);
   const reasoningLevels = normalizeReasoningLevels(metadata.supported_reasoning_levels);
-  const defaultReasoning = adapter === "nous"
+  const defaultReasoning = adapter === "nous" && reasoningLevels.some((entry) => entry.effort === "max")
     ? "max"
     : reasoningLevels.find((entry) => entry.effort === metadata.default_reasoning_level)?.effort
       ?? reasoningLevels[0]?.effort

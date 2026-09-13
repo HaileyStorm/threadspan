@@ -401,12 +401,23 @@ The portable default talks directly to Nous Portal with `NOUS_API_KEY`; no separ
     "apiKeyEnv": "NOUS_API_KEY",
     "model": "deepseek/deepseek-v4-flash-0731",
     "discoverModels": true,
+    "reasoningEffort": "max",
+    "allowedReasoningEfforts": ["max", "high", "low"],
+    "retryWithoutStreaming": false,
     "capabilities": ["consult", "integrated"]
   }
 }
 ```
 
-The `nous` adapter preserves thinking content and ordered tool-call/result linkage. It buffers a complete provider turn before exposing tool calls, accepts up to 16 calls in one turn, and fails closed above that bound. Consult and Integrated use the direct adapter; Delegate uses the bounded Codex worker over the same daemon route. Keep the API key environment-only. Hermes Agent remains a separate optional host/runtime rather than a required credential proxy.
+The public Nous catalog returned `deepseek/deepseek-v4.1-flash` on 2026-09-12 with canonical slug `deepseek/deepseek-v4.1-flash-20260910`, Hugging Face id `deepseek-ai/DeepSeek-V4.1-Flash`, a 1,048,576-token context window, a 131,072-token maximum completion, tools, and `max`, `high`, and `low` reasoning efforts. Threadspan selects `max` by default. This was an unauthenticated catalog read, not an inference acceptance. The catalog also retained `deepseek/deepseek-v4-flash-0731` and `deepseek/deepseek-v4-pro-0813`; live discovery remains authoritative and Threadspan does not filter other returned models.
+
+Select V4.1 Flash explicitly without changing the retained 0731 defaults:
+
+```bash
+node src/cli.mjs consult "Your question" --provider nous --model deepseek/deepseek-v4.1-flash --effort max
+```
+
+The `nous` adapter preserves thinking content and ordered tool-call/result linkage. It buffers a complete provider turn before exposing tool calls, accepts up to 16 calls in one turn, and fails closed above that bound. Consult and Integrated use the direct adapter; the existing 0731 Delegate default continues through the bounded Codex worker over the same daemon route. Keep the API key environment-only. A recorded HTTP 402 is terminal for that attempt and leaves local diagnostic evidence, but the evidence file does not gate a later launch or trigger a retry, fallback, or automatic deletion. Hermes Agent remains a separate optional host/runtime rather than a required credential proxy.
 
 ## DeepSeek V4
 

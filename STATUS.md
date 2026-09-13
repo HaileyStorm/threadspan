@@ -4,6 +4,12 @@
 **Package version:** 0.6.0 release source
 **Assessment:** This source is prepared for the signed 0.6.0 release. Publication authority is the exact Git tag plus the public signed manifest, archive digest, and source-commit record; this file alone does not prove publication. The immutable public 0.5.0 history is retained. Earlier live Linux/Windows app-attached HUD and picker evidence predates the one-time authenticated Electron bootstrap and does not certify that replacement transport. The 0.6.0 source adds clean-install/service transactions, provider activation, strengthened Compatibility Watch/maximum-utilization/Continuity controls, the authenticated Desktop bootstrap, and an expanded staged Hermes reverse connector.
 
+## Post-snapshot source delta
+
+On 2026-09-12, an unauthenticated public Nous `/v1/models` response listed exact id `deepseek/deepseek-v4.1-flash`, canonical slug `deepseek/deepseek-v4.1-flash-20260910`, Hugging Face id `deepseek-ai/DeepSeek-V4.1-Flash`, a 1,048,576-token context window, a 131,072-token maximum completion, tools, and `max`, `high`, and `low` reasoning efforts. Live discovery now normalizes those fields for the raw Nous Consult/Integrated picker, and the exact model is covered as an explicit CLI, API, and configuration choice. The existing 0731 defaults, Pro0813 discovery, bounded 0731 Delegate route, and all other returned routes are unchanged. This source delta has public catalog plus offline test evidence; installed MCP serialization, Windows, service restart, app restart, and human acceptance remain unverified here. The parent coordinator owns the separate live inference receipt.
+
+Historical Nous HTTP 402 evidence no longer gates launches. The actual failing attempt remains terminal and single-attempt; its owner-private evidence remains on disk for diagnosis without causing a retry, fallback, or automatic deletion.
+
 ## What is complete
 
 - OpenAI Responses-style buffered/SSE HTTP and convenience Consult/Delegate endpoints; opaque provider-encrypted compaction history fails closed before cross-provider dispatch.

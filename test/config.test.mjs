@@ -212,6 +212,20 @@ test("DeepSeek and Nous adapters may use their documented default endpoints", ()
 test("the commented example config stays in sync with config init", () => {
   const fileConfig = parseJsonc(readFileSync(resolve("config/config.example.jsonc"), "utf8"));
   assert.deepEqual(fileConfig, createExampleConfig());
+  assert.equal(fileConfig.providers.nous.model, "deepseek/deepseek-v4-flash-0731");
+  assert.deepEqual(fileConfig.providers.nous.capabilities, ["consult", "integrated"]);
+  assert.equal(fileConfig.providers.nous.reasoningEffort, "max");
+  assert.deepEqual(fileConfig.providers.nous.allowedReasoningEfforts, ["max", "high", "low"]);
+  assert.equal(fileConfig.providers["nous-worker"].integratedRoute, "integrated/nous/deepseek/deepseek-v4-flash-0731");
+  const v41 = validateConfig({
+    ...fileConfig,
+    providers: { ...fileConfig.providers, nous: { ...fileConfig.providers.nous, model: "deepseek/deepseek-v4.1-flash" } },
+  });
+  assert.equal(v41.providers.nous.model, "deepseek/deepseek-v4.1-flash");
+  assert.throws(() => validateConfig({
+    ...fileConfig,
+    providers: { ...fileConfig.providers, nous: { ...fileConfig.providers.nous, enabled: true, allowedReasoningEfforts: ["high", "low"] } },
+  }), /reasoningEffort must appear in allowedReasoningEfforts/);
 });
 
 test("provider examples keep cardless discovery candidates disabled and value-free", () => {

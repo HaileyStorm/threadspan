@@ -116,6 +116,28 @@ test("HTTP surface serves health, models, buffered Responses, and SSE", async (t
   assert.match(streamText, /data: \[DONE\]/);
 });
 
+test("Responses API accepts the exact Nous V4.1 Flash Consult and Integrated routes", async (t) => {
+  const model = "deepseek/deepseek-v4.1-flash";
+  const config = createTestConfig({
+    providers: {
+      nous: { adapter: "mock", model, models: [model], capabilities: ["consult", "integrated"] },
+    },
+  });
+  const service = new BridgeService(config, { logger: silentLogger() });
+  const server = createHttpServer(service, config);
+  const address = await listenHttpServer(server, { host: "127.0.0.1", port: 0 });
+  t.after(async () => { await closeHttpServer(server); await service.close(); });
+  for (const mode of ["consult", "integrated"]) {
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: `${mode}/nous/${model}`, input: "route check", stream: false, reasoning: { effort: "high" } }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).model, `${mode}/nous/${model}`);
+  }
+});
+
 test("Threadspan state publishes a bounded Compatibility Watch transition and stops polling", async (t) => {
   const config = createTestConfig({
     compatibilityWatch: { enabled: true, pollingEnabled: true, readOnly: true, applyEnabled: false, pollIntervalMs: 60_000 },

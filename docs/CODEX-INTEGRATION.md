@@ -102,8 +102,8 @@ These standalone profile documents are installed beside `config.toml`; Threadspa
 
 ```bash
 node src/cli.mjs codex install \
-  --integrated-provider deepseek \
-  --integrated-model deepseek-v4-pro \
+  --integrated-provider nous \
+  --integrated-model deepseek/deepseek-v4.1-flash \
   --delegate-provider cursor-ultra \
   --delegate-model auto
 ```

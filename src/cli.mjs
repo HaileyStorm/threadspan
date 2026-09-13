@@ -1000,7 +1000,7 @@ Usage:
   threadspan compatibility doctor [--config PATH] [--after-update]
   threadspan compatibility intake [--config PATH] [--repository OWNER/NAME] [--state PATH]
   threadspan catalog build --output PATH [--native PATH|--codex PATH] [--favorite ROUTE ...] [--show-free]
-  threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--payload-classification public_synthetic|public_repo|owner_private --disclosed] [--json]
+  threadspan consult "question" [--context TEXT|--context-file PATH] [--provider ID] [--model ID] [--workspace PATH] [--thread ID] [--profile NAME] [--effort low|medium|high|max] [--max-turns N] [--expected-turns N] [--no-plan] [--allow-subagents|--no-subagents] [--allow-web|--no-web] [--coordinator-id ID] [--worker-group NAME] [--payload-classification public_synthetic|public_repo|owner_private --disclosed] [--json]
   Grok image Consult uses /v1/responses inline PNG/JPEG data URIs with public_synthetic_image|public_image and explicit disclosure; the convenience CLI remains text-only.
   threadspan delegate "task" --workspace PATH --allow-path PATH ... [--deny-path PATH ...] [--non-goal TEXT ...] [same routing options] [--acceptance-command CMD ...]
   threadspan codex snippet [--config PATH]

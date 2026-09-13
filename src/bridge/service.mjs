@@ -329,6 +329,7 @@ export class BridgeService {
         parallelToolCalls: route.mode === "integrated" ? request.parallel_tool_calls : undefined,
         temperature: request.temperature,
         maxOutputTokens: request.max_output_tokens,
+        reasoningEffort: request.reasoning?.effort ?? request.metadata?.bridge_reasoning_effort,
         signal: options.signal,
         threadId,
         workspace: workspace ? String(workspace) : undefined,
@@ -2041,6 +2042,12 @@ function validateResponseRequest(request) {
   if (request.stream !== undefined && typeof request.stream !== "boolean") throw new RequestError("stream must be boolean");
   if (request.metadata !== undefined && (!request.metadata || typeof request.metadata !== "object" || Array.isArray(request.metadata))) {
     throw new RequestError("metadata must be an object");
+  }
+  if (request.reasoning !== undefined && (!request.reasoning || typeof request.reasoning !== "object" || Array.isArray(request.reasoning))) {
+    throw new RequestError("reasoning must be an object");
+  }
+  if (request.reasoning?.effort !== undefined && typeof request.reasoning.effort !== "string") {
+    throw new RequestError("reasoning.effort must be a string");
   }
 }
 

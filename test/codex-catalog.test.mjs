@@ -6,7 +6,7 @@ test("Codex catalog merge preserves native models and keeps explicit routes hidd
   const native = { models: [{ slug: "gpt-native", display_name: "Native" }] };
   const routes = [
     { id: "integrated/threadspan/auto", owned_by: "threadspan", metadata: { bridge_mode: "integrated", provider: "threadspan", upstream_model: "auto", threadspan_smart: true } },
-    { id: "integrated/nous/deepseek/deepseek-v4-flash-0731", owned_by: "nous", metadata: { bridge_mode: "integrated", provider: "nous", upstream_model: "deepseek/deepseek-v4-flash-0731", context_window: 128000 } },
+    { id: "integrated/nous/deepseek/deepseek-v4.1-flash", owned_by: "nous", metadata: { bridge_mode: "integrated", provider: "nous", upstream_model: "deepseek/deepseek-v4.1-flash", context_window: 1_048_576, supported_reasoning_levels: ["max", "high", "low"], default_reasoning_level: "high" } },
     { id: "integrated/openrouter/free/model:free", owned_by: "openrouter", metadata: { bridge_mode: "integrated", provider: "openrouter", upstream_model: "free/model:free", free: true } },
   ];
   const providers = [
@@ -18,7 +18,8 @@ test("Codex catalog merge preserves native models and keeps explicit routes hidd
   assert.equal(catalog.models[1].visibility, "list");
   assert.equal(catalog.models[2].visibility, "hide");
   assert.equal(catalog.models[2].default_reasoning_level, "max");
-  assert.equal(catalog.models[2].context_window, 128000);
+  assert.equal(catalog.models[2].context_window, 1_048_576);
+  assert.deepEqual(catalog.models[2].supported_reasoning_levels.map(({ effort }) => effort), ["max", "high", "low"]);
   assert.equal(catalog.models[3].visibility, "list");
   assert.equal(catalog.models[3].display_name.includes("OpenRouter"), true);
 });

@@ -13,6 +13,13 @@ test("CLI parser handles values, booleans, equals, repeated options, and saved-s
   assert.deepEqual(parsed.options.tag, ["x", "y"]);
 });
 
+test("CLI preserves the exact Nous V4.1 Flash model and max effort", () => {
+  const parsed = parseArguments(["consult", "public probe", "--provider", "nous", "--model", "deepseek/deepseek-v4.1-flash", "--effort", "max"]);
+  assert.equal(parsed.options.provider, "nous");
+  assert.equal(parsed.options.model, "deepseek/deepseek-v4.1-flash");
+  assert.equal(parsed.options.effort, "max");
+});
+
 test("CLI parser and help expose owner-authorized private text classification", async () => {
   const parsed = parseArguments(["delegate", "task", "--payload-classification=owner_private", "--disclosed"]);
   assert.equal(parsed.options.payloadClassification, "owner_private");

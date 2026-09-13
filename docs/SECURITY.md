@@ -344,6 +344,8 @@ Hermes' subscription proxy is intentionally a credential-attaching passthrough a
 
 The bridge's bearer does not automatically secure the proxy if another process can reach port 8645 directly.
 
+For direct Nous Portal requests, `NOUS_API_KEY` remains environment-only and streaming fallback is disabled. An HTTP 402 is terminal for the affected attempt and writes owner-private diagnostic evidence. That historical file is not launch authority: it does not block a later request, cause a retry or fallback, or get deleted automatically.
+
 ## Public release and intake hygiene
 
 The release-bundle preflight scans each selected file before archive creation. It rejects private-key encodings, known high-confidence credential token formats, unintended non-synthetic email addresses, and SSN-shaped personal data. It deliberately does not apply generic entropy scoring or match arbitrary prose about credentials. Intentional public donation/contact data is allowlisted only as an exact value in its exact published files; reserved synthetic email domains remain available to offline tests.

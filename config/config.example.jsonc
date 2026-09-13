@@ -452,6 +452,8 @@
       "apiKeyEnv": "NOUS_API_KEY",
       "model": "deepseek/deepseek-v4-flash-0731",
       "discoverModels": true,
+      "reasoningEffort": "max",
+      "allowedReasoningEfforts": ["max", "high", "low"],
       "retryWithoutStreaming": false,
       "capabilities": [
         "consult",

@@ -518,6 +518,7 @@ export function validateConfig(config, configPath = "<memory>", options = {}) {
       }
       if (provider.baseUrl !== undefined) validateHttpUrl(provider.baseUrl, `Provider '${providerId}'.baseUrl`);
       validateOpenAiCompatibleOptions(providerId, provider);
+      if (provider.adapter === "nous") validateNousProvider(providerId, provider);
     }
     validateCursorStyleOptions(providerId, provider);
     const normalizedProvider = accountSources === undefined ? provider : { ...provider, accountSources };
@@ -585,7 +586,7 @@ function validateProviderCommonOptions(providerId, provider) {
   assertOptionalString(provider.executable, `Provider '${providerId}'.executable`);
   assertOptionalString(provider.executableEnv, `Provider '${providerId}'.executableEnv`);
   for (const key of ["envAllowlist", "commandArgs", "versionArgs", "modelListArgs", "preArgs", "postArgs", "rules", "allowedEfforts", "allowedReasoningEfforts", "grokTools", "disallowedTools", "allow", "deny"]) {
-    if (provider[key] !== undefined) assertStringArray(provider[key], `Provider '${providerId}'.${key}`, { unique: key === "envAllowlist" || key === "allowedEfforts" });
+    if (provider[key] !== undefined) assertStringArray(provider[key], `Provider '${providerId}'.${key}`, { unique: ["envAllowlist", "allowedEfforts", "allowedReasoningEfforts"].includes(key) });
   }
   if (provider.headers !== undefined && !isPlainObject(provider.headers)) throw new ConfigError(`Provider '${providerId}'.headers must be an object`);
   if (provider.extraBody !== undefined && !isPlainObject(provider.extraBody)) throw new ConfigError(`Provider '${providerId}'.extraBody must be an object`);
@@ -605,6 +606,14 @@ function validateCommandProvider(providerId, provider) {
   assertOptionalString(provider.cwd, `Provider '${providerId}'.cwd`);
   if (provider.outputFormat !== undefined && !["text", "json", "jsonl"].includes(provider.outputFormat)) {
     throw new ConfigError(`Provider '${providerId}'.outputFormat must be text, json, or jsonl`);
+  }
+}
+
+/** Ensure a configured Nous default reasoning effort is selectable before provider contact. */
+function validateNousProvider(providerId, provider) {
+  if (provider.reasoningEffort === undefined || provider.allowedReasoningEfforts === undefined) return;
+  if (!provider.allowedReasoningEfforts.includes(provider.reasoningEffort)) {
+    throw new ConfigError(`Provider '${providerId}'.reasoningEffort must appear in allowedReasoningEfforts`);
   }
 }
 
@@ -1604,6 +1613,8 @@ export function createExampleConfig() {
         apiKeyEnv: "NOUS_API_KEY",
         model: "deepseek/deepseek-v4-flash-0731",
         discoverModels: true,
+        reasoningEffort: "max",
+        allowedReasoningEfforts: ["max", "high", "low"],
         retryWithoutStreaming: false,
         capabilities: ["consult", "integrated"],
       },

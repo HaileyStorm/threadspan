@@ -51,7 +51,7 @@ Alternate route controls in `metadata`:
 | `bridge_timeout_ms` | Positive per-call provider timeout. |
 | `bridge_expose_reasoning` | Emit visible reasoning summary events/output for this request. |
 | `bridge_profile` | Provider task profile, currently used by managed workers. |
-| `bridge_reasoning_effort` | Explicit provider effort override such as `low`, `medium`, or `high`. |
+| `bridge_reasoning_effort` | Explicit provider effort override such as `low`, `medium`, `high`, or `max`; the selected provider/model still controls supported values. |
 | `bridge_max_turns` | Finite managed-worker turn cap. |
 | `bridge_expected_turns` | Rolling-admission reservation for expected internal model turns. |
 | `bridge_no_plan` | Managed-worker no-plan override. |

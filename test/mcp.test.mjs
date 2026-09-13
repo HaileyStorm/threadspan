@@ -36,6 +36,12 @@ test("MCP server initializes, lists tools, and executes Consult", async () => {
   assert.match(byId.get(3).result.content[0].text, /hello$/);
 });
 
+test("MCP reasoning effort schema exposes max for providers that support it", () => {
+  for (const name of ["consult", "delegate"]) {
+    assert.deepEqual(MCP_TOOLS.find((tool) => tool.name === name).inputSchema.properties.reasoning_effort.enum, ["low", "medium", "high", "max"]);
+  }
+});
+
 test("MCP server dispatches concurrently and processes cancellation while a tool call is active", async () => {
   const input = new PassThrough();
   const output = new PassThrough();
